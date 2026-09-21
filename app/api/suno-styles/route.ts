@@ -126,6 +126,10 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     const projectId = String(body.projectId || "").trim();
+    const additionalDirection =
+      typeof body.additionalDirection === "string"
+        ? body.additionalDirection.trim().slice(0, 600)
+        : "";
 
     if (!projectId) {
       return NextResponse.json(
@@ -175,6 +179,8 @@ You are an expert music producer, composer, arranger and Suno prompt designer.
 Your job is to analyse a completed song and create between 5 and 8 genuinely different musical production directions that could be pasted directly into Suno's Style field.
 
 These are NOT generic templates.
+
+The user may also provide an ADDITIONAL MUSIC DIRECTION. Treat it as a production brief for the music only. It must influence arrangement, era, vocal texture, instrumentation, energy, tempo feel and production choices where relevant, but it must NOT rewrite or alter the supplied lyrics.
 
 Every style must be specifically chosen for the supplied song based on:
 - lyrics
@@ -300,7 +306,12 @@ ${song.selected_hook || "Not specified"}
 FULL LYRICS:
 ${song.lyrics}
 
+ADDITIONAL MUSIC DIRECTION FROM THE USER:
+${additionalDirection || "None — base the styles on the song itself."}
+
 Choose styles based on what the song actually needs musically.
+
+When an additional direction is supplied, make the recommended style honour it strongly while still respecting the emotional meaning and singability of the lyrics. The remaining options may explore adjacent alternatives rather than ignoring the user's brief.
 
 Create 5 to 8 genuinely different options.
 Mark exactly one as recommended.
@@ -407,6 +418,21 @@ Every Suno prompt must be no more than 1000 characters.
     if (saveStylesError) {
       throw new Error(
         `Could not save Suno styles: ${saveStylesError.message}`
+      );
+    }
+
+    const { error: songStatusError } = await supabase
+      .from("songs")
+      .update({
+        status: "creating",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", song.id)
+      .eq("user_id", user.id);
+
+    if (songStatusError) {
+      throw new Error(
+        `Suno styles were saved, but the song status could not be updated: ${songStatusError.message}`
       );
     }
 
