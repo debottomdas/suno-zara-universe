@@ -1,0 +1,225 @@
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+function isValidProjectId(projectId: unknown) {
+  return (
+    typeof projectId === "string" &&
+    /^[A-Za-z0-9_-]+$/.test(projectId)
+  );
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    const {
+      projectId,
+      originalText,
+      replacementText,
+      occurrenceIndex,
+    } = body;
+
+    if (!isValidProjectId(projectId)) {
+      return NextResponse.json(
+        { error: "Invalid project." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof originalText !== "string" ||
+      !originalText.trim()
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Original lyric text is required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof replacementText !== "string" ||
+      !replacementText.trim()
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Replacement lyric text is required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof occurrenceIndex !== "number" ||
+      !Number.isInteger(occurrenceIndex) ||
+      occurrenceIndex < 0
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid lyric occurrence selected.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const projectFile = path.join(
+      process.cwd(),
+      "data",
+      "songs",
+      `${projectId}.json`
+    );
+
+    const content = await fs.readFile(
+      projectFile,
+      "utf8"
+    );
+
+    const project = JSON.parse(content);
+
+    if (
+      typeof project.lyrics !== "string" ||
+      !project.lyrics.trim()
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "This project does not have a full song yet.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const source = originalText.trim();
+
+    const positions: number[] = [];
+
+    let searchFrom = 0;
+
+    while (true) {
+      const foundAt =
+        project.lyrics.indexOf(
+          source,
+          searchFrom
+        );
+
+      if (foundAt === -1) {
+        break;
+      }
+
+      positions.push(foundAt);
+
+      searchFrom =
+        foundAt + source.length;
+    }
+
+    if (positions.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "The selected lyric could not be found in the current song. It may have changed since the analysis was created.",
+        },
+        { status: 409 }
+      );
+    }
+
+    if (
+      occurrenceIndex >= positions.length
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "That lyric occurrence is no longer available.",
+        },
+        { status: 409 }
+      );
+    }
+
+    const replaceAt =
+      positions[occurrenceIndex];
+
+    const updatedLyrics =
+      project.lyrics.slice(
+        0,
+        replaceAt
+      ) +
+      replacementText.trim() +
+      project.lyrics.slice(
+        replaceAt + source.length
+      );
+
+    const now =
+      new Date().toISOString();
+
+    if (!Array.isArray(project.versions)) {
+      project.versions = [];
+    }
+
+    project.versions.push({
+      savedAt:
+        project.updatedAt || now,
+
+      type:
+        "before-alternative-replacement",
+
+      title:
+        project.title || null,
+
+      lyrics:
+        project.lyrics,
+
+      originalText: source,
+
+      replacementText:
+        replacementText.trim(),
+
+      occurrenceIndex,
+    });
+
+    project.lyrics = updatedLyrics;
+    project.updatedAt = now;
+    project.status = "song-generated";
+
+    project.latestCritique = null;
+    project.latestLineAnalysis = null;
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(
+        project,
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      saved: true,
+      title:
+        project.title || "",
+      lyrics:
+        project.lyrics,
+      replacementText:
+        replacementText.trim(),
+      occurrenceCount:
+        positions.length,
+    });
+  } catch (error) {
+    console.error(
+      "Apply alternative error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Failed to apply the alternative.",
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,50 @@
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    const { projectId, selectedHook } = body;
+
+    if (!projectId || !selectedHook) {
+      return NextResponse.json(
+        { error: "Project ID and selected hook are required." },
+        { status: 400 }
+      );
+    }
+
+    const projectFile = path.join(
+      process.cwd(),
+      "data",
+      "songs",
+      `${projectId}.json`
+    );
+
+    const content = await fs.readFile(projectFile, "utf8");
+    const project = JSON.parse(content);
+
+    project.selectedHook = selectedHook;
+    project.status = "hook-selected";
+    project.updatedAt = new Date().toISOString();
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(project, null, 2),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      saved: true,
+      project,
+    });
+  } catch (error) {
+    console.error("Failed to save selected hook:", error);
+
+    return NextResponse.json(
+      { error: "Failed to save selected hook." },
+      { status: 500 }
+    );
+  }
+}

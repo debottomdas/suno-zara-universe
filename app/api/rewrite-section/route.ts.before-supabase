@@ -1,0 +1,204 @@
+import OpenAI from "openai";
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    const {
+      projectId,
+      sectionName,
+      instruction,
+    } = body;
+
+    if (
+      typeof projectId !== "string" ||
+      !/^[A-Za-z0-9_-]+$/.test(projectId)
+    ) {
+      return NextResponse.json(
+        { error: "Invalid project." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof sectionName !== "string" ||
+      !sectionName.trim()
+    ) {
+      return NextResponse.json(
+        { error: "Please choose a section to rewrite." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof instruction !== "string" ||
+      !instruction.trim()
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Please tell me how you want this section improved.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const projectFile = path.join(
+      process.cwd(),
+      "data",
+      "songs",
+      `${projectId}.json`
+    );
+
+    const content = await fs.readFile(
+      projectFile,
+      "utf8"
+    );
+
+    const project = JSON.parse(content);
+
+    if (!project.lyrics) {
+      return NextResponse.json(
+        {
+          error:
+            "This project does not have a full song yet.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const response =
+      await openai.responses.create({
+        model: "gpt-5.6-luna",
+
+        instructions: `
+You are Suno Zara Studio, an expert professional songwriter and lyric editor.
+
+Your job is to rewrite ONLY ONE requested section of an existing song.
+
+STRICT RULES:
+
+1. Rewrite only the requested section.
+2. Keep every other section unchanged.
+3. Preserve the overall emotional story and meaning of the song.
+4. Preserve the selected hook / chorus unless the requested section itself is the hook.
+5. Do not unnecessarily rewrite surrounding lines.
+6. Avoid clichés, generic AI poetry, filler and forced rhymes.
+7. Make the rewritten section natural, memorable and singable.
+8. Follow the user's rewrite instruction closely.
+9. Maintain the same language and script as the original song.
+10. Return the COMPLETE song with the rewritten section inserted into its correct place.
+11. Do not remove section labels.
+12. Do not add explanations inside the lyrics.
+
+Song language:
+${project.language}
+
+Script:
+${project.script}
+
+Mood:
+${project.mood}
+
+Musical style:
+${project.genre}
+
+Selected hook:
+${project.selectedHook || "None"}
+
+SECTION TO REWRITE:
+${sectionName}
+
+USER'S REWRITE REQUEST:
+${instruction}
+
+CURRENT COMPLETE SONG:
+
+${project.lyrics}
+
+Return ONLY valid JSON.
+Do not use markdown fences.
+
+Use exactly this structure:
+
+{
+  "updatedLyrics": "complete song with only the requested section rewritten",
+  "rewrittenSection": "the newly rewritten section only"
+}
+`,
+        input:
+          "Rewrite the requested section now.",
+      });
+
+    const text =
+      response.output_text.trim();
+
+    const result = JSON.parse(text);
+
+    if (
+      typeof result.updatedLyrics !== "string" ||
+      typeof result.rewrittenSection !== "string"
+    ) {
+      throw new Error(
+        "Invalid rewrite response."
+      );
+    }
+
+    const now = new Date().toISOString();
+
+    if (!Array.isArray(project.versions)) {
+      project.versions = [];
+    }
+
+    project.versions.push({
+      savedAt:
+        project.updatedAt || now,
+      type: "before-section-rewrite",
+      title: project.title || null,
+      lyrics: project.lyrics,
+      rewrittenSection: sectionName,
+      instruction,
+    });
+
+    project.lyrics =
+      result.updatedLyrics;
+
+    project.updatedAt = now;
+    project.status = "song-generated";
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(project, null, 2),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      saved: true,
+      title: project.title || "",
+      lyrics: project.lyrics,
+      rewrittenSection:
+        result.rewrittenSection,
+      sectionName,
+    });
+  } catch (error) {
+    console.error(
+      "Section rewrite error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Failed to rewrite the section.",
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,151 @@
+import OpenAI from "openai";
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const { projectId } = body;
+
+    if (
+      typeof projectId !== "string" ||
+      !/^[A-Za-z0-9_-]+$/.test(projectId)
+    ) {
+      return NextResponse.json(
+        { error: "Invalid project." },
+        { status: 400 }
+      );
+    }
+
+    const projectFile = path.join(
+      process.cwd(),
+      "data",
+      "songs",
+      `${projectId}.json`
+    );
+
+    const content = await fs.readFile(projectFile, "utf8");
+    const project = JSON.parse(content);
+
+    if (!project.selectedHook) {
+      return NextResponse.json(
+        { error: "Please choose a hook first." },
+        { status: 400 }
+      );
+    }
+
+    const response = await openai.responses.create({
+      model: "gpt-5.6-luna",
+
+      instructions: `
+You are Suno Zara Studio, an expert professional songwriter.
+
+Write a complete original song based on the saved project.
+
+IMPORTANT:
+- The selected hook is the emotional anchor of the song.
+- Build the rest of the song naturally around it.
+- Do not simply repeat the same ideas in every section.
+- Keep the song concise and memorable.
+- Avoid clichés, filler lines, generic AI poetry and forced rhymes.
+- Every section should advance the emotion or story.
+- Lyrics must feel natural when sung.
+- Use language appropriate to the listener and genre.
+- Respect the requested script.
+
+Song details:
+
+Language: ${project.language}
+Script: ${project.script}
+Mood: ${project.mood}
+Musical style: ${project.genre}
+Creative freedom: ${project.freedom}/100
+
+Original idea:
+${project.idea}
+
+Selected hook:
+${project.selectedHook}
+
+Use a suitable song structure.
+
+For Hindi/Bengali/Indian songs, normally use:
+[Intro]
+[Mukhda / Chorus]
+[Antara 1]
+[Mukhda / Chorus]
+[Antara 2]
+[Final Chorus / Outro]
+
+But change the structure if the song genuinely benefits from it.
+
+The selected hook should appear naturally as the main chorus/refrain.
+
+Return ONLY valid JSON.
+Do not use markdown fences.
+
+Use exactly this structure:
+
+{
+  "title": "song title",
+  "lyrics": "complete lyrics with section labels"
+}
+`,
+      input: "Generate the complete song now.",
+    });
+
+    const text = response.output_text.trim();
+    const result = JSON.parse(text);
+
+    if (
+      typeof result.title !== "string" ||
+      typeof result.lyrics !== "string"
+    ) {
+      throw new Error("Invalid song response.");
+    }
+
+    const now = new Date().toISOString();
+
+    if (!Array.isArray(project.versions)) {
+      project.versions = [];
+    }
+
+    if (project.lyrics) {
+      project.versions.push({
+        savedAt: project.updatedAt || now,
+        title: project.title || null,
+        lyrics: project.lyrics,
+      });
+    }
+
+    project.title = result.title;
+    project.lyrics = result.lyrics;
+    project.status = "song-generated";
+    project.updatedAt = now;
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(project, null, 2),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      saved: true,
+      title: project.title,
+      lyrics: project.lyrics,
+      status: project.status,
+    });
+  } catch (error) {
+    console.error("Full song generation error:", error);
+
+    return NextResponse.json(
+      { error: "Failed to generate the full song." },
+      { status: 500 }
+    );
+  }
+}

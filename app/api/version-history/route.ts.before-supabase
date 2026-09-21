@@ -1,0 +1,210 @@
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+function getProjectFile(projectId: string) {
+  return path.join(
+    process.cwd(),
+    "data",
+    "songs",
+    `${projectId}.json`
+  );
+}
+
+function isValidProjectId(projectId: unknown) {
+  return (
+    typeof projectId === "string" &&
+    /^[A-Za-z0-9_-]+$/.test(projectId)
+  );
+}
+
+export async function GET(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+
+    const projectId =
+      searchParams.get("projectId");
+
+    if (!isValidProjectId(projectId)) {
+      return NextResponse.json(
+        { error: "Invalid project." },
+        { status: 400 }
+      );
+    }
+
+    const projectFile =
+      getProjectFile(projectId);
+
+    const content = await fs.readFile(
+      projectFile,
+      "utf8"
+    );
+
+    const project = JSON.parse(content);
+
+    const versions = Array.isArray(
+      project.versions
+    )
+      ? project.versions
+      : [];
+
+    return NextResponse.json({
+      current: {
+        title: project.title || "",
+        lyrics: project.lyrics || "",
+        updatedAt:
+          project.updatedAt || null,
+      },
+
+      versions: versions.map(
+        (
+          version: any,
+          index: number
+        ) => ({
+          index,
+          ...version,
+        })
+      ),
+    });
+  } catch (error) {
+    console.error(
+      "Version history load error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Failed to load version history.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    const {
+      projectId,
+      versionIndex,
+    } = body;
+
+    if (!isValidProjectId(projectId)) {
+      return NextResponse.json(
+        { error: "Invalid project." },
+        { status: 400 }
+      );
+    }
+
+    if (
+      typeof versionIndex !== "number" ||
+      !Number.isInteger(versionIndex) ||
+      versionIndex < 0
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Invalid version selected.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const projectFile =
+      getProjectFile(projectId);
+
+    const content = await fs.readFile(
+      projectFile,
+      "utf8"
+    );
+
+    const project = JSON.parse(content);
+
+    if (!Array.isArray(project.versions)) {
+      project.versions = [];
+    }
+
+    const version =
+      project.versions[versionIndex];
+
+    if (
+      !version ||
+      typeof version.lyrics !== "string"
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "Saved version not found.",
+        },
+        { status: 404 }
+      );
+    }
+
+    const now =
+      new Date().toISOString();
+
+    if (project.lyrics) {
+      project.versions.push({
+        savedAt:
+          project.updatedAt || now,
+
+        type:
+          "before-version-restore",
+
+        title:
+          project.title || null,
+
+        lyrics:
+          project.lyrics,
+
+        restoredFromVersion:
+          versionIndex,
+      });
+    }
+
+    project.title =
+      version.title ||
+      project.title ||
+      null;
+
+    project.lyrics =
+      version.lyrics;
+
+    project.updatedAt = now;
+    project.status =
+      "song-generated";
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(
+        project,
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      restored: true,
+      title:
+        project.title || "",
+      lyrics:
+        project.lyrics,
+    });
+  } catch (error) {
+    console.error(
+      "Version restore error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          "Failed to restore version.",
+      },
+      { status: 500 }
+    );
+  }
+}

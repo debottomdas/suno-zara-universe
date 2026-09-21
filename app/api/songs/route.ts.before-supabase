@@ -1,0 +1,57 @@
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+export async function GET() {
+  try {
+    const songsDirectory = path.join(
+      process.cwd(),
+      "data",
+      "songs"
+    );
+
+    await fs.mkdir(songsDirectory, {
+      recursive: true,
+    });
+
+    const files = await fs.readdir(songsDirectory);
+
+    const jsonFiles = files.filter((file) =>
+      file.endsWith(".json")
+    );
+
+    const projects = await Promise.all(
+      jsonFiles.map(async (file) => {
+        const fullPath = path.join(
+          songsDirectory,
+          file
+        );
+
+        const content = await fs.readFile(
+          fullPath,
+          "utf8"
+        );
+
+        return JSON.parse(content);
+      })
+    );
+
+    projects.sort((a, b) => {
+      return (
+        new Date(b.updatedAt || b.createdAt).getTime() -
+        new Date(a.updatedAt || a.createdAt).getTime()
+      );
+    });
+
+    return NextResponse.json({
+      projects,
+    });
+  } catch (error) {
+    console.error("Failed to load songs:", error);
+
+    return NextResponse.json(
+      { error: "Failed to load saved songs." },
+      { status: 500 }
+    );
+  }
+}

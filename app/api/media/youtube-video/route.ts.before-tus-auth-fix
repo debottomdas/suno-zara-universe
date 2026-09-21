@@ -1,0 +1,685 @@
+import { NextResponse } from "next/server";
+import { createClient } from "@/utils/supabase/server";
+
+const BUCKET = "song-media";
+const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
+
+const VIDEO_MIME_TYPES = new Set([
+  "video/mp4",
+  "video/quicktime",
+]);
+
+function cleanString(value: unknown) {
+  return typeof value === "string"
+    ? value.trim()
+    : "";
+}
+
+function safeFilename(filename: string) {
+  const cleaned = filename
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return cleaned || "youtube-video";
+}
+
+function getTusEndpoint() {
+  const rawUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+
+  if (!rawUrl) {
+    throw new Error(
+      "NEXT_PUBLIC_SUPABASE_URL is not configured."
+    );
+  }
+
+  const url = new URL(rawUrl);
+
+  // Preferred Supabase direct-storage hostname.
+  if (url.hostname.endsWith(".supabase.co")) {
+    const projectRef =
+      url.hostname.split(".")[0];
+
+    return `https://${projectRef}.storage.supabase.co/storage/v1/upload/resumable`;
+  }
+
+  // Fallback for custom/self-hosted setups.
+  return `${url.origin}/storage/v1/upload/resumable`;
+}
+
+async function getOwnedSong(
+  supabase: Awaited<
+    ReturnType<typeof createClient>
+  >,
+  userId: string,
+  projectId: string
+) {
+  const { data: song, error } =
+    await supabase
+      .from("songs")
+      .select("id, title")
+      .eq("id", projectId)
+      .eq("user_id", userId)
+      .single();
+
+  if (error || !song) {
+    return null;
+  }
+
+  return song;
+}
+
+async function createAssetResponse(
+  supabase: Awaited<
+    ReturnType<typeof createClient>
+  >,
+  asset: {
+    id: string;
+    song_id: string;
+    media_kind: string;
+    slot: number;
+    original_filename: string;
+    storage_path: string;
+    mime_type: string | null;
+    size_bytes: number | null;
+    created_at: string;
+    updated_at: string;
+  }
+) {
+  const {
+    data: playbackData,
+    error: playbackError,
+  } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(
+      asset.storage_path,
+      60 * 60
+    );
+
+  if (
+    playbackError ||
+    !playbackData?.signedUrl
+  ) {
+    throw new Error(
+      `Could not create video playback URL: ${
+        playbackError?.message ||
+        "Unknown error"
+      }`
+    );
+  }
+
+  const {
+    data: downloadData,
+    error: downloadError,
+  } = await supabase.storage
+    .from(BUCKET)
+    .createSignedUrl(
+      asset.storage_path,
+      60 * 60,
+      {
+        download:
+          asset.original_filename,
+      }
+    );
+
+  return {
+    id: asset.id,
+    songId: asset.song_id,
+    mediaKind: asset.media_kind,
+    slot: asset.slot,
+    originalFilename:
+      asset.original_filename,
+    storagePath:
+      asset.storage_path,
+    mimeType:
+      asset.mime_type,
+    sizeBytes:
+      asset.size_bytes,
+    createdAt:
+      asset.created_at,
+    updatedAt:
+      asset.updated_at,
+    url:
+      playbackData.signedUrl,
+    downloadUrl:
+      !downloadError &&
+      downloadData?.signedUrl
+        ? downloadData.signedUrl
+        : playbackData.signedUrl,
+  };
+}
+
+export async function POST(
+  request: Request
+) {
+  try {
+    const supabase =
+      await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          error:
+            "You must be signed in.",
+        },
+        { status: 401 }
+      );
+    }
+
+    const body =
+      await request.json();
+
+    const action =
+      cleanString(body.action);
+
+    const projectId =
+      cleanString(body.projectId);
+
+    if (!projectId) {
+      return NextResponse.json(
+        {
+          error:
+            "projectId is required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const song =
+      await getOwnedSong(
+        supabase,
+        user.id,
+        projectId
+      );
+
+    if (!song) {
+      return NextResponse.json(
+        {
+          error:
+            "Song not found.",
+        },
+        { status: 404 }
+      );
+    }
+
+    // ========================================================
+    // PREPARE RESUMABLE UPLOAD
+    // ========================================================
+
+    if (action === "prepare") {
+      const originalFilename =
+        cleanString(
+          body.originalFilename
+        );
+
+      const mimeType =
+        cleanString(body.mimeType);
+
+      const sizeBytes =
+        Number(body.sizeBytes);
+
+      if (!originalFilename) {
+        return NextResponse.json(
+          {
+            error:
+              "Video filename is required.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        !VIDEO_MIME_TYPES.has(
+          mimeType
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Please choose an MP4 or MOV video.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        !Number.isFinite(
+          sizeBytes
+        ) ||
+        sizeBytes <= 0
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Invalid video file size.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        sizeBytes >
+        MAX_VIDEO_BYTES
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Full YouTube videos are currently limited to 500 MB.",
+          },
+          { status: 400 }
+        );
+      }
+
+      const filename =
+        safeFilename(
+          originalFilename
+        );
+
+      // Unique paths prevent stale CDN
+      // content when replacing videos.
+      const uniqueName =
+        `${crypto.randomUUID()}-${filename}`;
+
+      const storagePath =
+        `${user.id}/${song.id}/youtube-video/${uniqueName}`;
+
+      const {
+        data: signedUpload,
+        error: signedUploadError,
+      } = await supabase.storage
+        .from(BUCKET)
+        .createSignedUploadUrl(
+          storagePath
+        );
+
+      if (
+        signedUploadError ||
+        !signedUpload?.token
+      ) {
+        throw new Error(
+          `Could not prepare video upload: ${
+            signedUploadError?.message ||
+            "No upload token returned"
+          }`
+        );
+      }
+
+      return NextResponse.json({
+        upload: {
+          bucket: BUCKET,
+          storagePath,
+          token:
+            signedUpload.token,
+          tusEndpoint:
+            getTusEndpoint(),
+          originalFilename,
+          mimeType,
+          sizeBytes,
+        },
+      });
+    }
+
+    // ========================================================
+    // REGISTER COMPLETED UPLOAD
+    // ========================================================
+
+    if (action === "register") {
+      const storagePath =
+        cleanString(
+          body.storagePath
+        );
+
+      const originalFilename =
+        cleanString(
+          body.originalFilename
+        );
+
+      const mimeType =
+        cleanString(
+          body.mimeType
+        );
+
+      const sizeBytes =
+        Number(body.sizeBytes);
+
+      const requiredPrefix =
+        `${user.id}/${song.id}/youtube-video/`;
+
+      if (
+        !storagePath ||
+        !storagePath.startsWith(
+          requiredPrefix
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Invalid video storage path.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!originalFilename) {
+        return NextResponse.json(
+          {
+            error:
+              "Video filename is required.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        !VIDEO_MIME_TYPES.has(
+          mimeType
+        )
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Invalid video type.",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        !Number.isFinite(
+          sizeBytes
+        ) ||
+        sizeBytes <= 0 ||
+        sizeBytes >
+          MAX_VIDEO_BYTES
+      ) {
+        return NextResponse.json(
+          {
+            error:
+              "Invalid video file size.",
+          },
+          { status: 400 }
+        );
+      }
+
+      const {
+        data: previousAsset,
+      } = await supabase
+        .from(
+          "song_media_assets"
+        )
+        .select(
+          "id, storage_path"
+        )
+        .eq(
+          "song_id",
+          song.id
+        )
+        .eq(
+          "user_id",
+          user.id
+        )
+        .eq(
+          "media_kind",
+          "youtube-video"
+        )
+        .eq("slot", 1)
+        .maybeSingle();
+
+      const {
+        data: savedAsset,
+        error: saveError,
+      } = await supabase
+        .from(
+          "song_media_assets"
+        )
+        .upsert(
+          {
+            song_id: song.id,
+            user_id: user.id,
+            media_kind:
+              "youtube-video",
+            slot: 1,
+            original_filename:
+              originalFilename,
+            storage_path:
+              storagePath,
+            mime_type:
+              mimeType,
+            size_bytes:
+              Math.round(
+                sizeBytes
+              ),
+            metadata: {},
+            updated_at:
+              new Date().toISOString(),
+          },
+          {
+            onConflict:
+              "song_id,user_id,media_kind,slot",
+          }
+        )
+        .select(
+          `
+          id,
+          song_id,
+          media_kind,
+          slot,
+          original_filename,
+          storage_path,
+          mime_type,
+          size_bytes,
+          created_at,
+          updated_at
+          `
+        )
+        .single();
+
+      if (
+        saveError ||
+        !savedAsset
+      ) {
+        throw new Error(
+          `Could not save video record: ${
+            saveError?.message ||
+            "Unknown error"
+          }`
+        );
+      }
+
+      // Only remove the old master
+      // after the new one is safely
+      // registered.
+      if (
+        previousAsset?.storage_path &&
+        previousAsset.storage_path !==
+          storagePath
+      ) {
+        await supabase.storage
+          .from(BUCKET)
+          .remove([
+            previousAsset.storage_path,
+          ]);
+      }
+
+      const asset =
+        await createAssetResponse(
+          supabase,
+          savedAsset
+        );
+
+      return NextResponse.json({
+        asset,
+        saved: true,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        error:
+          'action must be either "prepare" or "register".',
+      },
+      { status: 400 }
+    );
+  } catch (error) {
+    console.error(
+      "YouTube video media error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "YouTube video request failed.",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+export async function GET(
+  request: Request
+) {
+  try {
+    const supabase =
+      await createClient();
+
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+
+    if (authError || !user) {
+      return NextResponse.json(
+        {
+          error:
+            "You must be signed in.",
+        },
+        { status: 401 }
+      );
+    }
+
+    const { searchParams } =
+      new URL(request.url);
+
+    const projectId =
+      cleanString(
+        searchParams.get(
+          "projectId"
+        )
+      );
+
+    if (!projectId) {
+      return NextResponse.json(
+        {
+          error:
+            "projectId is required.",
+        },
+        { status: 400 }
+      );
+    }
+
+    const song =
+      await getOwnedSong(
+        supabase,
+        user.id,
+        projectId
+      );
+
+    if (!song) {
+      return NextResponse.json(
+        {
+          error:
+            "Song not found.",
+        },
+        { status: 404 }
+      );
+    }
+
+    const {
+      data: asset,
+      error: assetError,
+    } = await supabase
+      .from(
+        "song_media_assets"
+      )
+      .select(
+        `
+        id,
+        song_id,
+        media_kind,
+        slot,
+        original_filename,
+        storage_path,
+        mime_type,
+        size_bytes,
+        created_at,
+        updated_at
+        `
+      )
+      .eq(
+        "song_id",
+        song.id
+      )
+      .eq(
+        "user_id",
+        user.id
+      )
+      .eq(
+        "media_kind",
+        "youtube-video"
+      )
+      .eq("slot", 1)
+      .maybeSingle();
+
+    if (assetError) {
+      throw new Error(
+        `Could not load YouTube video: ${assetError.message}`
+      );
+    }
+
+    if (!asset) {
+      return NextResponse.json({
+        projectId,
+        asset: null,
+      });
+    }
+
+    const responseAsset =
+      await createAssetResponse(
+        supabase,
+        asset
+      );
+
+    return NextResponse.json({
+      projectId,
+      songTitle:
+        song.title ||
+        "Untitled",
+      asset:
+        responseAsset,
+    });
+  } catch (error) {
+    console.error(
+      "Load YouTube video error:",
+      error
+    );
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not load YouTube video.",
+      },
+      { status: 500 }
+    );
+  }
+}

@@ -1,0 +1,121 @@
+import OpenAI from "openai";
+import { NextResponse } from "next/server";
+import { promises as fs } from "fs";
+import path from "path";
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+
+    const {
+      idea,
+      language,
+      script,
+      mood,
+      genre,
+      freedom,
+    } = body;
+
+    if (!idea?.trim()) {
+      return NextResponse.json(
+        { error: "Please enter a song idea." },
+        { status: 400 }
+      );
+    }
+
+    const response = await openai.responses.create({
+      model: "gpt-5.6-luna",
+      instructions: `
+You are Suno Zara Studio, an expert multilingual lyric-writing assistant.
+
+Create exactly 3 genuinely different song hooks.
+
+Rules:
+- Language: ${language}
+- Script: ${script}
+- Mood: ${mood}
+- Musical style: ${genre}
+- Creative freedom: ${freedom}/100
+- Make each hook memorable, singable, emotional, and concise.
+- Avoid clichés and filler.
+- Each hook should feel like a different creative direction.
+- Return ONLY valid JSON.
+- Do not add markdown fences.
+- Use this exact structure:
+{
+  "hooks": [
+    "hook one",
+    "hook two",
+    "hook three"
+  ]
+}
+`,
+      input: `Song idea: ${idea}`,
+    });
+
+    const text = response.output_text.trim();
+    const result = JSON.parse(text);
+
+    const now = new Date();
+
+    const projectId =
+      now.toISOString().replace(/[:.]/g, "-") +
+      "-" +
+      Math.random().toString(36).slice(2, 8);
+
+    const project = {
+      id: projectId,
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      status: "hooks-generated",
+      idea,
+      language,
+      script,
+      mood,
+      genre,
+      freedom,
+      hooks: result.hooks,
+      selectedHook: null,
+      lyrics: null,
+      versions: [],
+    };
+
+    const songsDirectory = path.join(
+      process.cwd(),
+      "data",
+      "songs"
+    );
+
+    await fs.mkdir(songsDirectory, {
+      recursive: true,
+    });
+
+    const projectFile = path.join(
+      songsDirectory,
+      `${projectId}.json`
+    );
+
+    await fs.writeFile(
+      projectFile,
+      JSON.stringify(project, null, 2),
+      "utf8"
+    );
+
+    return NextResponse.json({
+      ...result,
+      projectId,
+      saved: true,
+    });
+  } catch (error) {
+    console.error("Song generation error:", error);
+
+    return NextResponse.json(
+      { error: "Failed to generate hooks." },
+      { status: 500 }
+    );
+  }
+}

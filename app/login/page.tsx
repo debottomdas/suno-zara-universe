@@ -1,0 +1,193 @@
+"use client";
+
+import Link from "next/link";
+import { useState } from "react";
+import { createClient } from "@/utils/supabase/client";
+import PublicFooter from "@/components/PublicFooter";
+
+export default function LoginPage() {
+  const supabase = createClient();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function continueWithGoogle() {
+    try {
+      setLoading(true);
+      setError("");
+
+      const { error } =
+        await supabase.auth.signInWithOAuth({
+          provider: "google",
+          options: {
+            redirectTo:
+              `${window.location.origin}/auth/callback`,
+          },
+        });
+
+      if (error) {
+        throw error;
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Google sign-in failed."
+      );
+      setLoading(false);
+    }
+  }
+
+  async function signIn(
+    event: React.FormEvent
+  ) {
+    event.preventDefault();
+
+    setError("");
+
+    if (!email.trim() || !password) {
+      setError(
+        "Please enter your email address and password."
+      );
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const { error } =
+        await supabase.auth.signInWithPassword({
+          email: email.trim(),
+          password,
+        });
+
+      if (error) {
+        throw error;
+      }
+
+      window.location.href = "/";
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Sign in failed."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-black text-white">
+    <main className="flex min-h-[calc(100vh-105px)] items-center justify-center bg-black px-6 py-12 text-white">
+      <div className="w-full max-w-md">
+        <div className="mb-10 text-center">
+          <h1 className="text-4xl font-bold tracking-tight">
+            Suno Zara Universe
+          </h1>
+
+          <p className="mt-3 text-lg text-zinc-400">
+            Your Connected Creative Workspace
+          </p>
+        </div>
+
+        <div className="rounded-3xl border border-zinc-800 bg-zinc-950 p-7 shadow-2xl">
+          <button
+            type="button"
+            onClick={continueWithGoogle}
+            disabled={loading}
+            className="w-full rounded-xl bg-white px-5 py-3 font-semibold text-black transition hover:bg-zinc-200 disabled:opacity-50"
+          >
+            Continue with Google
+          </button>
+
+          <div className="my-6 flex items-center gap-4">
+            <div className="h-px flex-1 bg-zinc-800" />
+
+            <span className="text-xs uppercase tracking-widest text-zinc-600">
+              or
+            </span>
+
+            <div className="h-px flex-1 bg-zinc-800" />
+          </div>
+
+          <form
+            onSubmit={signIn}
+            className="space-y-4"
+          >
+            <input
+              type="email"
+              value={email}
+              onChange={(event) =>
+                setEmail(event.target.value)
+              }
+              placeholder="Email address"
+              autoComplete="email"
+              className="w-full rounded-xl border border-zinc-800 bg-black px-4 py-3 outline-none transition focus:border-zinc-600"
+            />
+
+            <input
+              type="password"
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+              placeholder="Password"
+              autoComplete="current-password"
+              className="w-full rounded-xl border border-zinc-800 bg-black px-4 py-3 outline-none transition focus:border-zinc-600"
+            />
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl border border-zinc-700 px-5 py-3 font-semibold transition hover:bg-zinc-900 disabled:opacity-50"
+            >
+              {loading
+                ? "Signing in..."
+                : "Sign In"}
+            </button>
+          </form>
+
+          {error && (
+            <div className="mt-5 rounded-xl border border-red-900 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+              {error}
+            </div>
+          )}
+
+          <div className="mt-7 border-t border-zinc-800 pt-6 text-center">
+            <p className="text-sm text-zinc-500">
+              New to Suno Zara Universe?
+            </p>
+
+            <Link
+              href="/signup"
+              className="mt-2 inline-block font-semibold text-white hover:text-zinc-300"
+            >
+              Create Account
+            </Link>
+          </div>
+
+          <button
+            type="button"
+            disabled
+            className="mt-6 w-full rounded-xl border border-zinc-800 px-5 py-3 text-zinc-500"
+          >
+            Mobile / WhatsApp
+            <span className="ml-2 text-xs">
+              Coming soon
+            </span>
+          </button>
+        </div>
+
+        <p className="mt-8 text-center text-sm text-zinc-600">
+          Write. Refine. Remember.
+        </p>
+      </div>
+    </main>
+      <PublicFooter />
+    </div>
+  );
+}

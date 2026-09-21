@@ -1,0 +1,22 @@
+{
+  "id": "b97be0d4-298f-4327-bcd9-1ac806567e5c",
+  "userId": "48e182e2-474c-434d-9f1c-c65d2b8d5318",
+  "createdAt": "2026-09-11T17:28:06.555722+00:00",
+  "updatedAt": "2026-09-11T17:37:59.150Z",
+  "status": "hook-selected",
+  "idea": "A nostalgic Bengali love song about meeting someone after many years",
+  "language": "Bengali",
+  "script": "Native",
+  "mood": "Nostalgic",
+  "genre": "Soft Indie",
+  "freedom": 66,
+  "hooks": [
+    "এত বছর পর, একই বৃষ্টির ঘ্রাণে\nতুমি এলে—পুরোনো শহরটা থামল গানে",
+    "তোমার চোখে আজও সেই বিকেলটা রয়\nহারানো দিন ফিরে এসে নীরবে বলে—‘সই’",
+    "স্টেশনের ভিড়ে হঠাৎ তোমার নামের আলো\nবছরগুলো দূরে গেল, হাতটা ধরতেই ভালো"
+  ],
+  "selectedHook": "স্টেশনের ভিড়ে হঠাৎ তোমার নামের আলো\nবছরগুলো দূরে গেল, হাতটা ধরতেই ভালো",
+  "title": null,
+  "lyrics": null,
+  "versions": []
+}
