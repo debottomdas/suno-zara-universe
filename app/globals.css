@@ -72,3 +72,8 @@ button,
 a {
   -webkit-tap-highlight-color: transparent;
 }
+
+/* Universe v2 music workspace */
+.font-serif {
+  font-family: Georgia, "Times New Roman", serif;
+}
