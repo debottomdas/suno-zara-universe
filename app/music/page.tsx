@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import AccountMenu from "@/components/AccountMenu";
 import { createClient } from "@/utils/supabase/client";
 
@@ -40,6 +40,22 @@ type ViewMode = "all" | "creating" | "ready" | "published";
 
 type AssetState = "ready" | "pending";
 
+type AudioHighlight = {
+  startSeconds: number;
+  endSeconds: number;
+  score: number;
+};
+
+type AudioAnalysis = {
+  durationSeconds: number;
+  sampleRate?: number;
+  channels?: number;
+  peakSeconds?: number;
+  estimatedIntroSeconds?: number;
+  highlights: AudioHighlight[];
+  analysedAt?: string;
+};
+
 type MediaAsset = {
   id?: string;
   mediaKind?: string;
@@ -48,6 +64,67 @@ type MediaAsset = {
   sizeBytes?: number | null;
   url?: string | null;
   downloadUrl?: string | null;
+  metadata?: Record<string, any> | null;
+};
+
+type GeneratedFullVideo = {
+  projectId: string;
+  title: string;
+  filename: string;
+  filePath?: string;
+  fileUrl: string;
+  downloadUrl?: string;
+  generatedAt?: string;
+  uploadedAt?: string;
+  durationSeconds?: number;
+  width?: number;
+  height?: number;
+  source?: "generated" | "uploaded";
+  originalFilename?: string;
+  imageCount?: number;
+  sourceVisualCount?: number;
+  sourceClipCount?: number;
+  sceneCount?: number;
+};
+
+type ShortVideo = {
+  projectId: string;
+  title: string;
+  slot: number;
+  filename: string;
+  originalFilename?: string;
+  filePath?: string;
+  fileUrl: string;
+  downloadUrl?: string;
+  source: "generated" | "uploaded";
+  generatedAt?: string;
+  uploadedAt?: string;
+  startSeconds?: number;
+  endSeconds?: number;
+  durationSeconds?: number;
+  width?: number;
+  height?: number;
+  visualCount?: number;
+};
+
+type ShortSlotStatus = {
+  slot: number;
+  generatedVideo: ShortVideo | null;
+  uploadedVideo: ShortVideo | null;
+  approvedVideo: ShortVideo | null;
+  approvedSource: "generated" | "uploaded" | null;
+};
+
+type LocalVisualAsset = {
+  id: string;
+  projectId: string;
+  mediaType: "horizontal-image" | "vertical-image" | "video-clip";
+  format: "landscape" | "vertical";
+  filename: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  addedAt?: string;
+  fileUrl: string;
 };
 
 type PublishingConnection = {
@@ -109,6 +186,126 @@ function classNames(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+function formatDuration(seconds?: number | null) {
+  if (!seconds || !Number.isFinite(seconds) || seconds <= 0) return "";
+  const whole = Math.round(seconds);
+  const minutes = Math.floor(whole / 60);
+  const remainder = whole % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function formatBytes(bytes?: number | null) {
+  if (!bytes || !Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function inferAudioMimeType(file: File) {
+  const known = new Set([
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/mp4",
+    "audio/x-m4a",
+    "audio/aac",
+  ]);
+  if (known.has(file.type)) return file.type;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  if (ext === "mp3") return "audio/mpeg";
+  if (ext === "wav") return "audio/wav";
+  if (ext === "m4a") return "audio/mp4";
+  if (ext === "aac") return "audio/aac";
+  return "";
+}
+
+async function analyseAudioFile(file: File): Promise<AudioAnalysis> {
+  const arrayBuffer = await file.arrayBuffer();
+  const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+  if (!AudioContextClass) throw new Error("This browser cannot analyse audio files.");
+  const context = new AudioContextClass();
+  try {
+    const buffer = await context.decodeAudioData(arrayBuffer.slice(0));
+    const duration = buffer.duration;
+    const sampleRate = buffer.sampleRate;
+    const channels = buffer.numberOfChannels;
+    const channel = buffer.getChannelData(0);
+    const windowSeconds = 0.75;
+    const samplesPerWindow = Math.max(1, Math.floor(sampleRate * windowSeconds));
+    const energies: number[] = [];
+
+    for (let start = 0; start < channel.length; start += samplesPerWindow) {
+      const end = Math.min(channel.length, start + samplesPerWindow);
+      let sum = 0;
+      for (let i = start; i < end; i += 1) {
+        const value = channel[i];
+        sum += value * value;
+      }
+      energies.push(Math.sqrt(sum / Math.max(1, end - start)));
+    }
+
+    const smooth = energies.map((_, index) => {
+      let sum = 0;
+      let count = 0;
+      for (let j = Math.max(0, index - 1); j <= Math.min(energies.length - 1, index + 1); j += 1) {
+        sum += energies[j];
+        count += 1;
+      }
+      return sum / Math.max(1, count);
+    });
+
+    let peakIndex = 0;
+    smooth.forEach((energy, index) => {
+      if (energy > (smooth[peakIndex] || 0)) peakIndex = index;
+    });
+
+    const maxEnergy = Math.max(...smooth, 0.000001);
+    const introThreshold = maxEnergy * 0.28;
+    const introIndex = smooth.findIndex((energy) => energy >= introThreshold);
+    const estimatedIntroSeconds = introIndex >= 0 ? Math.min(20, introIndex * windowSeconds) : 0;
+
+    const clipLength = duration < 90 ? 15 : duration < 180 ? 18 : 22;
+    const stepSeconds = 2.5;
+    const candidates: AudioHighlight[] = [];
+    for (let startSeconds = 0; startSeconds + clipLength <= duration; startSeconds += stepSeconds) {
+      const from = Math.max(0, Math.floor(startSeconds / windowSeconds));
+      const to = Math.min(smooth.length, Math.ceil((startSeconds + clipLength) / windowSeconds));
+      const slice = smooth.slice(from, to);
+      const avg = slice.reduce((a, b) => a + b, 0) / Math.max(1, slice.length);
+      const localPeak = slice.length ? Math.max(...slice) : 0;
+      candidates.push({
+        startSeconds,
+        endSeconds: Math.min(duration, startSeconds + clipLength),
+        score: avg * 0.7 + localPeak * 0.3,
+      });
+    }
+
+    candidates.sort((a, b) => b.score - a.score);
+    const highlights: AudioHighlight[] = [];
+    for (const candidate of candidates) {
+      const centre = (candidate.startSeconds + candidate.endSeconds) / 2;
+      const tooClose = highlights.some((existing) => {
+        const otherCentre = (existing.startSeconds + existing.endSeconds) / 2;
+        return Math.abs(centre - otherCentre) < Math.max(10, clipLength * 0.65);
+      });
+      if (!tooClose) highlights.push(candidate);
+      if (highlights.length >= 6) break;
+    }
+    highlights.sort((a, b) => a.startSeconds - b.startSeconds);
+
+    return {
+      durationSeconds: duration,
+      sampleRate,
+      channels,
+      peakSeconds: peakIndex * windowSeconds,
+      estimatedIntroSeconds,
+      highlights,
+      analysedAt: new Date().toISOString(),
+    };
+  } finally {
+    try { await context.close(); } catch {}
+  }
+}
+
 async function requestJson<T = any>(
   input: RequestInfo | URL,
   init?: RequestInit
@@ -134,6 +331,173 @@ async function optionalJson(input: RequestInfo | URL) {
   } catch {
     return {};
   }
+}
+
+const LOCAL_VIDEO_WORKER = "http://127.0.0.1:47123";
+
+function absoluteBrowserUrl(value?: string | null) {
+  if (!value) return "";
+  try {
+    return new URL(value, window.location.origin).toString();
+  } catch {
+    return value;
+  }
+}
+
+async function workerJson<T = any>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${LOCAL_VIDEO_WORKER}${path}`, init);
+  let data: any = {};
+  try { data = await response.json(); } catch {}
+  if (!response.ok) throw new Error(data.error || `Local video worker failed (${response.status}).`);
+  return data as T;
+}
+
+async function detectVideoFormat(file: File): Promise<"landscape" | "vertical"> {
+  return await new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const finish = (format: "landscape" | "vertical") => {
+      URL.revokeObjectURL(url);
+      resolve(format);
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => finish(video.videoHeight > video.videoWidth ? "vertical" : "landscape");
+    video.onerror = () => finish("landscape");
+    video.src = url;
+  });
+}
+
+async function inspectVideoFile(file: File): Promise<{ durationSeconds: number; width: number; height: number }> {
+  return await new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const cleanup = () => URL.revokeObjectURL(url);
+    video.preload = "metadata";
+    video.onloadedmetadata = () => {
+      const durationSeconds = Number(video.duration);
+      const width = Number(video.videoWidth);
+      const height = Number(video.videoHeight);
+      cleanup();
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || !width || !height) {
+        reject(new Error("Universe could not read this video's duration or dimensions."));
+        return;
+      }
+      resolve({ durationSeconds, width, height });
+    };
+    video.onerror = () => {
+      cleanup();
+      reject(new Error("Universe could not read this video file."));
+    };
+    video.src = url;
+  });
+}
+
+async function uploadOwnFullVideoToWorker({
+  projectId,
+  title,
+  file,
+  durationSeconds,
+  width,
+  height,
+}: {
+  projectId: string;
+  title: string;
+  file: File;
+  durationSeconds: number;
+  width: number;
+  height: number;
+}) {
+  const params = new URLSearchParams({
+    projectId,
+    title,
+    filename: file.name,
+    mimeType: file.type || "video/mp4",
+    sizeBytes: String(file.size),
+    durationSeconds: String(durationSeconds),
+    width: String(width),
+    height: String(height),
+  });
+  const response = await fetch(`${LOCAL_VIDEO_WORKER}/full-video/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  let data: any = {};
+  try { data = await response.json(); } catch {}
+  if (!response.ok || !data?.video) throw new Error(data?.error || `Could not add ${file.name}.`);
+  return data.video as GeneratedFullVideo;
+}
+
+async function uploadOwnShortToWorker({
+  projectId,
+  title,
+  slot,
+  file,
+  durationSeconds,
+  width,
+  height,
+}: {
+  projectId: string;
+  title: string;
+  slot: number;
+  file: File;
+  durationSeconds: number;
+  width: number;
+  height: number;
+}) {
+  const params = new URLSearchParams({
+    projectId,
+    title,
+    slot: String(slot),
+    filename: file.name,
+    mimeType: file.type || "video/mp4",
+    sizeBytes: String(file.size),
+    durationSeconds: String(durationSeconds),
+    width: String(width),
+    height: String(height),
+  });
+  const response = await fetch(`${LOCAL_VIDEO_WORKER}/short/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  let data: any = {};
+  try { data = await response.json(); } catch {}
+  if (!response.ok || !data?.video) throw new Error(data?.error || `Could not add ${file.name}.`);
+  return data.video as ShortVideo;
+}
+
+async function uploadVisualToWorker({
+  projectId,
+  title,
+  file,
+  mediaType,
+  format,
+}: {
+  projectId: string;
+  title: string;
+  file: File;
+  mediaType: "horizontal-image" | "vertical-image" | "video-clip";
+  format: "landscape" | "vertical";
+}) {
+  const params = new URLSearchParams({
+    projectId,
+    title,
+    mediaType,
+    format,
+    filename: file.name,
+    mimeType: file.type || (mediaType === "video-clip" ? "video/mp4" : "image/jpeg"),
+    sizeBytes: String(file.size),
+  });
+  const response = await fetch(`${LOCAL_VIDEO_WORKER}/media/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  let data: any = {};
+  try { data = await response.json(); } catch {}
+  if (!response.ok || !data?.asset) throw new Error(data?.error || `Could not add ${file.name}.`);
+  return data.asset as LocalVisualAsset;
 }
 
 function projectLabel(project: SongProject) {
@@ -221,6 +585,36 @@ export default function MusicUniversePage() {
   const [artworkByProject, setArtworkByProject] = useState<Record<string, string>>({});
   const [finalAudioAsset, setFinalAudioAsset] = useState<MediaAsset | null>(null);
   const [finalAudioLoading, setFinalAudioLoading] = useState(false);
+  const [finalAudioUploading, setFinalAudioUploading] = useState(false);
+  const [finalAudioUploadProgress, setFinalAudioUploadProgress] = useState(0);
+  const [finalAudioError, setFinalAudioError] = useState("");
+  const [audioAnalysis, setAudioAnalysis] = useState<AudioAnalysis | null>(null);
+  const finalAudioInputRef = useRef<HTMLInputElement | null>(null);
+  const [videoWorkerConnected, setVideoWorkerConnected] = useState(false);
+  const [videoWorkerChecking, setVideoWorkerChecking] = useState(false);
+  const [fullVideoGenerating, setFullVideoGenerating] = useState(false);
+  const [fullVideoError, setFullVideoError] = useState("");
+  const [generatedFullVideo, setGeneratedFullVideo] = useState<GeneratedFullVideo | null>(null);
+  const [uploadedFullVideo, setUploadedFullVideo] = useState<GeneratedFullVideo | null>(null);
+  const [approvedFullVideo, setApprovedFullVideo] = useState<GeneratedFullVideo | null>(null);
+  const [ownFullVideoUploading, setOwnFullVideoUploading] = useState(false);
+  const [ownFullVideoError, setOwnFullVideoError] = useState("");
+  const ownFullVideoInputRef = useRef<HTMLInputElement | null>(null);
+  const [shortSlots, setShortSlots] = useState<ShortSlotStatus[]>([]);
+  const [shortsGenerating, setShortsGenerating] = useState(false);
+  const [shortsError, setShortsError] = useState("");
+  const [ownShortUploading, setOwnShortUploading] = useState(false);
+  const [ownShortError, setOwnShortError] = useState("");
+  const [ownShortSlot, setOwnShortSlot] = useState<number | null>(null);
+  const ownShortInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [customVisualAssets, setCustomVisualAssets] = useState<LocalVisualAsset[]>([]);
+  const [customVisualLoading, setCustomVisualLoading] = useState(false);
+  const [customVisualUploading, setCustomVisualUploading] = useState(false);
+  const [customVisualError, setCustomVisualError] = useState("");
+  const horizontalImageInputRef = useRef<HTMLInputElement | null>(null);
+  const verticalImageInputRef = useRef<HTMLInputElement | null>(null);
+  const videoClipInputRef = useRef<HTMLInputElement | null>(null);
   const [connections, setConnections] = useState<PublishingConnection[]>([]);
   const [sunoStyles, setSunoStyles] = useState<SunoStyle[]>([]);
   const [sunoStylesLoading, setSunoStylesLoading] = useState(false);
@@ -340,6 +734,8 @@ export default function MusicUniversePage() {
     async function loadFinalAudio() {
       if (!activeProjectId) {
         setFinalAudioAsset(null);
+        setAudioAnalysis(null);
+        setFinalAudioError("");
         return;
       }
       try {
@@ -347,9 +743,17 @@ export default function MusicUniversePage() {
         const response = await fetch(`/api/media/final-audio?projectId=${encodeURIComponent(activeProjectId)}`, { cache: "no-store" });
         if (!response.ok) throw new Error("Could not load final audio");
         const data = await response.json();
-        if (!cancelled) setFinalAudioAsset(data.asset || null);
+        if (!cancelled) {
+          const asset = data.asset || null;
+          setFinalAudioAsset(asset);
+          setAudioAnalysis((asset?.metadata?.audioAnalysis as AudioAnalysis) || null);
+          setFinalAudioError("");
+        }
       } catch {
-        if (!cancelled) setFinalAudioAsset(null);
+        if (!cancelled) {
+          setFinalAudioAsset(null);
+          setAudioAnalysis(null);
+        }
       } finally {
         if (!cancelled) setFinalAudioLoading(false);
       }
@@ -357,6 +761,97 @@ export default function MusicUniversePage() {
     void loadFinalAudio();
     return () => { cancelled = true; };
   }, [activeProjectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function checkWorker() {
+      try {
+        setVideoWorkerChecking(true);
+        const data = await workerJson<any>("/health");
+        if (!cancelled) setVideoWorkerConnected(Boolean(data?.ok));
+      } catch {
+        if (!cancelled) setVideoWorkerConnected(false);
+      } finally {
+        if (!cancelled) setVideoWorkerChecking(false);
+      }
+    }
+    void checkWorker();
+    const timer = window.setInterval(checkWorker, 12000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFullVideoStatus() {
+      if (!activeProjectId || !videoWorkerConnected) {
+        setGeneratedFullVideo(null);
+        setUploadedFullVideo(null);
+        setApprovedFullVideo(null);
+        return;
+      }
+      try {
+        const data = await workerJson<any>(`/full-video/status?projectId=${encodeURIComponent(activeProjectId)}`);
+        if (!cancelled) {
+          setGeneratedFullVideo(data?.generatedVideo || null);
+          setUploadedFullVideo(data?.uploadedVideo || null);
+          setApprovedFullVideo(data?.approvedVideo || null);
+        }
+      } catch {
+        if (!cancelled) {
+          setGeneratedFullVideo(null);
+          setUploadedFullVideo(null);
+          setApprovedFullVideo(null);
+        }
+      }
+    }
+    void loadFullVideoStatus();
+    return () => { cancelled = true; };
+  }, [activeProjectId, videoWorkerConnected]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadShortsStatus() {
+      if (!activeProjectId || !videoWorkerConnected) {
+        setShortSlots([]);
+        return;
+      }
+      try {
+        const data = await workerJson<any>(`/shorts/status?projectId=${encodeURIComponent(activeProjectId)}`);
+        if (!cancelled) setShortSlots(Array.isArray(data?.slots) ? data.slots : []);
+      } catch {
+        if (!cancelled) setShortSlots([]);
+      }
+    }
+    void loadShortsStatus();
+    return () => { cancelled = true; };
+  }, [activeProjectId, videoWorkerConnected]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadCustomVisuals() {
+      if (!activeProjectId || !videoWorkerConnected) {
+        setCustomVisualAssets([]);
+        return;
+      }
+      try {
+        setCustomVisualLoading(true);
+        const data = await workerJson<any>(`/media/list?projectId=${encodeURIComponent(activeProjectId)}`);
+        if (!cancelled) {
+          setCustomVisualAssets(Array.isArray(data?.assets) ? data.assets : []);
+          setCustomVisualError("");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCustomVisualAssets([]);
+          setCustomVisualError(error instanceof Error ? error.message : "Could not load your added visuals.");
+        }
+      } finally {
+        if (!cancelled) setCustomVisualLoading(false);
+      }
+    }
+    void loadCustomVisuals();
+    return () => { cancelled = true; };
+  }, [activeProjectId, videoWorkerConnected]);
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -603,6 +1098,414 @@ export default function MusicUniversePage() {
       setNewSongError(error instanceof Error ? error.message : "Could not import the lyrics.");
     } finally {
       setNewSongBusy(false);
+    }
+  }
+
+  async function handleFinalAudioSelected(file?: File | null) {
+    if (!file || !activeProjectId) return;
+    const mimeType = inferAudioMimeType(file);
+    if (!mimeType) {
+      setFinalAudioError("Please choose an MP3, WAV, M4A or AAC file.");
+      return;
+    }
+
+    let uploadedStoragePath = "";
+    let uploadedBucket = "song-media";
+
+    try {
+      setFinalAudioUploading(true);
+      setFinalAudioUploadProgress(4);
+      setFinalAudioError("");
+
+      const analysis = await analyseAudioFile(file);
+      setAudioAnalysis(analysis);
+      setFinalAudioUploadProgress(18);
+
+      const prepareData = await requestJson<any>("/api/media/final-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "prepare",
+          projectId: activeProjectId,
+          originalFilename: file.name,
+          mimeType,
+          sizeBytes: file.size,
+        }),
+      });
+
+      const upload = prepareData?.upload;
+      if (!upload?.storagePath || !upload?.token) {
+        throw new Error("Universe did not return secure audio upload details.");
+      }
+      uploadedStoragePath = upload.storagePath;
+      uploadedBucket = upload.bucket || "song-media";
+      setFinalAudioUploadProgress(28);
+
+      const supabase = createClient();
+      const { error: storageError } = await supabase.storage
+        .from(uploadedBucket)
+        .uploadToSignedUrl(uploadedStoragePath, upload.token, file, {
+          contentType: mimeType,
+        });
+      if (storageError) throw new Error(`Audio upload failed: ${storageError.message}`);
+      setFinalAudioUploadProgress(82);
+
+      const registerData = await requestJson<any>("/api/media/final-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "register",
+          projectId: activeProjectId,
+          storagePath: uploadedStoragePath,
+          originalFilename: file.name,
+          mimeType,
+          sizeBytes: file.size,
+          metadata: {
+            audioAnalysis: analysis,
+            source: "universe-release",
+          },
+        }),
+      });
+
+      setFinalAudioAsset(registerData.asset || null);
+      setAudioAnalysis(analysis);
+      setFinalAudioUploadProgress(100);
+      window.setTimeout(() => setFinalAudioUploadProgress(0), 1200);
+    } catch (error) {
+      if (uploadedStoragePath) {
+        try {
+          const supabase = createClient();
+          await supabase.storage.from(uploadedBucket).remove([uploadedStoragePath]);
+        } catch {}
+      }
+      setFinalAudioError(error instanceof Error ? error.message : "Could not add the finished song.");
+    } finally {
+      setFinalAudioUploading(false);
+      if (finalAudioInputRef.current) finalAudioInputRef.current.value = "";
+    }
+  }
+
+  async function handleAddVisualFiles(
+    files: FileList | null,
+    mediaType: "horizontal-image" | "vertical-image" | "video-clip",
+    forcedFormat?: "landscape" | "vertical"
+  ) {
+    if (!files?.length || !activeProjectId || !activeProject || !videoWorkerConnected) return;
+    try {
+      setCustomVisualUploading(true);
+      setCustomVisualError("");
+      const added: LocalVisualAsset[] = [];
+      for (const file of Array.from(files)) {
+        const isVideo = mediaType === "video-clip";
+        if (isVideo && !["video/mp4", "video/quicktime"].includes(file.type)) {
+          throw new Error(`${file.name}: please use MP4 or MOV for video clips.`);
+        }
+        if (!isVideo && !["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+          throw new Error(`${file.name}: please use PNG, JPG or WebP images.`);
+        }
+        const format = forcedFormat || (await detectVideoFormat(file));
+        const asset = await uploadVisualToWorker({
+          projectId: activeProjectId,
+          title: activeProject.title || activeProject.idea || "Suno Zara Song",
+          file,
+          mediaType,
+          format,
+        });
+        added.push(asset);
+      }
+      setCustomVisualAssets((current) => [...current, ...added]);
+    } catch (error) {
+      setCustomVisualError(error instanceof Error ? error.message : "Could not add visual media.");
+    } finally {
+      setCustomVisualUploading(false);
+      if (horizontalImageInputRef.current) horizontalImageInputRef.current.value = "";
+      if (verticalImageInputRef.current) verticalImageInputRef.current.value = "";
+      if (videoClipInputRef.current) videoClipInputRef.current.value = "";
+    }
+  }
+
+  async function handleDeleteCustomVisual(assetId: string) {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    try {
+      setCustomVisualError("");
+      await workerJson("/media/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, assetId }),
+      });
+      setCustomVisualAssets((current) => current.filter((item) => item.id !== assetId));
+    } catch (error) {
+      setCustomVisualError(error instanceof Error ? error.message : "Could not remove visual media.");
+    }
+  }
+
+  async function handleUploadOwnFullVideo(file: File | null) {
+    if (!file || !activeProjectId || !activeProject || !videoWorkerConnected) return;
+    try {
+      setOwnFullVideoUploading(true);
+      setOwnFullVideoError("");
+      if (!new Set(["video/mp4", "video/quicktime"]).has(file.type)) {
+        throw new Error("Please upload an MP4 or MOV full video.");
+      }
+      const inspected = await inspectVideoFile(file);
+      const uploaded = await uploadOwnFullVideoToWorker({
+        projectId: activeProjectId,
+        title: activeProject.title || activeProject.idea || "Suno Zara Song",
+        file,
+        ...inspected,
+      });
+      setUploadedFullVideo(uploaded);
+      const ratio = inspected.width / inspected.height;
+      const durationDelta = audioAnalysis?.durationSeconds
+        ? Math.abs(inspected.durationSeconds - audioAnalysis.durationSeconds)
+        : 0;
+      const warnings = [];
+      if (ratio < 1.5) warnings.push("This replacement is not landscape/16:9. Universe will still keep it, but YouTube may show pillarboxing or crop it.");
+      if (durationDelta > 3) warnings.push(`Its duration differs from the finished song by ${durationDelta.toFixed(1)} seconds.`);
+      setOwnFullVideoError(warnings.join(" "));
+    } catch (error) {
+      setOwnFullVideoError(error instanceof Error ? error.message : "Could not add your full video.");
+    } finally {
+      setOwnFullVideoUploading(false);
+      if (ownFullVideoInputRef.current) ownFullVideoInputRef.current.value = "";
+    }
+  }
+
+  async function handleApproveFullVideo(source: "generated" | "uploaded") {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    try {
+      setOwnFullVideoError("");
+      const data = await workerJson<any>("/full-video/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, source }),
+      });
+      setApprovedFullVideo(data?.approvedVideo || null);
+    } catch (error) {
+      setOwnFullVideoError(error instanceof Error ? error.message : "Could not approve the full video.");
+    }
+  }
+
+  async function handleGenerateFullVideo() {
+    if (!activeProjectId || !activeProject || !finalAudioAsset?.url || !audioAnalysis?.durationSeconds) {
+      setFullVideoError("Add the finished Suno song first.");
+      return;
+    }
+    if (!videoWorkerConnected) {
+      setFullVideoError("The Universe video worker is not running on this Mac.");
+      return;
+    }
+
+    // Full 16:9 videos use landscape media by default. Portrait/vertical assets
+    // are deliberately reserved for Shorts/Reels/TikTok so they do not appear
+    // unexpectedly inside the horizontal master video.
+    const landscapeOnlyVisuals = [
+      ...[...landscapeImages]
+        .sort((a, b) => a.imageNumber - b.imageNumber)
+        .map((image) => ({
+          url: absoluteBrowserUrl(image.url),
+          format: "landscape",
+          mediaType: "image",
+          imageNumber: image.imageNumber,
+          label: `Prepared landscape ${image.imageNumber}`,
+        })),
+      ...customVisualAssets
+        .filter((asset) => asset.format === "landscape")
+        .map((asset, index) => ({
+          url: asset.fileUrl,
+          format: "landscape",
+          mediaType: asset.mediaType === "video-clip" ? "video" : "image",
+          imageNumber: 100 + index,
+          label: asset.filename,
+        })),
+    ].filter((item) => Boolean(item.url));
+
+    const verticalFallbackVisuals = [
+      ...[...verticalImages]
+        .sort((a, b) => a.imageNumber - b.imageNumber)
+        .map((image) => ({
+          url: absoluteBrowserUrl(image.url),
+          format: "vertical",
+          mediaType: "image",
+          imageNumber: image.imageNumber,
+          label: `Prepared vertical ${image.imageNumber}`,
+        })),
+      ...customVisualAssets
+        .filter((asset) => asset.format === "vertical")
+        .map((asset, index) => ({
+          url: asset.fileUrl,
+          format: "vertical",
+          mediaType: asset.mediaType === "video-clip" ? "video" : "image",
+          imageNumber: 200 + index,
+          label: asset.filename,
+        })),
+    ].filter((item) => Boolean(item.url));
+
+    // Use vertical media only as an emergency fallback when the project has no
+    // usable landscape visual at all. Normal projects never mix portrait media
+    // into the full 16:9 render.
+    const visuals = landscapeOnlyVisuals.length ? landscapeOnlyVisuals : verticalFallbackVisuals;
+
+    if (!visuals.length && activeArtwork) {
+      visuals.push({
+        url: absoluteBrowserUrl(activeArtwork),
+        format: "landscape",
+        mediaType: "image",
+        imageNumber: 1,
+        label: "Main artwork",
+      });
+    }
+    if (!visuals.length) {
+      setFullVideoError("Prepare the artwork first so Universe has visuals for the video.");
+      return;
+    }
+
+    try {
+      setFullVideoGenerating(true);
+      setFullVideoError("");
+      const data = await workerJson<any>("/render/full-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: activeProjectId,
+          title: activeProject.title || activeProject.idea || "Suno Zara Song",
+          durationSeconds: audioAnalysis.durationSeconds,
+          audioUrl: absoluteBrowserUrl(finalAudioAsset.url),
+          visuals,
+        }),
+      });
+      setGeneratedFullVideo(data?.video || null);
+    } catch (error) {
+      setFullVideoError(error instanceof Error ? error.message : "Could not generate the full video.");
+    } finally {
+      setFullVideoGenerating(false);
+    }
+  }
+
+  async function handleGenerateShorts() {
+    if (!activeProjectId || !activeProject || !finalAudioAsset?.url || !audioAnalysis?.durationSeconds) {
+      setShortsError("Add the finished Suno song first.");
+      return;
+    }
+    if (!videoWorkerConnected) {
+      setShortsError("The Universe video worker is not running on this Mac.");
+      return;
+    }
+    const verticalVisuals = [
+      ...[...verticalImages]
+        .sort((a, b) => a.imageNumber - b.imageNumber)
+        .map((image) => ({
+          url: absoluteBrowserUrl(image.url),
+          format: "vertical",
+          mediaType: "image",
+          imageNumber: image.imageNumber,
+          label: `Prepared vertical ${image.imageNumber}`,
+        })),
+      ...customVisualAssets
+        .filter((asset) => asset.format === "vertical")
+        .map((asset, index) => ({
+          url: asset.fileUrl,
+          format: "vertical",
+          mediaType: asset.mediaType === "video-clip" ? "video" : "image",
+          imageNumber: 200 + index,
+          label: asset.filename,
+        })),
+    ].filter((item) => Boolean(item.url));
+
+    const landscapeFallback = [
+      ...[...landscapeImages]
+        .sort((a, b) => a.imageNumber - b.imageNumber)
+        .map((image) => ({
+          url: absoluteBrowserUrl(image.url),
+          format: "landscape",
+          mediaType: "image",
+          imageNumber: image.imageNumber,
+          label: `Prepared landscape ${image.imageNumber}`,
+        })),
+      ...customVisualAssets
+        .filter((asset) => asset.format === "landscape")
+        .map((asset, index) => ({
+          url: asset.fileUrl,
+          format: "landscape",
+          mediaType: asset.mediaType === "video-clip" ? "video" : "image",
+          imageNumber: 100 + index,
+          label: asset.filename,
+        })),
+    ].filter((item) => Boolean(item.url));
+
+    const visuals = verticalVisuals.length ? verticalVisuals : landscapeFallback;
+    if (!visuals.length) {
+      setShortsError("Prepare or add vertical visuals first so Universe can build the Shorts.");
+      return;
+    }
+
+    try {
+      setShortsGenerating(true);
+      setShortsError("");
+      const data = await workerJson<any>("/render/shorts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: activeProjectId,
+          title: activeProject.title || activeProject.idea || "Suno Zara Song",
+          durationSeconds: audioAnalysis.durationSeconds,
+          audioUrl: absoluteBrowserUrl(finalAudioAsset.url),
+          highlights: audioAnalysis.highlights || [],
+          visuals,
+        }),
+      });
+      setShortSlots(Array.isArray(data?.slots) ? data.slots : []);
+    } catch (error) {
+      setShortsError(error instanceof Error ? error.message : "Could not generate the Shorts.");
+    } finally {
+      setShortsGenerating(false);
+    }
+  }
+
+  async function handleUploadOwnShort(file: File | null) {
+    const slot = ownShortSlot;
+    if (!file || !slot || !activeProjectId || !activeProject || !videoWorkerConnected) return;
+    try {
+      setOwnShortUploading(true);
+      setOwnShortError("");
+      if (!["video/mp4", "video/quicktime"].includes(file.type)) throw new Error("Please upload an MP4 or MOV Short.");
+      const inspected = await inspectVideoFile(file);
+      const uploaded = await uploadOwnShortToWorker({
+        projectId: activeProjectId,
+        title: activeProject.title || activeProject.idea || "Suno Zara Song",
+        slot,
+        file,
+        ...inspected,
+      });
+      setShortSlots((current) => {
+        const base = current.length ? [...current] : Array.from({ length: 6 }, (_, index) => ({ slot: index + 1, generatedVideo: null, uploadedVideo: null, approvedVideo: null, approvedSource: null } as ShortSlotStatus));
+        const index = base.findIndex((item) => item.slot === slot);
+        if (index >= 0) base[index] = { ...base[index], uploadedVideo: uploaded };
+        return base;
+      });
+      const ratio = inspected.width / inspected.height;
+      if (ratio > 0.75) setOwnShortError(`Short ${slot} was added, but it is not strongly vertical/9:16. Universe will still keep it.`);
+    } catch (error) {
+      setOwnShortError(error instanceof Error ? error.message : "Could not add your Short.");
+    } finally {
+      setOwnShortUploading(false);
+      setOwnShortSlot(null);
+      if (ownShortInputRef.current) ownShortInputRef.current.value = "";
+    }
+  }
+
+  async function handleApproveShort(slot: number, source: "generated" | "uploaded") {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    try {
+      setOwnShortError("");
+      const data = await workerJson<any>("/short/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, slot, source }),
+      });
+      setShortSlots((current) => current.map((item) => item.slot === slot ? { ...item, approvedSource: source, approvedVideo: data?.approvedVideo || null } : item));
+    } catch (error) {
+      setOwnShortError(error instanceof Error ? error.message : `Could not approve Short ${slot}.`);
     }
   }
 
@@ -1538,7 +2441,14 @@ export default function MusicUniversePage() {
                               <p className="mt-1 text-[10px] text-zinc-500">{finalAudioAsset.storageProvider === "local" ? "Saved on this Mac" : "Saved in Universe"}</p>
                             </div>
                           </div>
-                          <Link href="/music/legacy" className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-center text-[10px] font-bold text-zinc-300">Replace</Link>
+                          <button
+                            type="button"
+                            disabled={finalAudioUploading}
+                            onClick={() => finalAudioInputRef.current?.click()}
+                            className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-center text-[10px] font-bold text-zinc-300 disabled:opacity-50"
+                          >
+                            Replace
+                          </button>
                         </div>
                         {finalAudioAsset.url && <audio controls className="w-full border-t border-white/[0.06] bg-black/10 px-3 py-2" src={finalAudioAsset.url} />}
                       </div>
@@ -1547,48 +2457,301 @@ export default function MusicUniversePage() {
                         <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full border border-cyan-100/20 bg-cyan-200/[0.05] text-lg">⇧</div>
                         <p className="mt-4 text-base font-black">Waiting for your finished Suno song</p>
                         <p className="mx-auto mt-2 max-w-sm text-xs leading-5 text-zinc-500">Upload it now, or later let the Universe Mac worker detect the file automatically from your project folder.</p>
-                        <Link href="/music/legacy" className="mt-5 inline-flex rounded-xl bg-white px-4 py-2.5 text-xs font-black text-[#102332]">Choose Finished Song</Link>
+                        <button
+                          type="button"
+                          disabled={finalAudioUploading}
+                          onClick={() => finalAudioInputRef.current?.click()}
+                          className="mt-5 inline-flex rounded-xl bg-white px-4 py-2.5 text-xs font-black text-[#102332] disabled:opacity-50"
+                        >
+                          {finalAudioUploading ? "Adding Finished Song…" : "Choose Finished Song"}
+                        </button>
                         <p className="mt-3 text-[10px] text-zinc-600">MP3 • WAV • M4A • AAC</p>
+                      </div>
+                    )}
+
+                    <input
+                      ref={finalAudioInputRef}
+                      type="file"
+                      accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/x-m4a,audio/aac,.mp3,.wav,.m4a,.aac"
+                      className="hidden"
+                      onChange={(event) => void handleFinalAudioSelected(event.target.files?.[0])}
+                    />
+
+                    {finalAudioUploading && (
+                      <div className="mt-4">
+                        <div className="flex items-center justify-between text-[10px] font-bold text-cyan-100">
+                          <span>{finalAudioUploadProgress < 20 ? "Analysing audio…" : finalAudioUploadProgress < 82 ? "Uploading finished song…" : "Saving analysis…"}</span>
+                          <span>{finalAudioUploadProgress}%</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
+                          <div className="h-full rounded-full bg-gradient-to-r from-cyan-300 to-fuchsia-400 transition-all" style={{ width: `${finalAudioUploadProgress}%` }} />
+                        </div>
+                      </div>
+                    )}
+
+                    {finalAudioError && (
+                      <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{finalAudioError}</p>
+                    )}
+
+                    {finalAudioAsset && audioAnalysis && (
+                      <div className="mt-4 rounded-2xl border border-cyan-200/10 bg-black/10 p-3">
+                        <div className="flex flex-wrap items-center gap-2 text-[10px]">
+                          <span className="rounded-full bg-cyan-300/10 px-2 py-1 font-bold text-cyan-100">Duration {formatDuration(audioAnalysis.durationSeconds)}</span>
+                          {audioAnalysis.estimatedIntroSeconds !== undefined && (
+                            <span className="rounded-full bg-white/[0.05] px-2 py-1 text-zinc-400">Intro ≈ {audioAnalysis.estimatedIntroSeconds.toFixed(1)}s</span>
+                          )}
+                          {audioAnalysis.peakSeconds !== undefined && (
+                            <span className="rounded-full bg-white/[0.05] px-2 py-1 text-zinc-400">Peak ≈ {formatDuration(audioAnalysis.peakSeconds)}</span>
+                          )}
+                          {finalAudioAsset.sizeBytes ? (
+                            <span className="rounded-full bg-white/[0.05] px-2 py-1 text-zinc-500">{formatBytes(finalAudioAsset.sizeBytes)}</span>
+                          ) : null}
+                        </div>
+                        <div className="mt-3">
+                          <p className="text-[10px] font-black uppercase tracking-[0.16em] text-zinc-500">Candidate short-video windows</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {audioAnalysis.highlights.slice(0, 6).map((highlight, index) => (
+                              <span key={`${highlight.startSeconds}-${index}`} className="rounded-lg border border-white/[0.06] bg-white/[0.035] px-2 py-1 text-[10px] text-zinc-300">
+                                S{index + 1} {formatDuration(highlight.startSeconds)}–{formatDuration(highlight.endSeconds)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
 
                   {finalAudioAsset ? (
                     <>
+                      <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4 sm:p-5">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-black">Add Your Own Visuals</p>
+                            <p className="mt-1 text-xs leading-5 text-zinc-500">Add horizontal and vertical images plus real MP4/MOV clips. Universe now routes them automatically by format.</p>
+                          </div>
+                          <span className="rounded-full border border-white/10 bg-black/15 px-2.5 py-1 text-[9px] font-bold text-zinc-300">{customVisualAssets.length} added</span>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                          <button disabled={!videoWorkerConnected || customVisualUploading} onClick={() => horizontalImageInputRef.current?.click()} className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-3 text-left text-[11px] font-black text-zinc-100 hover:bg-white/[0.07] disabled:opacity-40">＋ Horizontal Images <span className="mt-1 block text-[9px] font-medium text-zinc-500">16:9 / landscape</span></button>
+                          <button disabled={!videoWorkerConnected || customVisualUploading} onClick={() => verticalImageInputRef.current?.click()} className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-3 text-left text-[11px] font-black text-zinc-100 hover:bg-white/[0.07] disabled:opacity-40">＋ Vertical Images <span className="mt-1 block text-[9px] font-medium text-zinc-500">9:16 / portrait</span></button>
+                          <button disabled={!videoWorkerConnected || customVisualUploading} onClick={() => videoClipInputRef.current?.click()} className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-3 text-left text-[11px] font-black text-zinc-100 hover:bg-white/[0.07] disabled:opacity-40">＋ Video Clips <span className="mt-1 block text-[9px] font-medium text-zinc-500">MP4 / MOV • auto orientation</span></button>
+                        </div>
+
+                        <input ref={horizontalImageInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" className="hidden" onChange={(event) => void handleAddVisualFiles(event.target.files, "horizontal-image", "landscape")} />
+                        <input ref={verticalImageInputRef} type="file" multiple accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp" className="hidden" onChange={(event) => void handleAddVisualFiles(event.target.files, "vertical-image", "vertical")} />
+                        <input ref={videoClipInputRef} type="file" multiple accept="video/mp4,video/quicktime,.mp4,.mov" className="hidden" onChange={(event) => void handleAddVisualFiles(event.target.files, "video-clip")} />
+
+                        {(customVisualUploading || customVisualLoading) && <p className="mt-3 text-[10px] font-bold text-cyan-100">{customVisualUploading ? "Adding media to your local Universe folder…" : "Loading your visual media…"}</p>}
+                        {customVisualError && <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{customVisualError}</p>}
+
+                        {customVisualAssets.length > 0 && (
+                          <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-5">
+                            {customVisualAssets.map((asset) => (
+                              <div key={asset.id} className="group relative overflow-hidden rounded-xl border border-white/[0.08] bg-black/20">
+                                <div className={classNames("relative overflow-hidden bg-[#09131b]", asset.format === "vertical" ? "aspect-[9/14]" : "aspect-video")}>
+                                  {asset.mediaType === "video-clip" ? (
+                                    <video src={asset.fileUrl} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-cover" />
+                                  ) : (
+                                    <img src={asset.fileUrl} alt="" className="absolute inset-0 h-full w-full object-cover" />
+                                  )}
+                                  <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent px-2 pb-2 pt-6">
+                                    <p className="truncate text-[8px] font-bold text-white">{asset.filename}</p>
+                                    <p className="mt-0.5 text-[7px] uppercase tracking-wide text-white/55">{asset.mediaType === "video-clip" ? `Video • ${asset.format}` : asset.format}</p>
+                                  </div>
+                                </div>
+                                <button onClick={() => void handleDeleteCustomVisual(asset.id)} className="absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/70 text-[10px] font-black text-white opacity-0 transition group-hover:opacity-100" title="Remove">×</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-3 grid gap-1 text-[9px] leading-4 text-zinc-500 sm:grid-cols-2">
+                          <p><span className="font-black text-cyan-100">16:9 landscape</span> → used for the full YouTube video.</p>
+                          <p><span className="font-black text-fuchsia-100">9:16 vertical</span> → reserved for Shorts / Reels / TikTok.</p>
+                        </div>
+                        <p className="mt-2 text-[9px] leading-4 text-zinc-600">Files stay on your Mac under Suno Zara Universe/Music/&lt;song&gt;/Assets. Vertical media is no longer mixed into the full video unless no landscape visual exists at all.</p>
+                      </div>
+
                       <div className="mt-3 rounded-[22px] border border-fuchsia-300/15 bg-[linear-gradient(135deg,rgba(255,210,139,.08),rgba(218,84,216,.06))] p-4 sm:p-5">
                         <div className="flex items-center justify-between gap-4">
                           <div>
                             <p className="text-sm font-black">Create Release Videos</p>
-                            <p className="mt-1 text-xs leading-5 text-zinc-400">Universe will create 1 full 16:9 video and 6 different vertical shorts from your song and prepared visual assets.</p>
+                            <p className="mt-1 text-xs leading-5 text-zinc-400">Full video uses landscape visuals/clips. Vertical assets are kept for the 6 Shorts, Reels and TikTok edits.</p>
                           </div>
                           <span className="rounded-full border border-fuchsia-200/15 bg-fuchsia-200/[0.06] px-2.5 py-1 text-[9px] font-bold text-fuchsia-100">1 + 6</span>
                         </div>
-                        <button className="mt-4 w-full rounded-2xl bg-gradient-to-r from-[#ffd68f] via-[#ff8d8d] to-[#d357db] px-4 py-4 text-sm font-black text-[#26171f] shadow-[0_14px_36px_-18px_rgba(239,88,183,.8)]">✦ Generate Full Video + 6 Shorts</button>
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
+                          <div className="flex items-center gap-2 text-[10px]">
+                            <span className={classNames("h-2 w-2 rounded-full", videoWorkerConnected ? "bg-emerald-300" : "bg-amber-300")} />
+                            <span className={videoWorkerConnected ? "text-emerald-200" : "text-amber-100"}>
+                              {videoWorkerChecking ? "Checking local video worker…" : videoWorkerConnected ? "Universe video worker connected" : "Local video worker not running"}
+                            </span>
+                          </div>
+                          {!videoWorkerConnected && <span className="text-[9px] text-zinc-500">Run: npm run universe-worker</span>}
+                        </div>
+                        <button
+                          disabled={fullVideoGenerating || !videoWorkerConnected}
+                          onClick={() => void handleGenerateFullVideo()}
+                          className="mt-3 w-full rounded-2xl bg-gradient-to-r from-[#ffd68f] via-[#ff8d8d] to-[#d357db] px-4 py-4 text-sm font-black text-[#26171f] shadow-[0_14px_36px_-18px_rgba(239,88,183,.8)] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {fullVideoGenerating ? "✦ Rendering full 16:9 video…" : generatedFullVideo ? "✦ Regenerate Full 16:9 Video" : "✦ Generate Full 16:9 Video"}
+                        </button>
+                        {fullVideoError && <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{fullVideoError}</p>}
+                        <input
+                          ref={ownFullVideoInputRef}
+                          type="file"
+                          accept="video/mp4,video/quicktime,.mp4,.mov"
+                          className="hidden"
+                          onChange={(event) => void handleUploadOwnFullVideo(event.target.files?.[0] || null)}
+                        />
+                        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                          {generatedFullVideo && (
+                            <div className={classNames("overflow-hidden rounded-2xl border bg-black/20", approvedFullVideo?.source === "generated" ? "border-emerald-300/35" : "border-emerald-300/15")}>
+                              <video controls preload="metadata" className="aspect-video w-full bg-black" src={generatedFullVideo.fileUrl} />
+                              <div className="px-3 py-3">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <p className="text-[11px] font-black text-emerald-100">Universe generated video</p>
+                                    <p className="mt-0.5 max-w-[320px] truncate text-[9px] text-zinc-500">{generatedFullVideo.filename}</p>
+                                  </div>
+                                  {approvedFullVideo?.source === "generated" && <span className="rounded-full bg-emerald-300 px-2 py-1 text-[8px] font-black text-emerald-950">APPROVED</span>}
+                                </div>
+                                {(generatedFullVideo.sourceVisualCount || generatedFullVideo.sceneCount) && (
+                                  <p className="mt-1 text-[9px] text-zinc-500">
+                                    {generatedFullVideo.sourceVisualCount ? `${generatedFullVideo.sourceVisualCount} prepared visuals` : "Prepared visuals"}
+                                    {generatedFullVideo.sourceClipCount ? ` • ${generatedFullVideo.sourceClipCount} real clips` : ""}
+                                    {generatedFullVideo.sceneCount ? ` • ${generatedFullVideo.sceneCount} timed scenes` : ""}
+                                  </p>
+                                )}
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button onClick={() => void handleApproveFullVideo("generated")} className="rounded-lg bg-emerald-300 px-3 py-2 text-[10px] font-black text-emerald-950">Use for Publishing</button>
+                                  {generatedFullVideo.downloadUrl && <a href={generatedFullVideo.downloadUrl} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-bold text-zinc-200">Save a copy</a>}
+                                </div>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className={classNames("overflow-hidden rounded-2xl border bg-black/20", approvedFullVideo?.source === "uploaded" ? "border-fuchsia-300/35" : "border-white/[0.08]")}>
+                            {uploadedFullVideo ? (
+                              <>
+                                <video controls preload="metadata" className="aspect-video w-full bg-black" src={uploadedFullVideo.fileUrl} />
+                                <div className="px-3 py-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <p className="text-[11px] font-black text-fuchsia-100">Your full video</p>
+                                      <p className="mt-0.5 max-w-[320px] truncate text-[9px] text-zinc-500">{uploadedFullVideo.originalFilename || uploadedFullVideo.filename}</p>
+                                      {(uploadedFullVideo.width && uploadedFullVideo.height) ? <p className="mt-1 text-[9px] text-zinc-500">{uploadedFullVideo.width}×{uploadedFullVideo.height}{uploadedFullVideo.durationSeconds ? ` • ${formatDuration(uploadedFullVideo.durationSeconds)}` : ""}</p> : null}
+                                    </div>
+                                    {approvedFullVideo?.source === "uploaded" && <span className="rounded-full bg-fuchsia-200 px-2 py-1 text-[8px] font-black text-fuchsia-950">APPROVED</span>}
+                                  </div>
+                                  <div className="mt-3 flex flex-wrap gap-2">
+                                    <button onClick={() => void handleApproveFullVideo("uploaded")} className="rounded-lg bg-fuchsia-200 px-3 py-2 text-[10px] font-black text-fuchsia-950">Use My Video</button>
+                                    <button onClick={() => ownFullVideoInputRef.current?.click()} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-bold text-zinc-200">Replace</button>
+                                    {uploadedFullVideo.downloadUrl && <a href={uploadedFullVideo.downloadUrl} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-[10px] font-bold text-zinc-200">Save a copy</a>}
+                                  </div>
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex min-h-[190px] flex-col items-center justify-center px-5 py-6 text-center">
+                                <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-fuchsia-200/15 bg-fuchsia-200/[0.06] text-xl">⇧</div>
+                                <p className="mt-3 text-[11px] font-black text-zinc-100">Prefer your own finished video?</p>
+                                <p className="mt-1 max-w-[300px] text-[9px] leading-4 text-zinc-500">Upload an MP4 or MOV. Universe keeps its generated version as an alternative and uses whichever one you approve for publishing.</p>
+                                <button disabled={!videoWorkerConnected || ownFullVideoUploading} onClick={() => ownFullVideoInputRef.current?.click()} className="mt-4 rounded-xl border border-fuchsia-200/20 bg-fuchsia-200/[0.08] px-4 py-2.5 text-[10px] font-black text-fuchsia-100 disabled:opacity-40">{ownFullVideoUploading ? "Uploading your video…" : "Upload My Own Full Video"}</button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {ownFullVideoError && <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-amber-100">{ownFullVideoError}</p>}
+                        {approvedFullVideo && (
+                          <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2.5">
+                            <div>
+                              <p className="text-[10px] font-black text-cyan-100">Final full video selected ✓</p>
+                              <p className="mt-0.5 text-[9px] text-zinc-500">{approvedFullVideo.source === "uploaded" ? "Your uploaded video will be used for publishing." : "The Universe-generated video will be used for publishing."}</p>
+                            </div>
+                            <span className="rounded-full border border-cyan-200/15 px-2 py-1 text-[8px] font-black uppercase tracking-wider text-cyan-100">{approvedFullVideo.source}</span>
+                          </div>
+                        )}
                       </div>
 
                       <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4">
-                        <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-wrap items-center justify-between gap-4">
                           <div>
-                            <p className="text-sm font-black">Review • Edit • Approve</p>
-                            <p className="mt-1 text-xs text-zinc-500">Preview everything. Change only what you want. Nothing publishes until you approve it.</p>
+                            <p className="text-sm font-black">6 Vertical Shorts</p>
+                            <p className="mt-1 text-xs text-zinc-500">Universe uses the strongest detected song windows and your vertical visuals. Replace any Short with your own edit if you prefer.</p>
                           </div>
-                          <span className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10">▶</span>
+                          <button
+                            disabled={shortsGenerating || !videoWorkerConnected || !finalAudioAsset}
+                            onClick={() => void handleGenerateShorts()}
+                            className="rounded-xl bg-gradient-to-r from-[#6ee7d8] via-[#76d5ff] to-[#b58cff] px-4 py-2.5 text-[10px] font-black text-[#071a22] shadow-[0_12px_28px_-16px_rgba(118,213,255,.9)] disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {shortsGenerating ? "✦ Creating 6 Shorts…" : shortSlots.some((item) => item.generatedVideo) ? "✦ Regenerate 6 Shorts" : "✦ Generate 6 Shorts"}
+                          </button>
                         </div>
-                        <div className="mt-4 grid grid-cols-4 gap-2 sm:grid-cols-7">
-                          {["Full", "S1", "S2", "S3", "S4", "S5", "S6"].map((item, index) => (
-                            <button key={item} className="group overflow-hidden rounded-xl border border-white/[0.08] bg-black/15 text-left">
-                              <div className="relative aspect-[9/10] overflow-hidden bg-gradient-to-br from-[#1a3341] to-[#08141f]">
-                                {activeArtwork ? <img src={activeArtwork} alt="" className="absolute inset-0 h-full w-full object-cover opacity-55 transition group-hover:scale-105" /> : null}
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-                                <span className="absolute inset-0 flex items-center justify-center text-sm text-white/90">▶</span>
+                        {shortsError && <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{shortsError}</p>}
+                        {ownShortError && <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-amber-100">{ownShortError}</p>}
+                        <input
+                          ref={ownShortInputRef}
+                          type="file"
+                          accept="video/mp4,video/quicktime,.mp4,.mov"
+                          className="hidden"
+                          onChange={(event) => void handleUploadOwnShort(event.target.files?.[0] || null)}
+                        />
+                        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                          {Array.from({ length: 6 }, (_, index) => {
+                            const slot = index + 1;
+                            const status = shortSlots.find((item) => item.slot === slot);
+                            const generated = status?.generatedVideo || null;
+                            const uploaded = status?.uploadedVideo || null;
+                            const approved = status?.approvedVideo || null;
+                            const primary = approved || uploaded || generated;
+                            return (
+                              <div key={slot} className={classNames("overflow-hidden rounded-2xl border bg-black/20", approved ? "border-emerald-300/30" : "border-white/[0.08]")}>
+                                {primary ? (
+                                  <video controls preload="metadata" className="aspect-[9/16] w-full bg-black object-contain" src={primary.fileUrl} />
+                                ) : (
+                                  <div className="flex aspect-[9/16] items-center justify-center bg-gradient-to-br from-[#183747] to-[#07131d]">
+                                    <div className="text-center">
+                                      <p className="text-xl text-white/65">▶</p>
+                                      <p className="mt-2 text-[10px] font-bold text-zinc-500">Short {slot}</p>
+                                    </div>
+                                  </div>
+                                )}
+                                <div className="p-3">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div>
+                                      <p className="text-[11px] font-black text-zinc-100">Short {slot}</p>
+                                      {generated?.startSeconds != null && generated?.endSeconds != null ? (
+                                        <p className="mt-0.5 text-[9px] text-zinc-500">{formatDuration(generated.startSeconds)}–{formatDuration(generated.endSeconds)} • 9:16</p>
+                                      ) : <p className="mt-0.5 text-[9px] text-zinc-500">9:16 vertical release</p>}
+                                    </div>
+                                    {approved && <span className="rounded-full bg-emerald-300 px-2 py-1 text-[8px] font-black text-emerald-950">APPROVED</span>}
+                                  </div>
+                                  <div className="mt-3 flex flex-wrap gap-1.5">
+                                    {generated && <button onClick={() => void handleApproveShort(slot, "generated")} className="rounded-lg bg-emerald-300/90 px-2.5 py-2 text-[9px] font-black text-emerald-950">Use Generated</button>}
+                                    {uploaded && <button onClick={() => void handleApproveShort(slot, "uploaded")} className="rounded-lg bg-fuchsia-200 px-2.5 py-2 text-[9px] font-black text-fuchsia-950">Use Mine</button>}
+                                    <button
+                                      disabled={ownShortUploading}
+                                      onClick={() => { setOwnShortSlot(slot); window.setTimeout(() => ownShortInputRef.current?.click(), 0); }}
+                                      className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-[9px] font-bold text-zinc-200 disabled:opacity-40"
+                                    >
+                                      {uploaded ? "Replace Mine" : "Upload Mine"}
+                                    </button>
+                                    {primary?.downloadUrl && <a href={primary.downloadUrl} className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-[9px] font-bold text-zinc-200">Save</a>}
+                                  </div>
+                                  {generated && uploaded && (
+                                    <p className="mt-2 text-[8px] leading-4 text-zinc-600">Both versions are kept. The approved version is the one Universe will publish.</p>
+                                  )}
+                                </div>
                               </div>
-                              <div className="px-2 py-2">
-                                <p className="text-[10px] font-bold">{item === "Full" ? "Full Video" : `Short ${index}`}</p>
-                                <p className="mt-0.5 text-[9px] text-zinc-600">Ready after generation</p>
-                              </div>
-                            </button>
-                          ))}
+                            );
+                          })}
                         </div>
+                        {shortSlots.length > 0 && (
+                          <div className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2.5">
+                            <p className="text-[10px] font-black text-cyan-100">{shortSlots.filter((item) => item.approvedVideo).length}/6 Shorts approved for publishing</p>
+                            <p className="mt-0.5 text-[9px] text-zinc-500">You can approve the generated edits now and replace any individual Short later.</p>
+                          </div>
+                        )}
                       </div>
 
                       <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4">
