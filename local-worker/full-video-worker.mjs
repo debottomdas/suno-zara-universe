@@ -967,12 +967,198 @@ async function approveShort(projectId, slot, source) {
   return await publicShort(projectId, item, source);
 }
 
+
+async function resolveApprovedPublishingItem(projectId, kind, slot = 1) {
+  const manifest = await loadManifest();
+  const project = manifest.projects?.[projectId];
+  if (!project) throw new Error("Song project not found in the local worker.");
+
+  if (kind === "full") {
+    const source = project.approvedFullVideoSource === "uploaded" ? "uploaded" : project.approvedFullVideoSource === "generated" ? "generated" : null;
+    if (!source) throw new Error("Approve the full video before publishing.");
+    const item = source === "uploaded" ? project.uploadedFullVideo : legacyGeneratedItem(project);
+    if (!item?.filePath) throw new Error("Approved full video is missing from the local folder.");
+    return { item, source, itemKey: "youtube-full" };
+  }
+
+  const shortSlot = Math.max(1, Math.min(6, Number(slot || 1)));
+  const source = project.approvedShortSources?.[String(shortSlot)] === "uploaded" ? "uploaded" : project.approvedShortSources?.[String(shortSlot)] === "generated" ? "generated" : null;
+  if (!source) throw new Error(`Approve Short ${shortSlot} before publishing.`);
+  const item = source === "uploaded" ? project.uploadedShorts?.[String(shortSlot)] : activeGeneratedShort(project, shortSlot);
+  if (!item?.filePath) throw new Error(`Approved Short ${shortSlot} is missing from the local folder.`);
+  return { item, source, itemKey: `youtube-short-${String(shortSlot).padStart(2, "0")}` };
+}
+
+async function publishingFileInfo(projectId, kind, slot = 1) {
+  const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
+  const info = await stat(resolved.item.filePath);
+  const ext = path.extname(resolved.item.filePath).toLowerCase();
+  const mimeType = ext === ".mov" ? "video/quicktime" : "video/mp4";
+  return {
+    projectId,
+    kind,
+    slot: kind === "short" ? Number(slot) : 1,
+    itemKey: resolved.itemKey,
+    source: resolved.source,
+    filename: resolved.item.originalFilename || resolved.item.filename || path.basename(resolved.item.filePath),
+    sizeBytes: info.size,
+    mimeType,
+  };
+}
+
+async function storePublishingReceipt(projectId, receipt) {
+  const manifest = await loadManifest();
+  manifest.projects ||= {};
+  const existing = manifest.projects[projectId] || { projectId };
+  const publishingReceipts = existing.publishingReceipts && typeof existing.publishingReceipts === "object" ? existing.publishingReceipts : {};
+  const youtube = publishingReceipts.youtube && typeof publishingReceipts.youtube === "object" ? publishingReceipts.youtube : {};
+  youtube[receipt.itemKey] = receipt;
+  publishingReceipts.youtube = youtube;
+  manifest.projects[projectId] = { ...existing, publishingReceipts };
+  await saveManifest(manifest);
+}
+
+async function storeBufferReceipt(projectId, receipt) {
+  const manifest = await loadManifest();
+  manifest.projects ||= {};
+  const existing = manifest.projects[projectId] || { projectId };
+  const publishingReceipts = existing.publishingReceipts && typeof existing.publishingReceipts === "object" ? existing.publishingReceipts : {};
+  const buffer = publishingReceipts.buffer && typeof publishingReceipts.buffer === "object" ? publishingReceipts.buffer : {};
+  buffer[receipt.itemKey] = receipt;
+  publishingReceipts.buffer = buffer;
+  manifest.projects[projectId] = { ...existing, publishingReceipts };
+  await saveManifest(manifest);
+}
+
+async function publishingStatus(projectId) {
+  const manifest = await loadManifest();
+  const youtube = manifest.projects?.[projectId]?.publishingReceipts?.youtube || {};
+  const buffer = manifest.projects?.[projectId]?.publishingReceipts?.buffer || {};
+  const youtubeItems = Object.values(youtube).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
+  const bufferItems = Object.values(buffer).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
+  return { youtube: youtubeItems, buffer: bufferItems };
+}
+
+async function stageApprovedShortForBuffer(body) {
+  const projectId = String(body.projectId || "").trim();
+  const slot = Math.max(1, Math.min(6, Number(body.slot || 1)));
+  const signedUploadUrl = String(body.signedUploadUrl || "").trim();
+  if (!projectId || !signedUploadUrl) throw new Error("Buffer staging details are incomplete.");
+
+  const resolved = await resolveApprovedPublishingItem(projectId, "short", slot);
+  const info = await stat(resolved.item.filePath);
+  const ext = path.extname(resolved.item.filePath).toLowerCase();
+  const mimeType = ext === ".mov" ? "video/quicktime" : "video/mp4";
+
+  const response = await fetch(signedUploadUrl, {
+    method: "PUT",
+    headers: {
+      "content-type": mimeType,
+      "content-length": String(info.size),
+    },
+    body: createReadStream(resolved.item.filePath),
+    duplex: "half",
+  });
+  const text = await response.text().catch(() => "");
+  if (!response.ok) throw new Error(`Temporary Buffer staging upload failed (HTTP ${response.status})${text ? `: ${text.slice(0, 300)}` : "."}`);
+
+  return {
+    ok: true,
+    projectId,
+    slot,
+    filename: resolved.item.originalFilename || resolved.item.filename || path.basename(resolved.item.filePath),
+    mimeType,
+    sizeBytes: info.size,
+    source: resolved.source,
+  };
+}
+
+async function publishApprovedVideoToYouTube(body) {
+  const projectId = String(body.projectId || "").trim();
+  const kind = String(body.kind || "") === "short" ? "short" : "full";
+  const slot = Math.max(1, Math.min(6, Number(body.slot || 1)));
+  const uploadUrl = String(body.uploadUrl || "").trim();
+  const accessToken = String(body.accessToken || "").trim();
+  if (!projectId || !uploadUrl || !accessToken) throw new Error("YouTube upload session details are incomplete.");
+
+  const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
+  const info = await stat(resolved.item.filePath);
+  const ext = path.extname(resolved.item.filePath).toLowerCase();
+  const mimeType = ext === ".mov" ? "video/quicktime" : "video/mp4";
+
+  const response = await fetch(uploadUrl, {
+    method: "PUT",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": mimeType,
+      "content-length": String(info.size),
+      "content-range": `bytes 0-${info.size - 1}/${info.size}`,
+    },
+    body: createReadStream(resolved.item.filePath),
+    duplex: "half",
+  });
+
+  const text = await response.text();
+  let data = {};
+  try { data = text ? JSON.parse(text) : {}; } catch { data = {}; }
+  if (!response.ok) {
+    const message = data?.error?.message || data?.error?.errors?.[0]?.message || `YouTube upload failed (HTTP ${response.status}).`;
+    throw new Error(message);
+  }
+  const videoId = String(data?.id || "").trim();
+  if (!videoId) throw new Error("YouTube completed the upload but did not return a video ID.");
+
+  const receipt = {
+    itemKey: resolved.itemKey,
+    kind,
+    slot: kind === "short" ? slot : 1,
+    videoId,
+    url: `https://www.youtube.com/watch?v=${videoId}`,
+    filename: resolved.item.filename || path.basename(resolved.item.filePath),
+    source: resolved.source,
+    publishedAt: new Date().toISOString(),
+  };
+  await storePublishingReceipt(projectId, receipt);
+  return receipt;
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") { cors(res); res.statusCode = 204; return res.end(); }
     const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "review-captions-v4" });
+      return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "scheduler-v5.4 (YouTube + Buffer scheduling)" });
+    }
+    if (req.method === "GET" && url.pathname === "/publishing/file-info") {
+      const projectId = url.searchParams.get("projectId") || "";
+      const kind = url.searchParams.get("kind") === "short" ? "short" : "full";
+      const slot = Number(url.searchParams.get("slot") || "1");
+      return json(res, 200, await publishingFileInfo(projectId, kind, slot));
+    }
+    if (req.method === "GET" && url.pathname === "/publishing/status") {
+      return json(res, 200, await publishingStatus(url.searchParams.get("projectId") || ""));
+    }
+    if (req.method === "POST" && url.pathname === "/publish/youtube") {
+      return json(res, 200, await publishApprovedVideoToYouTube(await readJsonBody(req)));
+    }
+    if (req.method === "POST" && url.pathname === "/publish/buffer/stage") {
+      return json(res, 200, await stageApprovedShortForBuffer(await readJsonBody(req)));
+    }
+    if (req.method === "POST" && url.pathname === "/publishing/youtube/receipt") {
+      const body = await readJsonBody(req);
+      const projectId = String(body.projectId || "").trim();
+      const receipt = body.receipt && typeof body.receipt === "object" ? body.receipt : null;
+      if (!projectId || !receipt?.itemKey) throw new Error("YouTube receipt details are incomplete.");
+      await storePublishingReceipt(projectId, receipt);
+      return json(res, 200, { ok: true });
+    }
+    if (req.method === "POST" && url.pathname === "/publishing/buffer/receipt") {
+      const body = await readJsonBody(req);
+      const projectId = String(body.projectId || "").trim();
+      const receipt = body.receipt && typeof body.receipt === "object" ? body.receipt : null;
+      if (!projectId || !receipt?.itemKey) throw new Error("Buffer receipt details are incomplete.");
+      await storeBufferReceipt(projectId, receipt);
+      return json(res, 200, { ok: true });
     }
     if (req.method === "GET" && url.pathname === "/latest") {
       return json(res, 200, { video: await videoResponse(url.searchParams.get("projectId") || "") });

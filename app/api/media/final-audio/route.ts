@@ -52,6 +52,7 @@ export async function POST(request: Request) {
       const originalFilename = cleanString(body.originalFilename);
       const mimeType = cleanString(body.mimeType);
       const sizeBytes = Number(body.sizeBytes);
+      const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
       const requiredPrefix = `${user.id}/${song.id}/final-audio/`;
       if (!storagePath.startsWith(requiredPrefix) || !originalFilename || !AUDIO_MIME_TYPES.has(mimeType) || !Number.isFinite(sizeBytes) || sizeBytes <= 0) {
         return NextResponse.json({ error: "Invalid Final Audio upload details." }, { status: 400 });
@@ -60,7 +61,7 @@ export async function POST(request: Request) {
       const { data: savedAsset, error: saveError } = await supabase.from("song_media_assets").upsert({
         song_id: song.id, user_id: user.id, media_kind: "final-audio", slot: 1,
         original_filename: originalFilename, storage_provider: "supabase", storage_path: storagePath, local_path: null,
-        mime_type: mimeType, size_bytes: Math.round(sizeBytes), metadata: {}, updated_at: new Date().toISOString(),
+        mime_type: mimeType, size_bytes: Math.round(sizeBytes), metadata, updated_at: new Date().toISOString(),
       }, { onConflict: "song_id,user_id,media_kind,slot" }).select(SELECT_FIELDS).single();
       if (saveError || !savedAsset) throw new Error(`Could not save audio record: ${saveError?.message || "Unknown error"}`);
       if (previousAsset && (previousAsset.storage_provider !== "supabase" || previousAsset.storage_path !== storagePath)) {

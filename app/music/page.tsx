@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import AccountMenu from "@/components/AccountMenu";
+import LocalReleasePublisher from "@/components/LocalReleasePublisher";
 import { createClient } from "@/utils/supabase/client";
 
 type SongProject = {
@@ -36,7 +37,7 @@ type GeneratedHookState = {
   hooks: string[];
 };
 
-type ViewMode = "all" | "creating" | "ready" | "published";
+type ViewMode = "all" | "creating" | "ready" | "published" | "archived";
 
 type AssetState = "ready" | "pending";
 
@@ -611,6 +612,7 @@ function projectLabel(project: SongProject) {
 
 function projectStage(project: SongProject) {
   const raw = (project.status || "").toLowerCase();
+  if (raw.includes("archiv")) return "Archived";
   if (raw.includes("publish")) return "Published";
   if (raw.includes("release")) return "Release Ready";
   if (raw.includes("ready-for-suno")) return "Ready for Suno";
@@ -618,10 +620,25 @@ function projectStage(project: SongProject) {
 }
 
 function stageClass(stage: string) {
+  if (stage === "Archived") return "text-zinc-400";
   if (stage === "Published") return "text-emerald-300";
   if (stage === "Release Ready") return "text-cyan-300";
   if (stage === "Ready for Suno") return "text-emerald-300";
   return "text-amber-200";
+}
+
+function projectTimestamp(project: SongProject) {
+  const value = project.updatedAt || project.createdAt || "";
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function formatProjectDate(project: SongProject) {
+  const value = project.updatedAt || project.createdAt;
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short" }).format(date);
 }
 
 function StatusDot({ state }: { state: AssetState }) {
@@ -679,6 +696,9 @@ export default function MusicUniversePage() {
   const [accountEmail, setAccountEmail] = useState("");
   const [filter, setFilter] = useState<ViewMode>("all");
   const [search, setSearch] = useState("");
+  const [showAllSongs, setShowAllSongs] = useState(false);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+  const [archiveError, setArchiveError] = useState("");
   const [additionalDirection, setAdditionalDirection] = useState("");
   const [assistantPrompt, setAssistantPrompt] = useState("");
   const [showNewSong, setShowNewSong] = useState(false);
@@ -712,6 +732,35 @@ export default function MusicUniversePage() {
   const [captionRenderingSlot, setCaptionRenderingSlot] = useState<number | null>(null);
   const [captionError, setCaptionError] = useState("");
   const [reviewBusy, setReviewBusy] = useState(false);
+  const [sunoStylesOpen, setSunoStylesOpen] = useState(true);
+  const [releaseVideosOpen, setReleaseVideosOpen] = useState(true);
+  const [verticalShortsOpen, setVerticalShortsOpen] = useState(true);
+
+  useEffect(() => {
+    const readOpenState = (key: string, fallback: boolean) => {
+      try {
+        const saved = window.localStorage.getItem(key);
+        return saved === null ? fallback : saved === "1";
+      } catch {
+        return fallback;
+      }
+    };
+    setSunoStylesOpen(readOpenState("szu:music:suno-styles-open", true));
+    setReleaseVideosOpen(readOpenState("szu:music:release-videos-open", true));
+    setVerticalShortsOpen(readOpenState("szu:music:vertical-shorts-open", true));
+  }, []);
+
+  useEffect(() => {
+    try { window.localStorage.setItem("szu:music:suno-styles-open", sunoStylesOpen ? "1" : "0"); } catch {}
+  }, [sunoStylesOpen]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem("szu:music:release-videos-open", releaseVideosOpen ? "1" : "0"); } catch {}
+  }, [releaseVideosOpen]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem("szu:music:vertical-shorts-open", verticalShortsOpen ? "1" : "0"); } catch {}
+  }, [verticalShortsOpen]);
 
   const [customVisualAssets, setCustomVisualAssets] = useState<LocalVisualAsset[]>([]);
   const [customVisualLoading, setCustomVisualLoading] = useState(false);
@@ -776,7 +825,7 @@ export default function MusicUniversePage() {
         if (current && nextProjects.some((project: SongProject) => project.id === current)) {
           return current;
         }
-        return nextProjects[0]?.id || null;
+        return nextProjects.find((project: SongProject) => projectStage(project) !== "Archived")?.id || nextProjects[0]?.id || null;
       });
     } catch (error) {
       console.error("Could not load songs", error);
@@ -2098,6 +2147,41 @@ export default function MusicUniversePage() {
     }
   }
 
+  async function setSongArchived(project: SongProject, archived: boolean) {
+    if (archiveBusy) return;
+    setArchiveBusy(true);
+    setArchiveError("");
+    try {
+      const response = await fetch("/api/songs/archive", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, archived }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || (archived ? "Could not archive song." : "Could not restore song."));
+
+      const nextProjects = projects.map((item) =>
+        item.id === project.id
+          ? { ...item, status: archived ? "archived" : "published", updatedAt: data.updatedAt || new Date().toISOString() }
+          : item
+      );
+      setProjects(nextProjects);
+
+      if (archived) {
+        const nextActive = nextProjects
+          .filter((item) => item.id !== project.id && projectStage(item) !== "Archived")
+          .sort((a, b) => projectTimestamp(b) - projectTimestamp(a))[0];
+        setActiveProjectId(nextActive?.id || null);
+      } else {
+        setActiveProjectId(project.id);
+      }
+    } catch (error) {
+      setArchiveError(error instanceof Error ? error.message : "Could not update archive status.");
+    } finally {
+      setArchiveBusy(false);
+    }
+  }
+
   async function copyText(text: string, notice: string) {
     if (!text) return;
     try {
@@ -2111,24 +2195,34 @@ export default function MusicUniversePage() {
 
   const filteredProjects = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return projects.filter((project) => {
-      const stage = projectStage(project);
-      const matchesFilter =
-        filter === "all" ||
-        (filter === "creating" && stage === "Creating") ||
-        (filter === "ready" && (stage === "Ready for Suno" || stage === "Release Ready")) ||
-        (filter === "published" && stage === "Published");
-      const matchesSearch =
-        !query ||
-        [projectLabel(project), project.idea, project.language, project.genre, project.mood]
-          .filter(Boolean)
-          .some((value) => String(value).toLowerCase().includes(query));
-      return matchesFilter && matchesSearch;
-    });
+    return projects
+      .filter((project) => {
+        const stage = projectStage(project);
+        const matchesFilter =
+          (filter === "all" && stage !== "Archived") ||
+          (filter === "creating" && stage === "Creating") ||
+          (filter === "ready" && (stage === "Ready for Suno" || stage === "Release Ready")) ||
+          (filter === "published" && stage === "Published") ||
+          (filter === "archived" && stage === "Archived");
+        const matchesSearch =
+          !query ||
+          [projectLabel(project), project.idea, project.language, project.genre, project.mood]
+            .filter(Boolean)
+            .some((value) => String(value).toLowerCase().includes(query));
+        return matchesFilter && matchesSearch;
+      })
+      .sort((a, b) => projectTimestamp(b) - projectTimestamp(a));
   }, [projects, filter, search]);
 
+  const catalogMode = showAllSongs || Boolean(search.trim()) || filter !== "all";
+  const visibleProjects = catalogMode ? filteredProjects : filteredProjects.slice(0, 4);
+
   const activeProject =
-    projects.find((project) => project.id === activeProjectId) || projects[0] || null;
+    projects.find((project) => project.id === activeProjectId) ||
+    (filter === "archived"
+      ? projects.find((project) => projectStage(project) === "Archived")
+      : projects.find((project) => projectStage(project) !== "Archived")) ||
+    null;
   const approvedShortCount = shortSlots.filter((item) => Boolean(item.approvedVideo)).length;
   const releaseReady = Boolean(approvedFullVideo) && approvedShortCount === 6;
   const activeStage = activeProject ? projectStage(activeProject) : "Creating";
@@ -2242,7 +2336,20 @@ export default function MusicUniversePage() {
               <button
                 key={item.label}
                 type="button"
-                className="flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm text-zinc-400 transition hover:bg-white/[0.04] hover:text-white"
+                onClick={() => {
+                  if (item.label === "Library") {
+                    setShowAllSongs(true);
+                    window.setTimeout(() => {
+                      document.getElementById("song-library")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }, 0);
+                  }
+                }}
+                className={classNames(
+                  "flex w-full items-center gap-3 rounded-2xl px-3.5 py-3 text-left text-sm transition",
+                  item.label === "Library" && showAllSongs
+                    ? "bg-white/[0.05] text-white"
+                    : "text-zinc-400 hover:bg-white/[0.04] hover:text-white"
+                )}
               >
                 <span className="w-6 text-center text-lg">{item.icon}</span>
                 {item.label}
@@ -2278,13 +2385,13 @@ export default function MusicUniversePage() {
           <section className="relative overflow-hidden border-b border-white/[0.06]">
             <div className="absolute inset-0 bg-[linear-gradient(90deg,rgba(6,16,26,.92),rgba(6,16,26,.28)_46%,rgba(6,16,26,.58)),url('/universe-music-hero.svg')] bg-cover bg-center" />
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_72%_35%,rgba(255,190,142,.18),transparent_23rem),linear-gradient(180deg,transparent,rgba(5,13,22,.78))]" />
-            <div className="relative flex min-h-[250px] items-end justify-between gap-6 px-5 pb-8 pt-6 sm:px-8 xl:px-10">
+            <div className="relative flex min-h-[155px] items-end justify-between gap-6 px-5 pb-5 pt-4 sm:px-8 xl:px-10">
               <div className="max-w-xl">
                 <div className="inline-flex rounded-full border border-orange-200/20 bg-black/20 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-orange-100/80 backdrop-blur-lg">Suno Zara Music</div>
-                <p className="mt-4 font-serif text-4xl italic leading-[1.05] text-orange-50 sm:text-5xl">
+                <p className="mt-2 font-serif text-3xl italic leading-[1.05] text-orange-50 sm:text-4xl">
                   Music for the moments<br />that matter ♡
                 </p>
-                <p className="mt-4 max-w-xl text-sm leading-6 text-zinc-200/80">
+                <p className="mt-2 max-w-xl text-xs leading-5 text-zinc-200/75 sm:text-sm">
                   Bring the lyrics. Bring the final Suno song. Universe prepares the visuals, videos, shorts and release around it.
                 </p>
               </div>
@@ -2296,10 +2403,10 @@ export default function MusicUniversePage() {
             </div>
           </section>
 
-          <div className="px-4 py-5 sm:px-7 xl:px-9">
+          <div className="px-4 py-4 sm:px-7 xl:px-9">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
-                <h1 className="text-3xl font-black tracking-[-0.04em]">Good Evening, Deb</h1>
+                <h1 className="text-2xl font-black tracking-[-0.04em]">Good Evening, Deb</h1>
                 <p className="mt-1 text-sm text-zinc-400">Let&apos;s create something beautiful today.</p>
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -2322,34 +2429,60 @@ export default function MusicUniversePage() {
               </div>
             </div>
 
-            <section className="mt-6">
-              <div className="flex flex-wrap items-center gap-2">
-                {([
-                  ["all", "All"],
-                  ["creating", "Creating"],
-                  ["ready", "Ready"],
-                  ["published", "Published"],
-                ] as Array<[ViewMode, string]>).map(([value, label]) => (
-                  <button
-                    key={value}
-                    onClick={() => setFilter(value)}
-                    className={classNames(
-                      "rounded-full border px-4 py-1.5 text-xs font-bold transition",
-                      filter === value
-                        ? "border-orange-200/40 bg-orange-200/10 text-orange-100"
-                        : "border-white/[0.08] bg-white/[0.02] text-zinc-500 hover:text-zinc-200"
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
+            <section id="song-library" className="mt-6 scroll-mt-6">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  {([
+                    ["all", "All"],
+                    ["creating", "Creating"],
+                    ["ready", "Ready"],
+                    ["published", "Published"],
+                    ["archived", "Archived"],
+                  ] as Array<[ViewMode, string]>).map(([value, label]) => (
+                    <button
+                      key={value}
+                      onClick={() => setFilter(value)}
+                      className={classNames(
+                        "rounded-full border px-4 py-1.5 text-xs font-bold transition",
+                        filter === value
+                          ? "border-orange-200/40 bg-orange-200/10 text-orange-100"
+                          : "border-white/[0.08] bg-white/[0.02] text-zinc-500 hover:text-zinc-200"
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span className="text-[11px] font-semibold text-zinc-600">
+                    {catalogMode ? `${filteredProjects.length} song${filteredProjects.length === 1 ? "" : "s"}` : "4 most recently edited • archived hidden"}
+                  </span>
+                  {catalogMode && (
+                    <button
+                      type="button"
+                      onClick={() => { setShowAllSongs(false); setSearch(""); setFilter("all"); }}
+                      className="rounded-full border border-white/10 bg-white/[0.025] px-3 py-1.5 text-[11px] font-bold text-zinc-300 transition hover:bg-white/[0.06]"
+                    >
+                      ← Recent songs
+                    </button>
+                  )}
+                </div>
               </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className={classNames("mt-4 grid gap-3 sm:grid-cols-2", catalogMode ? "xl:grid-cols-4" : "xl:grid-cols-5")}>
                 {loading && (
                   <div className="col-span-full rounded-[24px] border border-white/[0.07] bg-white/[0.025] p-6 text-sm text-zinc-500">Loading your songs…</div>
                 )}
-                {!loading && filteredProjects.slice(0, 4).map((project, index) => {
+
+                {!loading && visibleProjects.length === 0 && (
+                  <div className="col-span-full rounded-[24px] border border-white/[0.07] bg-white/[0.025] p-8 text-center">
+                    <p className="text-sm font-bold text-zinc-300">No songs match this view.</p>
+                    <p className="mt-1 text-xs text-zinc-600">Try another filter or clear the search.</p>
+                  </div>
+                )}
+
+                {!loading && visibleProjects.map((project, index) => {
                   const stage = projectStage(project);
                   const active = activeProject?.id === project.id;
                   const cardGradients = [
@@ -2358,6 +2491,7 @@ export default function MusicUniversePage() {
                     "from-[#d8aa6c]/30 via-[#30312d] to-[#0a1722]",
                     "from-[#8e4b73]/30 via-[#23313a] to-[#0a1722]",
                   ];
+                  const edited = formatProjectDate(project);
                   return (
                     <button
                       key={project.id}
@@ -2380,21 +2514,29 @@ export default function MusicUniversePage() {
                       )}
                       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(3,9,14,.02),rgba(3,9,14,.12)_42%,rgba(3,9,14,.92))]" />
                       <div className="relative flex h-full min-h-[132px] flex-col justify-end bg-gradient-to-t from-black/70 via-black/5 to-transparent p-4">
-                        <p className="line-clamp-1 text-sm font-bold text-white">{projectLabel(project)}</p>
-                        <p className={classNames("mt-1 text-xs font-bold", stageClass(stage))}>{stage}</p>
+                        <div className="flex items-end justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="line-clamp-1 text-sm font-bold text-white">{projectLabel(project)}</p>
+                            <p className={classNames("mt-1 text-xs font-bold", stageClass(stage))}>{stage}</p>
+                          </div>
+                          {catalogMode && edited && <span className="shrink-0 text-[10px] font-semibold text-zinc-500">{edited}</span>}
+                        </div>
                       </div>
                     </button>
                   );
                 })}
-                <button
-                  type="button"
-                  onClick={() => openNewSong("choose")}
-                  className="flex min-h-[132px] flex-col items-center justify-center rounded-[22px] border border-dashed border-white/15 bg-white/[0.018] text-center transition hover:border-cyan-300/35 hover:bg-cyan-300/[0.03]"
-                >
-                  <span className="flex h-10 w-10 items-center justify-center rounded-full border border-white/25 text-2xl text-white">＋</span>
-                  <span className="mt-3 text-sm font-bold">Create New Song</span>
-                  <span className="mt-1 text-[10px] text-zinc-600">Start a new musical journey</span>
-                </button>
+
+                {!loading && !catalogMode && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSongs(true)}
+                    className="flex min-h-[132px] flex-col items-center justify-center rounded-[22px] border border-dashed border-cyan-300/20 bg-cyan-300/[0.025] text-center transition hover:-translate-y-0.5 hover:border-cyan-300/45 hover:bg-cyan-300/[0.05]"
+                  >
+                    <span className="flex h-10 w-10 items-center justify-center rounded-full border border-cyan-200/30 bg-cyan-300/[0.06] text-lg text-cyan-100">▱</span>
+                    <span className="mt-3 text-sm font-bold">View All Songs</span>
+                    <span className="mt-1 text-[10px] text-zinc-600">{projects.filter((project) => projectStage(project) !== "Archived").length} active song{projects.filter((project) => projectStage(project) !== "Archived").length === 1 ? "" : "s"}</span>
+                  </button>
+                )}
               </div>
             </section>
 
@@ -2414,11 +2556,32 @@ export default function MusicUniversePage() {
                     </p>
                   </div>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/[0.06]">Preview Concept</button>
+                  {activeProject && (
+                    <button
+                      type="button"
+                      disabled={archiveBusy}
+                      onClick={() => void setSongArchived(activeProject, projectStage(activeProject) !== "Archived")}
+                      className={classNames(
+                        "rounded-xl border px-4 py-2 text-xs font-bold transition disabled:cursor-wait disabled:opacity-50",
+                        projectStage(activeProject) === "Archived"
+                          ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-200 hover:bg-emerald-300/15"
+                          : "border-white/10 bg-white/[0.03] text-zinc-300 hover:border-amber-200/25 hover:bg-amber-200/[0.06] hover:text-amber-100"
+                      )}
+                    >
+                      {archiveBusy ? "Saving…" : projectStage(activeProject) === "Archived" ? "Restore Song" : "Archive Song"}
+                    </button>
+                  )}
                   <button onClick={() => setShowLegacy((value) => !value)} className="rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2 text-xs font-bold text-zinc-300 hover:bg-white/[0.06]">•••</button>
                 </div>
               </div>
+
+              {archiveError && (
+                <div className="border-b border-rose-300/10 bg-rose-300/[0.05] px-5 py-2.5 text-xs font-semibold text-rose-200">
+                  {archiveError}
+                </div>
+              )}
 
               {showLegacy && (
                 <div className="border-b border-white/[0.07] bg-amber-200/[0.04] px-5 py-3 text-xs text-zinc-400">
@@ -2486,8 +2649,20 @@ export default function MusicUniversePage() {
                             <p className="text-sm font-black">Suno Styles</p>
                             <p className="mt-1 text-xs text-slate-500">Choose the direction you want to take into Suno.</p>
                           </div>
-                          <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-700">{sunoStyles.length} ready</span>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[10px] font-bold text-emerald-700">{sunoStyles.length} ready</span>
+                            <button
+                              type="button"
+                              aria-expanded={sunoStylesOpen}
+                              onClick={() => setSunoStylesOpen((open) => !open)}
+                              className="flex h-7 w-7 items-center justify-center rounded-full border border-black/10 bg-white/70 text-xs font-black text-slate-600 transition hover:bg-white"
+                              title={sunoStylesOpen ? "Collapse Suno Styles" : "Expand Suno Styles"}
+                            >
+                              {sunoStylesOpen ? "⌃" : "⌄"}
+                            </button>
+                          </div>
                         </div>
+                        {sunoStylesOpen && (
                         <div className="mt-3 space-y-2">
                           {sunoStyles.map((style, index) => (
                             <button
@@ -2515,6 +2690,7 @@ export default function MusicUniversePage() {
                             </button>
                           ))}
                         </div>
+                        )}
                       </div>
                     )}
 
@@ -2769,8 +2945,20 @@ export default function MusicUniversePage() {
                             <p className="text-sm font-black">Create Release Videos</p>
                             <p className="mt-1 text-xs leading-5 text-zinc-400">Full video uses landscape visuals/clips. Vertical assets are kept for the 6 Shorts, Reels and TikTok edits.</p>
                           </div>
-                          <span className="rounded-full border border-fuchsia-200/15 bg-fuchsia-200/[0.06] px-2.5 py-1 text-[9px] font-bold text-fuchsia-100">1 + 6</span>
+                          <div className="flex items-center gap-2">
+                            <span className="rounded-full border border-fuchsia-200/15 bg-fuchsia-200/[0.06] px-2.5 py-1 text-[9px] font-bold text-fuchsia-100">1 + 6</span>
+                            <button
+                              type="button"
+                              aria-expanded={releaseVideosOpen}
+                              onClick={() => setReleaseVideosOpen((open) => !open)}
+                              className="flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-xs font-black text-zinc-300 transition hover:bg-white/[0.08]"
+                              title={releaseVideosOpen ? "Collapse Release Video" : "Expand Release Video"}
+                            >
+                              {releaseVideosOpen ? "⌃" : "⌄"}
+                            </button>
+                          </div>
                         </div>
+                        {releaseVideosOpen && (<>
                         <div className="mt-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-white/[0.06] bg-black/10 px-3 py-2">
                           <div className="flex items-center gap-2 text-[10px]">
                             <span className={classNames("h-2 w-2 rounded-full", videoWorkerConnected ? "bg-emerald-300" : "bg-amber-300")} />
@@ -2865,6 +3053,7 @@ export default function MusicUniversePage() {
                             </div>
                           </div>
                         )}
+                        </>)}
                       </div>
 
                       <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4">
@@ -2873,14 +3062,26 @@ export default function MusicUniversePage() {
                             <p className="text-sm font-black">6 Vertical Shorts</p>
                             <p className="mt-1 text-xs text-zinc-500">Universe uses the strongest detected song windows and your vertical visuals. Replace any Short with your own edit if you prefer.</p>
                           </div>
-                          <button
-                            disabled={shortsGenerating || !videoWorkerConnected || !finalAudioAsset}
-                            onClick={() => void handleGenerateShorts()}
-                            className="rounded-xl bg-gradient-to-r from-[#6ee7d8] via-[#76d5ff] to-[#b58cff] px-4 py-2.5 text-[10px] font-black text-[#071a22] shadow-[0_12px_28px_-16px_rgba(118,213,255,.9)] disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            {shortsGenerating ? "✦ Creating 6 Shorts…" : shortSlots.some((item) => item.generatedVideo) ? "✦ Regenerate 6 Shorts" : "✦ Generate 6 Shorts"}
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              disabled={shortsGenerating || !videoWorkerConnected || !finalAudioAsset}
+                              onClick={() => void handleGenerateShorts()}
+                              className="rounded-xl bg-gradient-to-r from-[#6ee7d8] via-[#76d5ff] to-[#b58cff] px-4 py-2.5 text-[10px] font-black text-[#071a22] shadow-[0_12px_28px_-16px_rgba(118,213,255,.9)] disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {shortsGenerating ? "✦ Creating 6 Shorts…" : shortSlots.some((item) => item.generatedVideo) ? "✦ Regenerate 6 Shorts" : "✦ Generate 6 Shorts"}
+                            </button>
+                            <button
+                              type="button"
+                              aria-expanded={verticalShortsOpen}
+                              onClick={() => setVerticalShortsOpen((open) => !open)}
+                              className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-xs font-black text-zinc-300 transition hover:bg-white/[0.08]"
+                              title={verticalShortsOpen ? "Collapse Vertical Shorts" : "Expand Vertical Shorts"}
+                            >
+                              {verticalShortsOpen ? "⌃" : "⌄"}
+                            </button>
+                          </div>
                         </div>
+                        {verticalShortsOpen && (<>
                         {shortsError && <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{shortsError}</p>}
                         {ownShortError && <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-amber-100">{ownShortError}</p>}
                         {captionError && <p className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-cyan-100">{captionError}</p>}
@@ -2995,6 +3196,7 @@ export default function MusicUniversePage() {
                             <p className="mt-0.5 text-[9px] text-zinc-500">Review each edit, tune its caption if needed, then approve the version Universe should publish.</p>
                           </div>
                         )}
+                        </>)}
                       </div>
 
                       <div className={classNames("mt-3 rounded-[22px] border p-4", releaseReady ? "border-emerald-300/25 bg-emerald-300/[0.06]" : "border-cyan-300/10 bg-white/[0.035]")}>
@@ -3019,34 +3221,12 @@ export default function MusicUniversePage() {
                         </div>
                       </div>
 
-                      <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4">
-                        <div className="flex items-center justify-between gap-4">
-                          <div>
-                            <p className="text-sm font-black">Publish</p>
-                            <p className="mt-1 text-xs text-zinc-500">Approved videos will use the social pack already prepared in Create.</p>
-                          </div>
-                          <button disabled={!releaseReady} title={releaseReady ? "Publishing connections will be wired in RELEASE V5." : "Approve the full video and all six Shorts first."} className="rounded-xl bg-gradient-to-r from-[#ff9a84] to-[#e95ccf] px-4 py-2.5 text-xs font-black text-[#281321] disabled:cursor-not-allowed disabled:opacity-35">{releaseReady ? "Ready for Publishing" : "Complete Review"}</button>
-                        </div>
-                        <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                          {[
-                            ["YouTube", "youtube", "#ff3333"],
-                            ["Instagram", "instagram", "#ff7aa7"],
-                            ["Facebook", "facebook", "#4f8cff"],
-                            ["TikTok", "tiktok", "#58e4df"],
-                          ].map(([platform, key, color]) => {
-                            const connected = connectedPlatforms.has(key);
-                            return (
-                              <div key={platform} className="rounded-xl border border-white/[0.07] bg-black/10 px-3 py-2.5">
-                                <div className="flex items-center gap-2">
-                                  <span className="h-2 w-2 rounded-full" style={{ background: color }} />
-                                  <span className="text-[10px] font-bold">{platform}</span>
-                                </div>
-                                <p className={classNames("mt-1 text-[9px]", connected ? "text-emerald-300" : "text-zinc-600")}>{connected ? "Connected" : "Not connected"}</p>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
+                      <LocalReleasePublisher
+                        projectId={activeProjectId}
+                        releaseReady={releaseReady}
+                        approvedFullVideo={approvedFullVideo}
+                        shortSlots={shortSlots}
+                      />
                     </>
                   ) : (
                     <div className="mt-3 rounded-[22px] border border-white/[0.06] bg-black/[0.09] p-5">
