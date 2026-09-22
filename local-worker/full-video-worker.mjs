@@ -730,12 +730,121 @@ async function renderShorts(body) {
     const manifest = await loadManifest();
     manifest.projects ||= {};
     const existing = manifest.projects[projectId] || {};
-    manifest.projects[projectId] = { ...existing, projectId, title, generatedShorts };
+    const previousCaptioned = existing.captionedShorts && typeof existing.captionedShorts === "object" ? existing.captionedShorts : {};
+    for (const item of Object.values(previousCaptioned)) {
+      if (item?.filePath) await unlink(item.filePath).catch(() => {});
+    }
+    const shortCaptionSettings = existing.shortCaptionSettings && typeof existing.shortCaptionSettings === "object" ? { ...existing.shortCaptionSettings } : {};
+    for (const key of Object.keys(shortCaptionSettings)) shortCaptionSettings[key] = { ...shortCaptionSettings[key], enabled: false };
+    manifest.projects[projectId] = { ...existing, projectId, title, generatedShorts, captionedShorts: {}, shortCaptionSettings };
     await saveManifest(manifest);
     return generatedShorts;
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+function decodePngDataUrl(value) {
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(value || "").trim());
+  if (!match) throw new Error("Caption overlay must be a PNG data URL.");
+  return Buffer.from(match[1], "base64");
+}
+
+function activeGeneratedShort(project, slot) {
+  const base = Array.isArray(project?.generatedShorts)
+    ? project.generatedShorts.find((item) => Number(item.slot) === Number(slot)) || null
+    : null;
+  const setting = project?.shortCaptionSettings?.[String(slot)] || null;
+  const captioned = project?.captionedShorts?.[String(slot)] || null;
+  return setting?.enabled && captioned?.filePath ? captioned : base;
+}
+
+async function applyShortCaption(body) {
+  if (!ffmpegPath) throw new Error("FFmpeg is unavailable. Run npm install ffmpeg-static first.");
+  const projectId = String(body.projectId || "").trim();
+  const slot = Math.max(1, Math.min(6, Number(body.slot || 0)));
+  const enabled = Boolean(body.enabled);
+  const text = String(body.text || "").trim().slice(0, 500);
+  const style = new Set(["cinematic", "bold", "minimal"]).has(String(body.style || "")) ? String(body.style) : "cinematic";
+  if (!projectId || !slot) throw new Error("projectId and Short slot are required.");
+
+  const manifest = await loadManifest();
+  const project = manifest.projects?.[projectId];
+  if (!project) throw new Error("Song project not found in the local worker.");
+  const base = Array.isArray(project.generatedShorts)
+    ? project.generatedShorts.find((item) => Number(item.slot) === slot)
+    : null;
+  if (!base?.filePath) throw new Error(`Generate Short ${slot} first.`);
+  try { await stat(base.filePath); } catch { throw new Error(`The generated Short ${slot} is missing from your Mac.`); }
+
+  project.shortCaptionSettings = project.shortCaptionSettings && typeof project.shortCaptionSettings === "object" ? project.shortCaptionSettings : {};
+  project.captionedShorts = project.captionedShorts && typeof project.captionedShorts === "object" ? project.captionedShorts : {};
+  const previous = project.captionedShorts[String(slot)];
+
+  if (!enabled || !text) {
+    if (previous?.filePath) await unlink(previous.filePath).catch(() => {});
+    delete project.captionedShorts[String(slot)];
+    const captionSettings = { enabled: false, text, style, updatedAt: new Date().toISOString() };
+    project.shortCaptionSettings[String(slot)] = captionSettings;
+    await saveManifest(manifest);
+    return { ...(await shortsStatus(projectId)), captionSettings };
+  }
+
+  const overlayDataUrl = String(body.overlayDataUrl || "").trim();
+  if (!overlayDataUrl) throw new Error("Caption overlay data was not received.");
+  const tempDir = path.join(os.tmpdir(), "szu-video-worker", `caption-${projectId}-${slot}-${randomUUID()}`);
+  await mkdir(tempDir, { recursive: true });
+  try {
+    const overlayFile = path.join(tempDir, "caption.png");
+    await writeFile(overlayFile, decodePngDataUrl(overlayDataUrl));
+    const outDir = path.join(path.dirname(base.filePath), "Captioned");
+    await mkdir(outDir, { recursive: true });
+    const output = path.join(outDir, `${safeName(project.title || base.title || "Suno-Zara-Song")}-Short-${String(slot).padStart(2, "0")}-Captioned.mp4`);
+    await run(ffmpegPath, [
+      "-y", "-i", base.filePath, "-loop", "1", "-i", overlayFile,
+      "-filter_complex", "[0:v][1:v]overlay=0:0:eof_action=repeat:shortest=1[v]",
+      "-map", "[v]", "-map", "0:a?",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+      "-c:a", "copy", "-movflags", "+faststart", "-shortest", output,
+    ]);
+    const captionSettings = { enabled: true, text, style, updatedAt: new Date().toISOString() };
+    const captioned = {
+      ...base,
+      filename: path.basename(output),
+      filePath: output,
+      source: "generated",
+      captioned: true,
+      captionUpdatedAt: captionSettings.updatedAt,
+    };
+    project.shortCaptionSettings[String(slot)] = captionSettings;
+    project.captionedShorts[String(slot)] = captioned;
+    await saveManifest(manifest);
+    if (previous?.filePath && previous.filePath !== output) await unlink(previous.filePath).catch(() => {});
+    return { ...(await shortsStatus(projectId)), captionSettings };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function unapproveFullVideo(projectId) {
+  const manifest = await loadManifest();
+  const project = manifest.projects?.[projectId];
+  if (!project) throw new Error("Song project not found in the local worker.");
+  delete project.approvedFullVideoSource;
+  delete project.approvedFullVideoAt;
+  await saveManifest(manifest);
+  return await fullVideoStatus(projectId);
+}
+
+async function unapproveShort(projectId, slot) {
+  const manifest = await loadManifest();
+  const project = manifest.projects?.[projectId];
+  if (!project) throw new Error("Song project not found in the local worker.");
+  if (project.approvedShortSources && typeof project.approvedShortSources === "object") {
+    delete project.approvedShortSources[String(slot)];
+  }
+  await saveManifest(manifest);
+  return await shortsStatus(projectId);
 }
 
 async function publicShort(projectId, item, source) {
@@ -745,24 +854,24 @@ async function publicShort(projectId, item, source) {
   return {
     ...item,
     source,
-    fileUrl: `http://${HOST}:${PORT}/short/file?projectId=${encodeURIComponent(projectId)}&slot=${slot}&source=${encodeURIComponent(source)}`,
-    downloadUrl: `http://${HOST}:${PORT}/short/file?projectId=${encodeURIComponent(projectId)}&slot=${slot}&source=${encodeURIComponent(source)}&download=1`,
+    fileUrl: `http://${HOST}:${PORT}/short/file?projectId=${encodeURIComponent(projectId)}&slot=${slot}&source=${encodeURIComponent(source)}&v=${encodeURIComponent(item.captionUpdatedAt || item.generatedAt || item.uploadedAt || "1")}`,
+    downloadUrl: `http://${HOST}:${PORT}/short/file?projectId=${encodeURIComponent(projectId)}&slot=${slot}&source=${encodeURIComponent(source)}&download=1&v=${encodeURIComponent(item.captionUpdatedAt || item.generatedAt || item.uploadedAt || "1")}`,
   };
 }
 
 async function shortsStatus(projectId) {
   const manifest = await loadManifest();
   const project = manifest.projects?.[projectId] || {};
-  const generated = Array.isArray(project.generatedShorts) ? project.generatedShorts : [];
   const uploaded = project.uploadedShorts && typeof project.uploadedShorts === "object" ? project.uploadedShorts : {};
   const approvedSources = project.approvedShortSources && typeof project.approvedShortSources === "object" ? project.approvedShortSources : {};
+  const captionSettings = project.shortCaptionSettings && typeof project.shortCaptionSettings === "object" ? project.shortCaptionSettings : {};
   const slots = [];
   for (let slot = 1; slot <= 6; slot += 1) {
-    const generatedVideo = await publicShort(projectId, generated.find((item) => Number(item.slot) === slot), "generated");
+    const generatedVideo = await publicShort(projectId, activeGeneratedShort(project, slot), "generated");
     const uploadedVideo = await publicShort(projectId, uploaded[String(slot)], "uploaded");
     const approvedSource = approvedSources[String(slot)] === "uploaded" ? "uploaded" : approvedSources[String(slot)] === "generated" ? "generated" : null;
     const approvedVideo = approvedSource === "uploaded" ? uploadedVideo : approvedSource === "generated" ? generatedVideo : null;
-    slots.push({ slot, generatedVideo, uploadedVideo, approvedVideo, approvedSource });
+    slots.push({ slot, generatedVideo, uploadedVideo, approvedVideo, approvedSource, captionSettings: captionSettings[String(slot)] || { enabled: false, text: "", style: "cinematic" } });
   }
   return { slots };
 }
@@ -771,7 +880,7 @@ async function resolveShortItem(projectId, slot, source) {
   const manifest = await loadManifest();
   const project = manifest.projects?.[projectId] || {};
   if (source === "uploaded") return project.uploadedShorts?.[String(slot)] || null;
-  return Array.isArray(project.generatedShorts) ? project.generatedShorts.find((item) => Number(item.slot) === Number(slot)) || null : null;
+  return activeGeneratedShort(project, slot);
 }
 
 async function serveShortFile(req, res, projectId, slot, source, downloadFile) {
@@ -850,7 +959,7 @@ async function approveShort(projectId, slot, source) {
   const manifest = await loadManifest();
   const project = manifest.projects?.[projectId];
   if (!project) throw new Error("Song project not found in the local worker.");
-  const item = source === "uploaded" ? project.uploadedShorts?.[String(slot)] : (Array.isArray(project.generatedShorts) ? project.generatedShorts.find((candidate) => Number(candidate.slot) === Number(slot)) : null);
+  const item = source === "uploaded" ? project.uploadedShorts?.[String(slot)] : activeGeneratedShort(project, slot);
   if (!item?.filePath) throw new Error(source === "uploaded" ? "Upload your Short first." : "Generate the Shorts first.");
   project.approvedShortSources = project.approvedShortSources && typeof project.approvedShortSources === "object" ? project.approvedShortSources : {};
   project.approvedShortSources[String(slot)] = source;
@@ -863,7 +972,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "OPTIONS") { cors(res); res.statusCode = 204; return res.end(); }
     const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "shorts-v3" });
+      return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "review-captions-v4" });
     }
     if (req.method === "GET" && url.pathname === "/latest") {
       return json(res, 200, { video: await videoResponse(url.searchParams.get("projectId") || "") });
@@ -884,6 +993,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBody(req);
       return json(res, 200, { approvedVideo: await approveFullVideo(String(body.projectId || ""), String(body.source || "")) });
     }
+    if (req.method === "POST" && url.pathname === "/full-video/unapprove") {
+      const body = await readJsonBody(req);
+      return json(res, 200, await unapproveFullVideo(String(body.projectId || "")));
+    }
     if (req.method === "POST" && url.pathname === "/render/full-video") {
       const item = await renderFullVideo(await readJsonBody(req));
       return json(res, 200, { ok: true, video: await videoResponse(item.projectId) });
@@ -900,6 +1013,13 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/short/approve") {
       const body = await readJsonBody(req);
       return json(res, 200, { approvedVideo: await approveShort(String(body.projectId || ""), Number(body.slot || 0), String(body.source || "")) });
+    }
+    if (req.method === "POST" && url.pathname === "/short/unapprove") {
+      const body = await readJsonBody(req);
+      return json(res, 200, await unapproveShort(String(body.projectId || ""), Number(body.slot || 0)));
+    }
+    if (req.method === "POST" && url.pathname === "/short/caption") {
+      return json(res, 200, await applyShortCaption(await readJsonBody(req)));
     }
     if (req.method === "POST" && url.pathname === "/render/shorts") {
       const items = await renderShorts(await readJsonBody(req));
@@ -929,6 +1049,6 @@ const server = http.createServer(async (req, res) => {
 await mkdir(ROOT, { recursive: true });
 server.listen(PORT, HOST, () => {
   console.log(`Suno Zara Universe video worker ready on http://${HOST}:${PORT}`);
-  console.log(`Renderer: shorts-v3 (full video + 6 vertical Shorts + replacements)`);
+  console.log(`Renderer: review-captions-v4 (final review + caption overlays + approvals)`);
   console.log(`Generated videos and added media will be saved under: ${path.join(ROOT, "Music")}`);
 });

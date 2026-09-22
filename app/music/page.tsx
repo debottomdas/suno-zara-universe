@@ -87,6 +87,15 @@ type GeneratedFullVideo = {
   sceneCount?: number;
 };
 
+type ShortCaptionStyle = "cinematic" | "bold" | "minimal";
+
+type ShortCaptionSettings = {
+  enabled: boolean;
+  text: string;
+  style: ShortCaptionStyle;
+  updatedAt?: string;
+};
+
 type ShortVideo = {
   projectId: string;
   title: string;
@@ -105,6 +114,8 @@ type ShortVideo = {
   width?: number;
   height?: number;
   visualCount?: number;
+  captioned?: boolean;
+  captionUpdatedAt?: string;
 };
 
 type ShortSlotStatus = {
@@ -113,6 +124,7 @@ type ShortSlotStatus = {
   uploadedVideo: ShortVideo | null;
   approvedVideo: ShortVideo | null;
   approvedSource: "generated" | "uploaded" | null;
+  captionSettings?: ShortCaptionSettings;
 };
 
 type LocalVisualAsset = {
@@ -350,6 +362,95 @@ async function workerJson<T = any>(path: string, init?: RequestInit): Promise<T>
   try { data = await response.json(); } catch {}
   if (!response.ok) throw new Error(data.error || `Local video worker failed (${response.status}).`);
   return data as T;
+}
+
+function lyricLinesForCaptions(lyrics?: string | null) {
+  return String(lyrics || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\[[^\]]+\]$/.test(line) && !/^(verse|chorus|bridge|intro|outro|mukhda|antara|pre[- ]?chorus)\b/i.test(line));
+}
+
+function defaultCaptionForSlot(lyrics: string | null | undefined, slot: number) {
+  const lines = lyricLinesForCaptions(lyrics);
+  if (!lines.length) return "";
+  const start = Math.min(lines.length - 1, Math.floor(((slot - 1) / 5) * Math.max(0, lines.length - 1)));
+  const chosen = [lines[start], lines[Math.min(lines.length - 1, start + 1)]].filter(Boolean);
+  return Array.from(new Set(chosen)).join("\n").slice(0, 220);
+}
+
+function wrapCanvasText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const paragraphs = String(text || "").split(/\n+/).map((part) => part.trim()).filter(Boolean);
+  const lines: string[] = [];
+  for (const paragraph of paragraphs) {
+    const words = paragraph.split(/\s+/).filter(Boolean);
+    let current = "";
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (current && ctx.measureText(candidate).width > maxWidth) {
+        lines.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    }
+    if (current) lines.push(current);
+  }
+  return lines.slice(0, 4);
+}
+
+async function createShortCaptionOverlay(text: string, style: ShortCaptionStyle) {
+  if (typeof document === "undefined") return "";
+  try { await document.fonts?.ready; } catch {}
+  const canvas = document.createElement("canvas");
+  canvas.width = 1080;
+  canvas.height = 1920;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Could not prepare the caption overlay.");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const minimal = style === "minimal";
+  const fontSize = minimal ? 54 : 66;
+  const lineHeight = minimal ? 70 : 84;
+  ctx.font = `800 ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const lines = wrapCanvasText(ctx, text, minimal ? 900 : 880);
+  if (!lines.length) return "";
+  const blockHeight = Math.max(lineHeight, lines.length * lineHeight);
+  const centerY = minimal ? 1590 : 1510;
+  const top = centerY - blockHeight / 2 - (minimal ? 18 : 34);
+  const bottom = centerY + blockHeight / 2 + (minimal ? 18 : 34);
+
+  if (style === "cinematic") {
+    ctx.fillStyle = "rgba(4, 8, 14, 0.72)";
+    ctx.beginPath();
+    ctx.roundRect(60, top, 960, bottom - top, 34);
+    ctx.fill();
+    ctx.fillStyle = "rgba(255, 142, 122, 0.95)";
+    ctx.fillRect(92, top + 18, 130, 6);
+  }
+
+  lines.forEach((line, index) => {
+    const y = centerY - ((lines.length - 1) * lineHeight) / 2 + index * lineHeight;
+    if (style === "bold") {
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.92)";
+      ctx.lineWidth = 14;
+      ctx.strokeText(line, 540, y);
+      ctx.fillStyle = "#fff7e8";
+      ctx.fillText(line, 540, y);
+    } else if (style === "minimal") {
+      ctx.shadowColor = "rgba(0,0,0,.95)";
+      ctx.shadowBlur = 14;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(line, 540, y);
+      ctx.shadowBlur = 0;
+    } else {
+      ctx.fillStyle = "#fffaf0";
+      ctx.fillText(line, 540, y);
+    }
+  });
+  return canvas.toDataURL("image/png");
 }
 
 async function detectVideoFormat(file: File): Promise<"landscape" | "vertical"> {
@@ -607,6 +708,10 @@ export default function MusicUniversePage() {
   const [ownShortError, setOwnShortError] = useState("");
   const [ownShortSlot, setOwnShortSlot] = useState<number | null>(null);
   const ownShortInputRef = useRef<HTMLInputElement | null>(null);
+  const [captionDrafts, setCaptionDrafts] = useState<Record<number, ShortCaptionSettings>>({});
+  const [captionRenderingSlot, setCaptionRenderingSlot] = useState<number | null>(null);
+  const [captionError, setCaptionError] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
 
   const [customVisualAssets, setCustomVisualAssets] = useState<LocalVisualAsset[]>([]);
   const [customVisualLoading, setCustomVisualLoading] = useState(false);
@@ -728,6 +833,11 @@ export default function MusicUniversePage() {
     void loadConnections();
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    setCaptionDrafts({});
+    setCaptionError("");
+  }, [activeProjectId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1509,6 +1619,85 @@ export default function MusicUniversePage() {
     }
   }
 
+  function captionDraftForSlot(slot: number): ShortCaptionSettings {
+    const saved = shortSlots.find((item) => item.slot === slot)?.captionSettings;
+    const meaningfulSaved = saved && (saved.updatedAt || saved.enabled || saved.text.trim()) ? saved : null;
+    return captionDrafts[slot] || meaningfulSaved || {
+      enabled: false,
+      text: defaultCaptionForSlot(activeProject?.lyrics, slot),
+      style: "cinematic",
+    };
+  }
+
+  function updateCaptionDraft(slot: number, patch: Partial<ShortCaptionSettings>) {
+    const current = captionDraftForSlot(slot);
+    setCaptionDrafts((drafts) => ({ ...drafts, [slot]: { ...current, ...patch } }));
+  }
+
+  async function handleApplyShortCaption(slot: number) {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    const status = shortSlots.find((item) => item.slot === slot);
+    if (!status?.generatedVideo) {
+      setCaptionError(`Generate Short ${slot} first.`);
+      return;
+    }
+    const settings = captionDraftForSlot(slot);
+    if (settings.enabled && !settings.text.trim()) {
+      setCaptionError(`Add caption text for Short ${slot}, or turn captions off.`);
+      return;
+    }
+    try {
+      setCaptionRenderingSlot(slot);
+      setCaptionError("");
+      const overlayDataUrl = settings.enabled ? await createShortCaptionOverlay(settings.text.trim(), settings.style) : "";
+      const data = await workerJson<any>("/short/caption", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, slot, ...settings, text: settings.text.trim(), overlayDataUrl }),
+      });
+      if (Array.isArray(data?.slots)) setShortSlots(data.slots);
+      setCaptionDrafts((drafts) => ({ ...drafts, [slot]: data?.captionSettings || { ...settings, updatedAt: new Date().toISOString() } }));
+    } catch (error) {
+      setCaptionError(error instanceof Error ? error.message : `Could not apply captions to Short ${slot}.`);
+    } finally {
+      setCaptionRenderingSlot(null);
+    }
+  }
+
+  async function handleNeedsChangesShort(slot: number) {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    try {
+      setReviewBusy(true);
+      const data = await workerJson<any>("/short/unapprove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId, slot }),
+      });
+      if (Array.isArray(data?.slots)) setShortSlots(data.slots);
+    } catch (error) {
+      setOwnShortError(error instanceof Error ? error.message : `Could not update Short ${slot}.`);
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function handleNeedsChangesFullVideo() {
+    if (!activeProjectId || !videoWorkerConnected) return;
+    try {
+      setReviewBusy(true);
+      const data = await workerJson<any>("/full-video/unapprove", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: activeProjectId }),
+      });
+      setApprovedFullVideo(data?.approvedVideo || null);
+    } catch (error) {
+      setOwnFullVideoError(error instanceof Error ? error.message : "Could not update the full-video review.");
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
   async function handleGenerateSunoStyles() {
     if (!activeProjectId) {
       setSunoStylesError("Create or select a song first.");
@@ -1940,6 +2129,8 @@ export default function MusicUniversePage() {
 
   const activeProject =
     projects.find((project) => project.id === activeProjectId) || projects[0] || null;
+  const approvedShortCount = shortSlots.filter((item) => Boolean(item.approvedVideo)).length;
+  const releaseReady = Boolean(approvedFullVideo) && approvedShortCount === 6;
   const activeStage = activeProject ? projectStage(activeProject) : "Creating";
   const hasLyrics = Boolean(activeProject?.lyrics?.trim());
   const activeArtwork = activeProject ? artworkByProject[activeProject.id] : "";
@@ -2668,7 +2859,10 @@ export default function MusicUniversePage() {
                               <p className="text-[10px] font-black text-cyan-100">Final full video selected ✓</p>
                               <p className="mt-0.5 text-[9px] text-zinc-500">{approvedFullVideo.source === "uploaded" ? "Your uploaded video will be used for publishing." : "The Universe-generated video will be used for publishing."}</p>
                             </div>
-                            <span className="rounded-full border border-cyan-200/15 px-2 py-1 text-[8px] font-black uppercase tracking-wider text-cyan-100">{approvedFullVideo.source}</span>
+                            <div className="flex items-center gap-2">
+                              <span className="rounded-full border border-cyan-200/15 px-2 py-1 text-[8px] font-black uppercase tracking-wider text-cyan-100">{approvedFullVideo.source}</span>
+                              <button disabled={reviewBusy} onClick={() => void handleNeedsChangesFullVideo()} className="rounded-lg border border-amber-200/15 bg-amber-200/[0.05] px-2.5 py-1.5 text-[8px] font-black text-amber-100 disabled:opacity-40">Needs changes</button>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2689,6 +2883,7 @@ export default function MusicUniversePage() {
                         </div>
                         {shortsError && <p className="mt-3 rounded-xl border border-rose-300/15 bg-rose-400/[0.07] px-3 py-2 text-[10px] font-bold text-rose-200">{shortsError}</p>}
                         {ownShortError && <p className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-amber-100">{ownShortError}</p>}
+                        {captionError && <p className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-[9px] font-bold leading-4 text-cyan-100">{captionError}</p>}
                         <input
                           ref={ownShortInputRef}
                           type="file"
@@ -2741,6 +2936,54 @@ export default function MusicUniversePage() {
                                   {generated && uploaded && (
                                     <p className="mt-2 text-[8px] leading-4 text-zinc-600">Both versions are kept. The approved version is the one Universe will publish.</p>
                                   )}
+                                  {approved && (
+                                    <button disabled={reviewBusy} onClick={() => void handleNeedsChangesShort(slot)} className="mt-2 rounded-lg border border-amber-200/15 bg-amber-200/[0.05] px-2.5 py-1.5 text-[8px] font-black text-amber-100 disabled:opacity-40">Needs changes</button>
+                                  )}
+                                  {generated && (() => {
+                                    const caption = captionDraftForSlot(slot);
+                                    const savedCaption = status?.captionSettings;
+                                    return (
+                                      <div className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.025] p-2.5">
+                                        <div className="flex items-center justify-between gap-2">
+                                          <p className="text-[9px] font-black text-zinc-200">Caption overlay</p>
+                                          <button
+                                            onClick={() => updateCaptionDraft(slot, { enabled: !caption.enabled })}
+                                            className={classNames("rounded-full px-2.5 py-1 text-[8px] font-black", caption.enabled ? "bg-cyan-200 text-cyan-950" : "border border-white/10 text-zinc-500")}
+                                          >
+                                            {caption.enabled ? "ON" : "OFF"}
+                                          </button>
+                                        </div>
+                                        {caption.enabled && (
+                                          <>
+                                            <textarea
+                                              value={caption.text}
+                                              onChange={(event) => updateCaptionDraft(slot, { text: event.target.value })}
+                                              rows={3}
+                                              className="mt-2 w-full resize-none rounded-lg border border-white/10 bg-black/20 px-2.5 py-2 text-[9px] leading-4 text-zinc-100 outline-none focus:border-cyan-200/30"
+                                              placeholder="Caption or lyric lines for this Short"
+                                            />
+                                            <select
+                                              value={caption.style}
+                                              onChange={(event) => updateCaptionDraft(slot, { style: event.target.value as ShortCaptionStyle })}
+                                              className="mt-2 w-full rounded-lg border border-white/10 bg-[#0d2029] px-2.5 py-2 text-[9px] font-bold text-zinc-200 outline-none"
+                                            >
+                                              <option value="cinematic">Cinematic card</option>
+                                              <option value="bold">Bold lyric</option>
+                                              <option value="minimal">Minimal</option>
+                                            </select>
+                                          </>
+                                        )}
+                                        <button
+                                          disabled={captionRenderingSlot === slot}
+                                          onClick={() => void handleApplyShortCaption(slot)}
+                                          className="mt-2 w-full rounded-lg bg-cyan-200/90 px-2.5 py-2 text-[8px] font-black text-cyan-950 disabled:opacity-40"
+                                        >
+                                          {captionRenderingSlot === slot ? "Applying…" : caption.enabled ? "Apply Caption" : savedCaption?.enabled ? "Remove Caption" : "Save Caption Setting"}
+                                        </button>
+                                        <p className="mt-1.5 text-[7px] leading-3 text-zinc-600">Applied only to the Universe-generated Short. Your uploaded replacement stays untouched.</p>
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               </div>
                             );
@@ -2748,10 +2991,32 @@ export default function MusicUniversePage() {
                         </div>
                         {shortSlots.length > 0 && (
                           <div className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2.5">
-                            <p className="text-[10px] font-black text-cyan-100">{shortSlots.filter((item) => item.approvedVideo).length}/6 Shorts approved for publishing</p>
-                            <p className="mt-0.5 text-[9px] text-zinc-500">You can approve the generated edits now and replace any individual Short later.</p>
+                            <p className="text-[10px] font-black text-cyan-100">{approvedShortCount}/6 Shorts approved for publishing</p>
+                            <p className="mt-0.5 text-[9px] text-zinc-500">Review each edit, tune its caption if needed, then approve the version Universe should publish.</p>
                           </div>
                         )}
+                      </div>
+
+                      <div className={classNames("mt-3 rounded-[22px] border p-4", releaseReady ? "border-emerald-300/25 bg-emerald-300/[0.06]" : "border-cyan-300/10 bg-white/[0.035]")}>
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-black">Final Review</p>
+                            <p className="mt-1 text-xs text-zinc-500">One approved full video + six approved Shorts completes the release package.</p>
+                          </div>
+                          <span className={classNames("rounded-full px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.12em]", releaseReady ? "bg-emerald-300 text-emerald-950" : "border border-white/10 text-zinc-400")}>
+                            {releaseReady ? "Release Ready ✓" : `${(approvedFullVideo ? 1 : 0) + approvedShortCount}/7 approved`}
+                          </span>
+                        </div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          <div className="rounded-xl border border-white/[0.07] bg-black/10 px-3 py-2.5">
+                            <p className="text-[9px] font-black text-zinc-300">Full video</p>
+                            <p className={classNames("mt-1 text-[9px]", approvedFullVideo ? "text-emerald-300" : "text-amber-200")}>{approvedFullVideo ? `Approved • ${approvedFullVideo.source}` : "Needs review"}</p>
+                          </div>
+                          <div className="rounded-xl border border-white/[0.07] bg-black/10 px-3 py-2.5">
+                            <p className="text-[9px] font-black text-zinc-300">Vertical Shorts</p>
+                            <p className={classNames("mt-1 text-[9px]", approvedShortCount === 6 ? "text-emerald-300" : "text-amber-200")}>{approvedShortCount}/6 approved</p>
+                          </div>
+                        </div>
                       </div>
 
                       <div className="mt-3 rounded-[22px] border border-cyan-300/10 bg-white/[0.035] p-4">
@@ -2760,7 +3025,7 @@ export default function MusicUniversePage() {
                             <p className="text-sm font-black">Publish</p>
                             <p className="mt-1 text-xs text-zinc-500">Approved videos will use the social pack already prepared in Create.</p>
                           </div>
-                          <button className="rounded-xl bg-gradient-to-r from-[#ff9a84] to-[#e95ccf] px-4 py-2.5 text-xs font-black text-[#281321]">Publish Now</button>
+                          <button disabled={!releaseReady} title={releaseReady ? "Publishing connections will be wired in RELEASE V5." : "Approve the full video and all six Shorts first."} className="rounded-xl bg-gradient-to-r from-[#ff9a84] to-[#e95ccf] px-4 py-2.5 text-xs font-black text-[#281321] disabled:cursor-not-allowed disabled:opacity-35">{releaseReady ? "Ready for Publishing" : "Complete Review"}</button>
                         </div>
                         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                           {[
