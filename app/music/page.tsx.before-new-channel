@@ -705,12 +705,6 @@ export default function MusicUniversePage() {
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [channelsLoading, setChannelsLoading] = useState(true);
   const [channelError, setChannelError] = useState("");
-  const [showNewChannel, setShowNewChannel] = useState(false);
-  const [newChannelName, setNewChannelName] = useState("");
-  const [newChannelLanguage, setNewChannelLanguage] = useState("Hindi");
-  const [newChannelDescription, setNewChannelDescription] = useState("");
-  const [newChannelBusy, setNewChannelBusy] = useState(false);
-  const [newChannelError, setNewChannelError] = useState("");
 
   const [projects, setProjects] = useState<SongProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -849,45 +843,6 @@ export default function MusicUniversePage() {
     await loadProjects(channelId);
   }
 
-  async function createChannel() {
-    const name = newChannelName.trim();
-    if (!name) {
-      setNewChannelError("Channel name is required.");
-      return;
-    }
-
-    try {
-      setNewChannelBusy(true);
-      setNewChannelError("");
-      const response = await fetch("/api/channels", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name,
-          language: newChannelLanguage,
-          channelType: "music",
-          description: newChannelDescription.trim(),
-        }),
-      });
-      const data = await response.json();
-      if (!response.ok || !data.channel) {
-        throw new Error(data.error || "Could not create channel.");
-      }
-
-      const channel = data.channel as MusicChannel;
-      setChannels((current) => [...current.filter((item) => item.id !== channel.id), channel]);
-      setShowNewChannel(false);
-      setNewChannelName("");
-      setNewChannelDescription("");
-      setNewChannelLanguage("Hindi");
-      await switchChannel(channel.id);
-    } catch (error) {
-      setNewChannelError(error instanceof Error ? error.message : "Could not create channel.");
-    } finally {
-      setNewChannelBusy(false);
-    }
-  }
-
   async function loadProjects(channelId: string, preferredProjectId?: string) {
     try {
       setLoading(true);
@@ -1016,16 +971,15 @@ export default function MusicUniversePage() {
     let cancelled = false;
     async function loadConnections() {
       try {
-        const response = await fetch(`/api/publishing/connections?channelId=${encodeURIComponent(activeChannelId || "")}`, { cache: "no-store" });
+        const response = await fetch("/api/publishing/connections", { cache: "no-store" });
         if (!response.ok) return;
         const data = await response.json();
         if (!cancelled) setConnections(Array.isArray(data.connections) ? data.connections : []);
       } catch {}
     }
-    if (activeChannelId) void loadConnections();
-    else setConnections([]);
+    void loadConnections();
     return () => { cancelled = true; };
-  }, [activeChannelId]);
+  }, []);
 
   useEffect(() => {
     setCaptionDrafts({});
@@ -1926,31 +1880,6 @@ export default function MusicUniversePage() {
     }
   }
 
-  async function handleBackfillProductionPlan() {
-    if (!activeProjectId) return;
-    try {
-      setPrepareBusy(true);
-      setPrepareError("");
-      setPrepareStep("Saving this prepared song into the reusable Production Plan — no AI generation…");
-      const data = await requestJson<any>("/api/production-plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: activeProjectId,
-          additionalDirection: additionalDirection.trim(),
-          backfillExisting: true,
-        }),
-      });
-      setPrepareStep(data?.backfilled
-        ? "✓ Production Plan backfilled from existing assets — 0 AI calls."
-        : "✓ Production Plan already exists — 0 AI calls.");
-    } catch (error) {
-      setPrepareError(error instanceof Error ? error.message : "Could not backfill the Production Plan.");
-    } finally {
-      setPrepareBusy(false);
-    }
-  }
-
   async function handlePrepareEverything() {
     if (!activeProjectId || !hasLyrics) {
       setPrepareError("Add or generate lyrics first.");
@@ -1969,33 +1898,7 @@ export default function MusicUniversePage() {
         );
       } catch {}
 
-      // Fresh songs are understood once. The stored production plan supplies
-      // music directions, visual worlds and both shot-brief sets in one AI call.
-      // Existing songs remain backward-compatible with the legacy endpoints.
-      let productionPlan: any = null;
-      if (!sunoStyles.length || !visualConcepts.length) {
-        setPrepareStep("Understanding the song once and building its production plan…");
-        const planData = await requestJson<any>("/api/production-plan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            projectId: activeProjectId,
-            additionalDirection: additionalDirection.trim(),
-          }),
-        });
-        productionPlan = planData?.plan || null;
-        if (Array.isArray(planData?.styles) && planData.styles.length) {
-          setSunoStyles(planData.styles);
-        }
-        if (Array.isArray(planData?.concepts) && planData.concepts.length) {
-          setVisualConcepts(planData.concepts);
-        }
-      }
-
-      let workingStyles =
-        Array.isArray(productionPlan?.styles) && productionPlan.styles.length
-          ? productionPlan.styles
-          : sunoStyles;
+      let workingStyles = sunoStyles;
       if (!workingStyles.length) {
         setPrepareStep("Creating the Suno music direction…");
         const styleData = await requestJson<{ styles?: SunoStyle[] }>(
@@ -2011,20 +1914,17 @@ export default function MusicUniversePage() {
         );
         workingStyles = Array.isArray(styleData.styles) ? styleData.styles : [];
         setSunoStyles(workingStyles);
-        const recommendedIndex = workingStyles.findIndex((style: { recommended?: boolean }) => style.recommended);
+        const recommendedIndex = workingStyles.findIndex((style) => style.recommended);
         setSelectedStyleIndex(recommendedIndex >= 0 ? recommendedIndex : 0);
       }
 
       const workingSelectedStyle =
         workingStyles[selectedStyleIndex] ||
-        workingStyles.find((style: { recommended?: boolean }) => style.recommended) ||
+        workingStyles.find((style) => style.recommended) ||
         workingStyles[0] ||
         null;
 
-      let concepts =
-        Array.isArray(productionPlan?.concepts) && productionPlan.concepts.length
-          ? productionPlan.concepts
-          : visualConcepts;
+      let concepts = visualConcepts;
       let conceptId = selectedVisualConceptId;
 
       if (!conceptId) {
@@ -2116,23 +2016,18 @@ export default function MusicUniversePage() {
 
       if (missingLandscape.length) {
         setPrepareStep("Creating cinematic artwork and YouTube thumbnail…");
-        const plannedLandscape = Array.isArray(productionPlan?.landscapeBriefs)
-          ? productionPlan.landscapeBriefs
-          : [];
-        const briefData = plannedLandscape.length
-          ? { briefs: plannedLandscape }
-          : await requestJson<{ briefs?: ShotBrief[] }>(
-              "/api/image-shot-briefs",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  projectId: activeProjectId,
-                  conceptId,
-                  format: "youtube",
-                }),
-              }
-            );
+        const briefData = await requestJson<{ briefs?: ShotBrief[] }>(
+          "/api/image-shot-briefs",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: activeProjectId,
+              conceptId,
+              format: "youtube",
+            }),
+          }
+        );
         const briefs = Array.isArray(briefData.briefs) ? briefData.briefs : [];
 
         const generated = await Promise.all(
@@ -2189,23 +2084,18 @@ export default function MusicUniversePage() {
 
       if (missingVertical.length) {
         setPrepareStep("Planning six vertical scenes for Shorts, Reels and TikTok…");
-        const plannedVertical = Array.isArray(productionPlan?.verticalBriefs)
-          ? productionPlan.verticalBriefs
-          : [];
-        const briefData = plannedVertical.length
-          ? { briefs: plannedVertical }
-          : await requestJson<{ briefs?: ShotBrief[] }>(
-              "/api/image-shot-briefs",
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  projectId: activeProjectId,
-                  conceptId,
-                  format: "shorts",
-                }),
-              }
-            );
+        const briefData = await requestJson<{ briefs?: ShotBrief[] }>(
+          "/api/image-shot-briefs",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: activeProjectId,
+              conceptId,
+              format: "shorts",
+            }),
+          }
+        );
         const briefs = Array.isArray(briefData.briefs) ? briefData.briefs : [];
 
         for (let start = 0; start < missingVertical.length; start += 2) {
@@ -2264,9 +2154,33 @@ export default function MusicUniversePage() {
 
       let nextSocial = { ...socialReadiness };
 
-      if (!nextSocial.youtubeFull || !nextSocial.youtubeShorts || !nextSocial.facebook || !nextSocial.instagram || !nextSocial.tiktok) {
-        setPrepareStep("Writing one reusable campaign pack for YouTube, Facebook, Instagram and TikTok…");
-        await requestJson("/api/campaign-plan", {
+      if (!nextSocial.youtubeFull) {
+        setPrepareStep("Writing the YouTube full-release pack…");
+        await requestJson("/api/social-media/youtube-full", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: activeProjectId,
+            generatorGuidance: guidance,
+            releaseDetails: {
+              releaseType: "Official Music Video",
+              artistBrand: "Suno Zara",
+              lyricsCredit: "Music & Lyrics – Debottom Das",
+              producerCredit: "Producer – Suno Zara",
+              preferredPlaylist: "",
+              includeAiDisclosure: false,
+              aiDisclosureDetails: "",
+              descriptionLinks: "",
+            },
+          }),
+        });
+        nextSocial.youtubeFull = true;
+        setSocialReadiness({ ...nextSocial });
+      }
+
+      if (!nextSocial.youtubeShorts) {
+        setPrepareStep("Writing the YouTube Shorts pack and hook plans…");
+        await requestJson("/api/social-media/youtube-shorts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2274,7 +2188,26 @@ export default function MusicUniversePage() {
             generatorGuidance: guidance,
           }),
         });
-        nextSocial = { youtubeFull: true, youtubeShorts: true, facebook: true, instagram: true, tiktok: true };
+        nextSocial.youtubeShorts = true;
+        setSocialReadiness({ ...nextSocial });
+      }
+
+      if (!nextSocial.facebook || !nextSocial.instagram || !nextSocial.tiktok) {
+        setPrepareStep("Writing Facebook, Instagram and TikTok packs…");
+        await requestJson("/api/social-media/platform-pack", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: activeProjectId,
+            generatorGuidance: guidance,
+          }),
+        });
+        nextSocial = {
+          ...nextSocial,
+          facebook: true,
+          instagram: true,
+          tiktok: true,
+        };
         setSocialReadiness(nextSocial);
       }
 
@@ -2669,19 +2602,6 @@ export default function MusicUniversePage() {
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setNewChannelError("");
-                      setShowNewChannel(true);
-                    }}
-                    disabled={channelsLoading}
-                    className="flex h-7 w-7 items-center justify-center rounded-lg border border-cyan-200/15 bg-cyan-200/[0.06] text-base font-black text-cyan-100 transition hover:bg-cyan-200/[0.12] disabled:opacity-40"
-                    aria-label="Create new channel"
-                    title="Create new channel"
-                  >
-                    +
-                  </button>
                 </label>
 
                 {(loading || projects.length > 0) && (
@@ -3139,16 +3059,6 @@ export default function MusicUniversePage() {
                           ? "✓ Everything Prepared"
                           : "✦ Prepare Everything"}
                       </button>
-                      {readyForSuno && (
-                        <button
-                          type="button"
-                          disabled={prepareBusy}
-                          onClick={() => void handleBackfillProductionPlan()}
-                          className="mt-2 w-full rounded-xl border border-black/10 bg-white/70 px-4 py-2.5 text-xs font-black text-[#183147] disabled:cursor-not-allowed disabled:opacity-45"
-                        >
-                          Save Reusable Production Plan (0 AI calls)
-                        </button>
-                      )}
                       {prepareStep && (
                         <div className="mt-3 rounded-xl border border-[#ef9b8a]/20 bg-[#fff7ee] px-3 py-2.5 text-center text-[10px] font-bold text-[#8a4a42]">
                           {prepareBusy && <span className="mr-2 inline-block animate-pulse">●</span>}
@@ -3647,7 +3557,6 @@ export default function MusicUniversePage() {
 
                       <LocalReleasePublisher
                         projectId={activeProjectId}
-                        channelId={activeChannelId}
                         releaseReady={releaseReady}
                         approvedFullVideo={approvedFullVideo}
                         shortSlots={shortSlots}
@@ -3744,43 +3653,6 @@ export default function MusicUniversePage() {
           </div>
         </main>
       </div>
-
-      {showNewChannel && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-[#02070d]/75 p-4 backdrop-blur-md">
-          <div className="w-full max-w-lg rounded-[30px] border border-white/[0.10] bg-[#0a1723] p-6 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-cyan-300">New Channel</p>
-                <h2 className="mt-2 text-3xl font-black tracking-[-0.04em]">Create a music channel</h2>
-                <p className="mt-2 text-sm leading-6 text-zinc-400">Each channel keeps its own songs and creative workspace separate.</p>
-              </div>
-              <button disabled={newChannelBusy} onClick={() => setShowNewChannel(false)} className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 text-zinc-400 disabled:opacity-40">×</button>
-            </div>
-
-            <div className="mt-6 space-y-4">
-              <label className="block">
-                <span className="text-xs font-bold text-zinc-300">Channel name</span>
-                <input autoFocus value={newChannelName} onChange={(event) => setNewChannelName(event.target.value)} placeholder="e.g. Suno Zara Hindi" className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm outline-none placeholder:text-zinc-600" />
-              </label>
-              <label className="block">
-                <span className="text-xs font-bold text-zinc-300">Primary language</span>
-                <select value={newChannelLanguage} onChange={(event) => setNewChannelLanguage(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-[#0d1c29] px-3 py-3 text-sm outline-none">
-                  {['Hindi','Bengali','English','Hinglish','Sanskrit','Other'].map((value) => <option key={value} value={value}>{value}</option>)}
-                </select>
-              </label>
-              <label className="block">
-                <span className="text-xs font-bold text-zinc-300">Description <span className="font-normal text-zinc-600">(optional)</span></span>
-                <textarea value={newChannelDescription} onChange={(event) => setNewChannelDescription(event.target.value)} rows={3} placeholder="What is this channel for?" className="mt-2 w-full resize-none rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm outline-none placeholder:text-zinc-600" />
-              </label>
-              {newChannelError && <p className="rounded-xl border border-red-300/15 bg-red-300/[0.06] px-3 py-2 text-xs text-red-200">{newChannelError}</p>}
-              <div className="flex justify-end gap-2 pt-2">
-                <button disabled={newChannelBusy} onClick={() => setShowNewChannel(false)} className="rounded-xl border border-white/10 px-4 py-2.5 text-xs font-bold text-zinc-300 disabled:opacity-40">Cancel</button>
-                <button disabled={newChannelBusy || !newChannelName.trim()} onClick={() => void createChannel()} className="rounded-xl bg-gradient-to-r from-[#ffd68f] via-[#ff8e87] to-[#e95ccf] px-5 py-2.5 text-xs font-black text-[#281321] disabled:opacity-45">{newChannelBusy ? "Creating…" : "Create Channel"}</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showNewSong && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#02070d]/75 p-4 backdrop-blur-md">

@@ -115,7 +115,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Choose Private, Unlisted or Public visibility." }, { status: 400 });
     }
 
-    const { data: song } = await supabase.from("songs").select("id,title").eq("id", projectId).eq("user_id", user.id).single();
+    const { data: song } = await supabase.from("songs").select("id,title,channel_id").eq("id", projectId).eq("user_id", user.id).single();
     if (!song) return NextResponse.json({ error: "Song not found." }, { status: 404 });
 
     const { data: pack, error: packError } = await supabase
@@ -153,6 +153,7 @@ export async function POST(request: Request) {
       .eq("user_id", user.id)
       .eq("platform", "youtube")
       .eq("status", "connected")
+      .eq("channel_id", song.channel_id)
       .order("is_primary", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -168,6 +169,7 @@ export async function POST(request: Request) {
       .eq("connection_id", connection.id)
       .eq("user_id", user.id)
       .eq("platform", "youtube")
+      .eq("channel_id", song.channel_id)
       .single();
     if (!credential) return NextResponse.json({ error: "YouTube OAuth credentials are missing." }, { status: 400 });
 

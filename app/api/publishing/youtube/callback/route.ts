@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 
 const STATE_COOKIE = "sz_youtube_oauth_state";
 const VERIFIER_COOKIE = "sz_youtube_oauth_verifier";
+const CHANNEL_COOKIE = "sz_youtube_oauth_channel";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -77,6 +78,7 @@ function redirectResult(
     path: "/",
     maxAge: 0,
   });
+  response.cookies.set(CHANNEL_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 0 });
   return response;
 }
 
@@ -94,6 +96,7 @@ export async function GET(request: Request) {
     const cookieStore = await cookies();
     const expectedState = cookieStore.get(STATE_COOKIE)?.value;
     const codeVerifier = cookieStore.get(VERIFIER_COOKIE)?.value;
+    const universeChannelId = cookieStore.get(CHANNEL_COOKIE)?.value || "";
 
     if (!code || !returnedState || !expectedState || returnedState !== expectedState) {
       return redirectResult("error", "state");
@@ -101,6 +104,9 @@ export async function GET(request: Request) {
 
     if (!codeVerifier) {
       return redirectResult("error", "pkce");
+    }
+    if (!universeChannelId) {
+      return redirectResult("error", "channel");
     }
 
     const supabase = await createClient();
@@ -112,6 +118,14 @@ export async function GET(request: Request) {
     if (authError || !user) {
       return redirectResult("error", "session");
     }
+
+    const { data: universeChannel } = await supabase
+      .from("channels")
+      .select("id, workspace_id, workspaces!inner(owner_user_id)")
+      .eq("id", universeChannelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .maybeSingle();
+    if (!universeChannel) return redirectResult("error", "channel");
 
     const clientId = process.env.GOOGLE_YOUTUBE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_YOUTUBE_CLIENT_SECRET;
@@ -198,6 +212,7 @@ export async function GET(request: Request) {
         .eq("user_id", user.id)
         .eq("platform", "youtube")
         .eq("external_account_id", channel.id)
+        .eq("channel_id", universeChannelId)
         .maybeSingle();
 
     if (existingConnectionError) {
@@ -210,10 +225,12 @@ export async function GET(request: Request) {
       .from("publishing_connections")
       .update({ is_primary: false, updated_at: now })
       .eq("user_id", user.id)
-      .eq("platform", "youtube");
+      .eq("platform", "youtube")
+      .eq("channel_id", universeChannelId);
 
     const connectionPayload = {
       user_id: user.id,
+      channel_id: universeChannelId,
       platform: "youtube",
       external_account_id: channel.id,
       display_name: channel.snippet?.title || "YouTube Channel",
@@ -313,6 +330,7 @@ export async function GET(request: Request) {
         {
           connection_id: connectionId,
           user_id: user.id,
+          channel_id: universeChannelId,
           platform: "youtube",
           access_token: tokenData.access_token,
           refresh_token: refreshToken,

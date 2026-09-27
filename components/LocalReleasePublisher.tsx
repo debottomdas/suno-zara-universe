@@ -16,6 +16,7 @@ type ShortSlot = {
 
 type Props = {
   projectId: string | null;
+  channelId: string | null;
   releaseReady: boolean;
   approvedFullVideo: LocalVideo | null;
   shortSlots: ShortSlot[];
@@ -71,6 +72,11 @@ type BufferReceipt = {
 
 type BufferMode = "draft" | "queue" | "schedule";
 
+type BufferRateLimit = {
+  windows?: Array<{ name: string; remaining: number; resetSeconds: number; quota?: number; windowSeconds?: number }>;
+  capturedAt?: string;
+} | null;
+
 const WORKER = "http://127.0.0.1:47123";
 
 function clean(value: unknown) {
@@ -93,6 +99,7 @@ async function jsonResponse<T = any>(response: Response, fallback: string): Prom
 
 export default function LocalReleasePublisher({
   projectId,
+  channelId,
   releaseReady,
   approvedFullVideo,
   shortSlots,
@@ -102,6 +109,10 @@ export default function LocalReleasePublisher({
   const [receipts, setReceipts] = useState<YouTubeReceipt[]>([]);
   const [bufferReceipts, setBufferReceipts] = useState<BufferReceipt[]>([]);
   const [bufferConfigured, setBufferConfigured] = useState(false);
+  const [bufferOauthConfigured, setBufferOauthConfigured] = useState(false);
+  const [bufferAccounts, setBufferAccounts] = useState<any[]>([]);
+  const [availableBufferAccounts, setAvailableBufferAccounts] = useState<any[]>([]);
+  const [existingBufferAccountId, setExistingBufferAccountId] = useState("");
   const [bufferChannels, setBufferChannels] = useState<BufferChannel[]>([]);
   const [selectedBufferChannelIds, setSelectedBufferChannelIds] = useState<string[]>([]);
   const [bufferMode, setBufferMode] = useState<BufferMode>("draft");
@@ -111,6 +122,7 @@ export default function LocalReleasePublisher({
   const [bufferBusy, setBufferBusy] = useState(false);
   const [bufferMessage, setBufferMessage] = useState("");
   const [bufferProgress, setBufferProgress] = useState("");
+  const [bufferRateLimit, setBufferRateLimit] = useState<BufferRateLimit>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
@@ -138,10 +150,36 @@ export default function LocalReleasePublisher({
   }, [publishOpen]);
 
   const safeProjectId = projectId || "";
-  const youtubeConnected = useMemo(
-    () => connections.some((item) => item.platform === "youtube" && item.status === "connected"),
+  const youtubeConnection = useMemo(
+    () => connections.find((item) => item.platform === "youtube" && item.status === "connected") || null,
     [connections]
   );
+  const youtubeConnected = Boolean(youtubeConnection);
+
+
+  async function useExistingBufferAccount() {
+    if (!channelId || !existingBufferAccountId) return;
+    try {
+      setBufferBusy(true); setBufferError("");
+      const response = await fetch("/api/publishing/buffer/bind", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId, accountId: existingBufferAccountId }) });
+      const data = await jsonResponse<any>(response, "Could not use existing Buffer account.");
+      setBufferMessage(`Buffer account mapped ✓ ${Number(data.bound || 0)} destination${Number(data.bound || 0) === 1 ? "" : "s"} available to this channel.`);
+      await loadBufferStatus(true);
+    } catch (err) { setBufferError(err instanceof Error ? err.message : "Could not use existing Buffer account."); } finally { setBufferBusy(false); }
+  }
+  function connectBuffer() {
+    if (!channelId) { setBufferError("Choose a Universe channel before connecting Buffer."); return; }
+    window.location.assign(`/api/publishing/buffer/connect?channelId=${encodeURIComponent(channelId)}`);
+  }
+
+  function connectYouTube() {
+    if (!channelId) {
+      setError("Choose a Universe channel before connecting YouTube.");
+      return;
+    }
+    const params = new URLSearchParams({ channelId });
+    window.location.assign(`/api/publishing/youtube/connect?${params.toString()}`);
+  }
 
   const approvedShorts = useMemo(
     () => shortSlots.filter((item) => item.approvedVideo).sort((a, b) => a.slot - b.slot),
@@ -162,14 +200,14 @@ export default function LocalReleasePublisher({
   const loadConnections = useCallback(async () => {
     try {
       const data = await jsonResponse<any>(
-        await fetch("/api/publishing/connections", { cache: "no-store" }),
+        await fetch(`/api/publishing/connections?channelId=${encodeURIComponent(channelId || "")}`, { cache: "no-store" }),
         "Could not load publishing connections."
       );
       setConnections(Array.isArray(data.connections) ? data.connections : []);
     } catch {
       setConnections([]);
     }
-  }, []);
+  }, [channelId]);
 
   const loadWorkerStatus = useCallback(async () => {
     if (!safeProjectId) return;
@@ -189,26 +227,38 @@ export default function LocalReleasePublisher({
     }
   }, [safeProjectId]);
 
-  const loadBufferStatus = useCallback(async () => {
+  const loadBufferStatus = useCallback(async (force = false) => {
     try {
-      const response = await fetch("/api/publishing/buffer/status", { cache: "no-store" });
+      const params = new URLSearchParams();
+      if (channelId) params.set("channelId", channelId);
+      if (force) params.set("refresh", "1");
+      const response = await fetch(`/api/publishing/buffer/status?${params.toString()}`, { cache: "no-store" });
       const data = await response.json().catch(() => ({}));
+      if (data.rateLimit) setBufferRateLimit(data.rateLimit);
       if (!response.ok) throw new Error(clean(data.error) || "Could not load Buffer.");
       const channels: BufferChannel[] = Array.isArray(data.channels) ? data.channels : [];
       setBufferConfigured(Boolean(data.configured));
+      setBufferOauthConfigured(Boolean(data.oauthConfigured));
+      setBufferAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+      const availableAccounts = Array.isArray(data.availableAccounts) ? data.availableAccounts : [];
+      setAvailableBufferAccounts(availableAccounts);
+      setExistingBufferAccountId((current) => current || clean(availableAccounts[0]?.id));
       setBufferChannels(channels);
       setSelectedBufferChannelIds((current) => {
         const stillValid = current.filter((id) => channels.some((channel) => channel.id === id));
         return stillValid.length ? stillValid : channels.map((channel) => channel.id);
       });
       setBufferError("");
+      if (force) setBufferMessage(`Buffer channels refreshed ✓ ${channels.length} connected channel${channels.length === 1 ? "" : "s"}.`);
     } catch (err) {
       setBufferConfigured(false);
-      setBufferChannels([]);
-      setSelectedBufferChannelIds([]);
-      setBufferError(err instanceof Error ? err.message : "Could not load Buffer.");
+      if (force) {
+        setBufferError(err instanceof Error ? err.message : "Could not refresh Buffer channels.");
+      } else {
+        setBufferError(err instanceof Error ? err.message : "Could not load Buffer.");
+      }
     }
-  }, []);
+  }, [channelId]);;
 
   useEffect(() => {
     setError("");
@@ -481,7 +531,8 @@ export default function LocalReleasePublisher({
 
       const current = new Map<string, BufferReceipt>();
       for (const receipt of canonicalBufferReceipts) current.set(receipt.itemKey, receipt);
-      let createdCount = 0;
+      const batchItems: any[] = [];
+      const stagedBySlot = new Map<number, { storagePath: string; mediaUrl: string }>();
 
       for (let slot = 1; slot <= 6; slot += 1) {
         const pending = selectedBufferChannels.filter((channel) => {
@@ -491,59 +542,79 @@ export default function LocalReleasePublisher({
         if (!pending.length) continue;
 
         const staged = await stageShort(slot);
-
+        stagedBySlot.set(slot, staged);
+        const dueAt = scheduledTimeForSlot(slot);
         for (const channel of pending) {
-          setBufferProgress(`Short ${slot}: creating ${titleCase(channel.service)} post for ${channel.name}…`);
-          const dueAt = scheduledTimeForSlot(slot);
-          const created = await jsonResponse<any>(
-            await fetch("/api/publishing/buffer/create-post", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                projectId: safeProjectId,
-                slot,
-                channelId: channel.id,
-                service: channel.service,
-                mediaUrl: staged.mediaUrl,
-                publishMode: bufferMode,
-                dueAt,
-              }),
-            }),
-            `Buffer could not create ${channel.service} Short ${slot}.`
-          );
-
-          const receipt: BufferReceipt = {
-            itemKey: bufferKey(channel.id, slot),
+          batchItems.push({
             slot,
-            service: channel.service,
             channelId: channel.id,
             channelName: channel.name,
-            postId: created.post.id,
-            status: created.post.status || (bufferMode === "draft" ? "draft" : "scheduled"),
-            dueAt: created.post.dueAt || dueAt || null,
-            externalLink: created.post.externalLink || null,
-            storagePath: staged.storagePath,
+            service: channel.service,
             mediaUrl: staged.mediaUrl,
+            storagePath: staged.storagePath,
             publishMode: bufferMode,
-            createdAt: new Date().toISOString(),
-          };
-          await saveBufferReceipt(receipt);
-          current.set(receipt.itemKey, receipt);
-          createdCount += 1;
+            dueAt,
+          });
         }
+      }
+
+      if (!batchItems.length) {
+        setBufferMessage(`All ${selectedBufferChannels.length * 6} selected Buffer posts already have receipts. Use Refresh + Cleanup Buffer to check delivery.`);
+        return;
+      }
+
+      setBufferProgress(`Creating ${batchItems.length} Buffer post${batchItems.length === 1 ? "" : "s"} in one API request…`);
+      const created = await jsonResponse<any>(
+        await fetch("/api/publishing/buffer/create-posts-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: safeProjectId,
+            items: batchItems.map(({ channelName, storagePath, ...item }) => item),
+          }),
+        }),
+        "Buffer could not create the batch."
+      );
+      if (created.rateLimit) setBufferRateLimit(created.rateLimit);
+
+      let createdCount = 0;
+      let failedCount = 0;
+      const results = Array.isArray(created.results) ? created.results : [];
+      for (const result of results) {
+        const source = batchItems.find((item) => item.slot === Number(result.slot) && item.channelId === String(result.channelId));
+        if (!source) continue;
+        const post = result.post;
+        const receipt: BufferReceipt = {
+          itemKey: bufferKey(source.channelId, source.slot),
+          slot: source.slot,
+          service: source.service,
+          channelId: source.channelId,
+          channelName: source.channelName,
+          postId: post?.id || "",
+          status: post?.id ? (post.status || (bufferMode === "draft" ? "draft" : "scheduled")) : "error",
+          dueAt: post?.dueAt || source.dueAt || null,
+          externalLink: post?.externalLink || null,
+          errorMessage: result.error || null,
+          storagePath: source.storagePath,
+          mediaUrl: source.mediaUrl,
+          publishMode: bufferMode,
+          createdAt: new Date().toISOString(),
+        };
+        await saveBufferReceipt(receipt);
+        current.set(receipt.itemKey, receipt);
+        if (post?.id) createdCount += 1; else failedCount += 1;
       }
 
       await loadWorkerStatus();
       setBufferProgress("");
-      const total = selectedBufferChannels.length * 6;
-      if (createdCount === 0) {
-        setBufferMessage(`All ${total} selected Buffer posts already have receipts. Use Refresh Buffer Status to check delivery.`);
+      if (failedCount) {
+        setBufferMessage(`${createdCount} Buffer post${createdCount === 1 ? "" : "s"} created in 1 API request; ${failedCount} failed and can be retried.`);
       } else if (bufferMode === "draft") {
-        setBufferMessage(`${createdCount} Buffer draft${createdCount === 1 ? "" : "s"} created. Nothing was published.`);
+        setBufferMessage(`${createdCount} Buffer draft${createdCount === 1 ? "" : "s"} created in 1 API request. Nothing was published.`);
       } else if (bufferMode === "queue") {
-        setBufferMessage(`${createdCount} post${createdCount === 1 ? "" : "s"} added to the Buffer queues.`);
+        setBufferMessage(`${createdCount} post${createdCount === 1 ? "" : "s"} added to Buffer queues in 1 API request.`);
       } else {
-        setBufferMessage(`${createdCount} post${createdCount === 1 ? "" : "s"} scheduled through Buffer.`);
+        setBufferMessage(`${createdCount} post${createdCount === 1 ? "" : "s"} scheduled through Buffer in 1 API request.`);
       }
     } catch (err) {
       setBufferProgress("");
@@ -569,7 +640,7 @@ export default function LocalReleasePublisher({
       const finalTime = start + 5 * Math.max(1, bufferGapMinutes) * 60_000;
       if (finalTime > Date.now() + 29 * 24 * 60 * 60 * 1000) throw new Error("Keep the final Buffer Short within the next 29 days while temporary media remains available.");
 
-      let scheduledCount = 0;
+      const items: Array<{ itemKey: string; postId: string; dueAt: string }> = [];
       for (let slot = 1; slot <= 6; slot += 1) {
         const dueAt = new Date(start + (slot - 1) * Math.max(1, bufferGapMinutes) * 60_000).toISOString();
         for (const channel of selectedBufferChannels) {
@@ -577,33 +648,43 @@ export default function LocalReleasePublisher({
           const receipt = canonicalBufferMap.get(key);
           if (!receipt?.postId) throw new Error(`${channel.name} · Short ${slot} has no Buffer draft receipt.`);
           if (receipt.status === "sent" || receipt.status === "sending" || (receipt.status === "scheduled" && receipt.dueAt)) continue;
-
-          setBufferProgress(`Scheduling ${titleCase(channel.service)} · Short ${slot}…`);
-          const result = await jsonResponse<any>(
-            await fetch("/api/publishing/buffer/schedule-post", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ projectId: safeProjectId, postId: receipt.postId, dueAt }),
-            }),
-            `Could not schedule ${channel.service} Short ${slot}.`
-          );
-
-          const updated: BufferReceipt = {
-            ...receipt,
-            status: result.post?.status || "scheduled",
-            dueAt: result.post?.dueAt || dueAt,
-            externalLink: result.post?.externalLink || receipt.externalLink || null,
-            publishMode: "schedule",
-            updatedAt: new Date().toISOString(),
-          };
-          await saveBufferReceipt(updated);
-          scheduledCount += 1;
+          items.push({ itemKey: key, postId: receipt.postId, dueAt });
         }
+      }
+
+      if (!items.length) {
+        setBufferMessage("All selected Buffer posts are already scheduled/sent ✓ Nothing was changed.");
+        return;
+      }
+
+      setBufferProgress(`Scheduling ${items.length} existing Buffer post${items.length === 1 ? "" : "s"} in one API request…`);
+      const result = await jsonResponse<any>(
+        await fetch("/api/publishing/buffer/schedule-posts-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectId: safeProjectId, items }),
+        }),
+        "Could not schedule Buffer drafts."
+      );
+      if (result.rateLimit) setBufferRateLimit(result.rateLimit);
+
+      let scheduledCount = 0;
+      let failedCount = 0;
+      for (const row of Array.isArray(result.results) ? result.results : []) {
+        const receipt = canonicalBufferMap.get(String(row.itemKey));
+        if (!receipt) continue;
+        const updated: BufferReceipt = row.post?.id
+          ? { ...receipt, status: row.post.status || "scheduled", dueAt: row.post.dueAt || row.dueAt, externalLink: row.post.externalLink || receipt.externalLink || null, publishMode: "schedule", updatedAt: new Date().toISOString(), errorMessage: null }
+          : { ...receipt, status: "error", errorMessage: row.error || "Buffer could not schedule this post.", updatedAt: new Date().toISOString() };
+        await saveBufferReceipt(updated);
+        if (row.post?.id) scheduledCount += 1; else failedCount += 1;
       }
 
       await loadWorkerStatus();
       setBufferProgress("");
-      setBufferMessage(scheduledCount ? `${scheduledCount} previously-unscheduled Buffer post${scheduledCount === 1 ? "" : "s"} scheduled ✓ Existing drafts were reused; no videos were uploaded again.` : "All selected Buffer posts are already scheduled/sent ✓ Nothing was changed.");
+      setBufferMessage(failedCount
+        ? `${scheduledCount} Buffer post${scheduledCount === 1 ? "" : "s"} scheduled in 1 API request; ${failedCount} failed and can be retried.`
+        : `${scheduledCount} Buffer post${scheduledCount === 1 ? "" : "s"} scheduled in 1 API request ✓ Existing drafts were reused; no videos were uploaded again.`);
     } catch (err) {
       setBufferProgress("");
       setBufferError(err instanceof Error ? err.message : "Could not schedule Buffer drafts.");
@@ -629,6 +710,7 @@ export default function LocalReleasePublisher({
         }),
         "Could not refresh Buffer status."
       );
+      if (data.rateLimit) setBufferRateLimit(data.rateLimit);
       const statusById = new Map<string, any>((Array.isArray(data.posts) ? data.posts : []).map((post: any) => [String(post.id), post]));
       const merged: BufferReceipt[] = [];
 
@@ -673,7 +755,8 @@ export default function LocalReleasePublisher({
 
       await loadWorkerStatus();
       setBufferProgress("");
-      setBufferMessage(cleaned ? `Buffer status refreshed. ${cleaned} temporary staged video${cleaned === 1 ? "" : "s"} cleaned up after publishing.` : "Buffer status refreshed.");
+      const requestNote = data.apiRequestsUsed ? ` (${data.apiRequestsUsed} Buffer API request${data.apiRequestsUsed === 1 ? "" : "s"})` : "";
+      setBufferMessage(cleaned ? `Buffer status refreshed${requestNote}. ${cleaned} temporary staged video${cleaned === 1 ? "" : "s"} cleaned up after publishing.` : `Buffer status refreshed${requestNote}.`);
     } catch (err) {
       setBufferProgress("");
       setBufferError(err instanceof Error ? err.message : "Could not refresh Buffer status.");
@@ -693,6 +776,15 @@ export default function LocalReleasePublisher({
     publishedKeys.has(`youtube-short-${String(i + 1).padStart(2, "0")}`)
   ).filter(Boolean).length;
   const allYouTubePublished = fullPublished && shortPublishedCount === 6;
+
+  const bufferRateWindows = useMemo(() => Array.isArray(bufferRateLimit?.windows) ? [...bufferRateLimit!.windows!].sort((a, b) => (a.windowSeconds || 0) - (b.windowSeconds || 0)) : [], [bufferRateLimit]);
+  const bufferQuotaLow = bufferRateWindows.some((window) => window.quota && window.remaining <= Math.max(1, Math.floor(window.quota * 0.1)));
+  function bufferWindowLabel(seconds?: number) {
+    if (seconds === 900) return "15m";
+    if (seconds === 86400) return "24h";
+    if (seconds === 2592000) return "30d";
+    return "quota";
+  }
 
   const expectedBufferPosts = selectedBufferChannels.length * 6;
   const canonicalBufferMap = useMemo(
@@ -784,6 +876,19 @@ export default function LocalReleasePublisher({
           <p className={youtubeConnected ? "mt-1 text-[9px] text-emerald-300" : "mt-1 text-[9px] text-amber-200"}>
             {youtubeConnected ? "Connected ✓" : "Not connected"}
           </p>
+          {youtubeConnection && (
+            <p className="mt-1 truncate text-[8px] text-zinc-500">
+              {youtubeConnection.display_name || youtubeConnection.handle || "Connected YouTube channel"}
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={!channelId || busy}
+            onClick={connectYouTube}
+            className="mt-2 rounded-lg border border-cyan-300/20 bg-cyan-300/[0.06] px-2.5 py-1.5 text-[8px] font-black text-cyan-100 disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            {youtubeConnected ? "Reconnect YouTube" : "Connect YouTube"}
+          </button>
         </div>
         <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2.5">
           <p className="text-[9px] font-black text-zinc-300">YouTube published</p>
@@ -890,12 +995,32 @@ export default function LocalReleasePublisher({
               Send all six approved Shorts to the selected channels. Each Short is staged once, then reused for every selected Buffer destination.
             </p>
           </div>
-          <span className={bufferConfigured ? "rounded-full border border-emerald-300/20 bg-emerald-300/[0.06] px-3 py-1.5 text-[9px] font-black text-emerald-200" : "rounded-full border border-amber-300/20 bg-amber-300/[0.06] px-3 py-1.5 text-[9px] font-black text-amber-200"}>
-            {bufferConfigured ? `${bufferChannels.length} channels connected` : "API key needed"}
-          </span>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className={bufferChannels.length ? "rounded-full border border-emerald-300/20 bg-emerald-300/[0.06] px-3 py-1.5 text-[9px] font-black text-emerald-200" : "rounded-full border border-amber-300/20 bg-amber-300/[0.06] px-3 py-1.5 text-[9px] font-black text-amber-200"}>
+              {bufferChannels.length ? `${bufferChannels.length} channels connected` : "No Buffer channels connected"}
+            </span>
+            {bufferOauthConfigured && <button type="button" disabled={bufferBusy || !channelId} onClick={connectBuffer} className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.05] px-3 py-1.5 text-[8px] font-black text-cyan-100 disabled:opacity-35">{bufferAccounts.some((a:any) => !a.legacy) ? "Connect another Buffer account" : "Connect Buffer account"}</button>}
+            {bufferOauthConfigured && availableBufferAccounts.length > 0 && <>
+              <select value={existingBufferAccountId} onChange={(e) => setExistingBufferAccountId(e.target.value)} className="rounded-full border border-white/10 bg-[#0d2029] px-3 py-1.5 text-[8px] font-bold text-zinc-300">
+                {availableBufferAccounts.map((a:any) => <option key={a.id} value={a.id}>{a.display_name || a.email || "Buffer account"}</option>)}
+              </select>
+              <button type="button" disabled={bufferBusy || !existingBufferAccountId} onClick={() => void useExistingBufferAccount()} className="rounded-full border border-white/10 px-3 py-1.5 text-[8px] font-black text-zinc-300 disabled:opacity-35">Use existing Buffer account</button>
+            </>}
+            <button type="button" disabled={bufferBusy} onClick={() => void loadBufferStatus(true)} className="rounded-full border border-white/10 px-3 py-1.5 text-[8px] font-black text-zinc-400 disabled:opacity-35">Refresh Channels · API</button>
+          </div>
         </div>
 
-        {!bufferConfigured && !bufferError && <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.04] px-3 py-2.5 text-[10px] text-amber-100">Add <b>BUFFER_API_KEY</b> to <b>.env.local</b>, restart npm run dev, then refresh.</div>}
+        {bufferRateWindows.length > 0 && (
+          <div className={`mt-3 flex flex-wrap items-center gap-2 rounded-xl border px-3 py-2 ${bufferQuotaLow ? "border-amber-300/25 bg-amber-300/[0.05]" : "border-cyan-300/10 bg-cyan-300/[0.025]"}`}>
+            <span className={`text-[8px] font-black uppercase tracking-[0.12em] ${bufferQuotaLow ? "text-amber-200" : "text-cyan-200"}`}>Buffer API quota</span>
+            {bufferRateWindows.map((window) => (
+              <span key={window.name} className="text-[8px] font-bold text-zinc-400">{bufferWindowLabel(window.windowSeconds)} {window.remaining}/{window.quota || "?"} left</span>
+            ))}
+            <span className="text-[8px] text-zinc-600">Read from existing Buffer responses — no extra quota check.</span>
+          </div>
+        )}
+
+        {!bufferConfigured && !bufferOauthConfigured && !bufferError && <div className="mt-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.04] px-3 py-2.5 text-[10px] text-amber-100">Buffer is not configured. Add the Buffer OAuth client credentials to <b>.env.local</b> and restart Universe.</div>}
         {bufferError && <div className="mt-3 rounded-xl border border-red-300/20 bg-red-300/[0.05] px-3 py-2.5 text-[10px] font-bold text-red-200">{bufferError}</div>}
         {bufferMessage && <div className="mt-3 rounded-xl border border-emerald-300/20 bg-emerald-300/[0.05] px-3 py-2.5 text-[10px] font-bold text-emerald-200">{bufferMessage}</div>}
         {bufferProgress && <div className="mt-3 rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2.5 text-[10px] font-bold text-cyan-100">{bufferProgress}</div>}
@@ -949,10 +1074,10 @@ export default function LocalReleasePublisher({
         )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button disabled={bufferBusy || !bufferConfigured || !workerReady || !selectedBufferChannels.length || approvedShorts.length !== 6} onClick={() => void runBufferBatch()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
-            {bufferBusy ? "Working…" : selectedBufferCreatedCount > 0 ? "Retry Missing / Failed" : `Prepare ${expectedBufferPosts} Buffer Posts`}
+          <button disabled={bufferBusy || bufferQuotaLow || !bufferConfigured || !workerReady || !selectedBufferChannels.length || approvedShorts.length !== 6} onClick={() => void runBufferBatch()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
+            {bufferBusy ? "Working…" : selectedBufferCreatedCount > 0 ? "Retry Missing / Failed · 1 API call" : `Prepare ${expectedBufferPosts} Buffer Posts · 1 API call`}
           </button>
-          <button disabled={bufferBusy || !bufferReceipts.length} onClick={() => void refreshBufferStatuses()} className="rounded-xl border border-white/10 px-3 py-3 text-[10px] font-black text-zinc-300 disabled:opacity-35">Refresh + Cleanup Buffer</button>
+          <button disabled={bufferBusy || bufferQuotaLow || !bufferReceipts.length} onClick={() => void refreshBufferStatuses()} className="rounded-xl border border-white/10 px-3 py-3 text-[10px] font-black text-zinc-300 disabled:opacity-35">Refresh + Cleanup · 1 API call</button>
           <span className="text-[9px] text-zinc-500">{selectedBufferCreatedCount}/{expectedBufferPosts || 0} selected destinations prepared</span>
         </div>
 
@@ -983,8 +1108,8 @@ export default function LocalReleasePublisher({
               </label>
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button disabled={bufferBusy || !selectedBufferChannels.length} onClick={() => void scheduleExistingBufferDrafts()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
-                {bufferBusy ? "Scheduling…" : `Schedule ${selectedBufferChannels.length * 6} Existing Buffer Posts`}
+              <button disabled={bufferBusy || bufferQuotaLow || !selectedBufferChannels.length} onClick={() => void scheduleExistingBufferDrafts()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
+                {bufferBusy ? "Scheduling…" : `Schedule ${selectedBufferChannels.length * 6} Existing Posts · 1 API call`}
               </button>
               <span className="text-[8px] leading-4 text-zinc-600">The same Short number is scheduled at the same time on TikTok, Instagram and Facebook.</span>
             </div>
@@ -1018,7 +1143,7 @@ export default function LocalReleasePublisher({
         )}
 
         <p className="mt-3 text-[8px] leading-4 text-zinc-600">
-          Buffer requires a reachable video URL, so Universe temporarily stages each Short. Refreshing status removes that staged file after every Buffer post using it reaches <b>sent</b>. Drafts should be scheduled within 30 days so the temporary media link remains valid.
+          Buffer requires a reachable video URL, so Universe temporarily stages each Short. Refreshing status removes that staged file after every Buffer post using it reaches <b>sent</b>. Drafts should be scheduled within 30 days so the temporary media link remains valid. Buffer reads are now batched: up to 30 post lookups, creates or schedule edits use one GraphQL request instead of one request per post.
         </p>
       </div>
       </>)}

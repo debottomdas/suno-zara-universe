@@ -6,6 +6,7 @@ export const runtime = "nodejs";
 
 const STATE_COOKIE = "sz_youtube_oauth_state";
 const VERIFIER_COOKIE = "sz_youtube_oauth_verifier";
+const CHANNEL_COOKIE = "sz_youtube_oauth_channel";
 const COOKIE_MAX_AGE = 10 * 60;
 
 const SCOPES = [
@@ -21,7 +22,7 @@ function base64Url(buffer: Buffer) {
     .replace(/=+$/g, "");
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase = await createClient();
     const {
@@ -34,6 +35,16 @@ export async function GET() {
         new URL("/login", process.env.GOOGLE_YOUTUBE_REDIRECT_URI || "http://localhost:3000")
       );
     }
+
+    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    if (!channelId) throw new Error("A Universe channel is required before connecting YouTube.");
+    const { data: channel } = await supabase
+      .from("channels")
+      .select("id, workspace_id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .maybeSingle();
+    if (!channel) throw new Error("The selected Universe channel is not available.");
 
     const clientId = process.env.GOOGLE_YOUTUBE_CLIENT_ID;
     const redirectUri = process.env.GOOGLE_YOUTUBE_REDIRECT_URI;
@@ -77,6 +88,10 @@ export async function GET() {
       secure,
       path: "/",
       maxAge: COOKIE_MAX_AGE,
+    });
+
+    response.cookies.set(CHANNEL_COOKIE, channelId, {
+      httpOnly: true, sameSite: "lax", secure, path: "/", maxAge: COOKIE_MAX_AGE,
     });
 
     return response;

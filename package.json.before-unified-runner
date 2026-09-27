@@ -7,8 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "universe-worker": "node local-worker/full-video-worker.mjs",
-    "universe": "node scripts/run-universe.mjs"
+    "universe-worker": "node local-worker/full-video-worker.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

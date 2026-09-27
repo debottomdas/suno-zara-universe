@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const supabase = await createClient();
 
@@ -14,6 +14,31 @@ export async function GET() {
       return NextResponse.json(
         { error: "Please sign in to view your songs." },
         { status: 401 }
+      );
+    }
+
+    const channelId =
+      new URL(request.url).searchParams.get("channelId")?.trim() || "";
+
+    if (!channelId) {
+      return NextResponse.json(
+        { error: "channelId is required." },
+        { status: 400 }
+      );
+    }
+
+    // Verify the selected channel belongs to this user's workspace.
+    const { data: channel, error: channelError } = await supabase
+      .from("channels")
+      .select("id, workspace_id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .single();
+
+    if (channelError || !channel) {
+      return NextResponse.json(
+        { error: "The selected channel is not available." },
+        { status: 403 }
       );
     }
 
@@ -38,6 +63,8 @@ export async function GET() {
         created_at,
         updated_at
       `)
+      .eq("user_id", user.id)
+      .eq("channel_id", channel.id)
       .order("updated_at", {
         ascending: false,
       });

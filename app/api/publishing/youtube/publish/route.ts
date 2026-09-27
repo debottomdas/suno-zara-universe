@@ -437,7 +437,7 @@ export async function POST(request: Request) {
 
     const { data: song, error: songError } = await supabase
       .from("songs")
-      .select("id")
+      .select("id,channel_id")
       .eq("id", projectId)
       .eq("user_id", userId)
       .single();
@@ -522,6 +522,7 @@ export async function POST(request: Request) {
         .eq("user_id", userId)
         .eq("platform", "youtube")
         .eq("status", "connected")
+        .eq("channel_id", song.channel_id)
         .maybeSingle();
       connection = data;
     }
@@ -533,6 +534,7 @@ export async function POST(request: Request) {
         .eq("user_id", userId)
         .eq("platform", "youtube")
         .eq("status", "connected")
+        .eq("channel_id", song.channel_id)
         .order("is_primary", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -558,6 +560,7 @@ export async function POST(request: Request) {
       .eq("connection_id", connectionId)
       .eq("user_id", userId)
       .eq("platform", "youtube")
+      .eq("channel_id", song.channel_id)
       .single();
 
     if (credentialError || !credential) {

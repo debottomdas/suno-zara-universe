@@ -38,7 +38,31 @@ export async function POST(request: Request) {
       mood,
       genre,
       freedom,
+      channelId,
     } = body;
+
+    if (!channelId || typeof channelId !== "string") {
+      return NextResponse.json(
+        { error: "Please select a channel." },
+        { status: 400 }
+      );
+    }
+
+    // Verify the selected channel belongs to this user's workspace
+    // before spending any OpenAI credits.
+    const { data: channel, error: channelError } = await supabase
+      .from("channels")
+      .select("id, workspace_id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .single();
+
+    if (channelError || !channel) {
+      return NextResponse.json(
+        { error: "The selected channel is not available." },
+        { status: 403 }
+      );
+    }
 
     if (!idea?.trim()) {
       return NextResponse.json(
@@ -109,6 +133,7 @@ Rules:
       .from("songs")
       .insert({
         user_id: user.id,
+        channel_id: channel.id,
         idea,
         language,
         script,

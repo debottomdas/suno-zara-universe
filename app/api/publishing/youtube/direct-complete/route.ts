@@ -17,10 +17,10 @@ async function googleMessage(response: Response, fallback: string) {
   try { const parsed = JSON.parse(text); return parsed?.error?.message || `${fallback} (HTTP ${response.status})`; }
   catch { return `${fallback} (HTTP ${response.status})`; }
 }
-async function currentAccessToken(admin: ReturnType<typeof createAdminClient>, userId: string) {
-  const { data: connection } = await admin.from("publishing_connections").select("id").eq("user_id", userId).eq("platform", "youtube").eq("status", "connected").order("is_primary", { ascending: false }).limit(1).maybeSingle();
+async function currentAccessToken(admin: ReturnType<typeof createAdminClient>, userId: string, channelId: string) {
+  const { data: connection } = await admin.from("publishing_connections").select("id").eq("user_id", userId).eq("platform", "youtube").eq("status", "connected").eq("channel_id", channelId).order("is_primary", { ascending: false }).limit(1).maybeSingle();
   if (!connection?.id) return "";
-  const { data: credential } = await admin.from("publishing_oauth_credentials").select("access_token").eq("connection_id", connection.id).eq("user_id", userId).eq("platform", "youtube").maybeSingle();
+  const { data: credential } = await admin.from("publishing_oauth_credentials").select("access_token").eq("connection_id", connection.id).eq("user_id", userId).eq("platform", "youtube").eq("channel_id", channelId).maybeSingle();
   return clean(credential?.access_token);
 }
 async function normalizeThumbnail(buffer: Buffer, mimeType: string) {
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     const privacyStatus = clean(body.privacyStatus) || "private";
     if (!projectId || !videoId) return NextResponse.json({ error: "projectId and videoId are required." }, { status: 400 });
 
-    const { data: song } = await supabase.from("songs").select("id,title").eq("id", projectId).eq("user_id", user.id).single();
+    const { data: song } = await supabase.from("songs").select("id,title,channel_id").eq("id", projectId).eq("user_id", user.id).single();
     if (!song) return NextResponse.json({ error: "Song not found." }, { status: 404 });
 
     const admin = createAdminClient();
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         .eq("media_kind", "thumbnail")
         .eq("slot", 1)
         .maybeSingle();
-      const token = await currentAccessToken(admin, user.id);
+      const token = await currentAccessToken(admin, user.id, clean(song.channel_id));
       if (thumbnail && token) {
         try {
           const source = await openMediaAssetResponse(admin, thumbnail as unknown as StoredMediaAsset, 10 * 60);

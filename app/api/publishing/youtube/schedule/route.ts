@@ -81,7 +81,7 @@ async function refreshAccessToken(
   return data.access_token as string;
 }
 
-async function getAccessToken(userId: string) {
+async function getAccessToken(userId: string, channelId: string) {
   const admin = createAdminClient();
   const { data: connection } = await admin
     .from("publishing_connections")
@@ -89,6 +89,7 @@ async function getAccessToken(userId: string) {
     .eq("user_id", userId)
     .eq("platform", "youtube")
     .eq("status", "connected")
+    .eq("channel_id", channelId)
     .order("is_primary", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -105,6 +106,7 @@ async function getAccessToken(userId: string) {
     .eq("connection_id", connection.id)
     .eq("user_id", userId)
     .eq("platform", "youtube")
+    .eq("channel_id", channelId)
     .single();
 
   if (!credential) throw new Error("YouTube OAuth credentials are missing.");
@@ -141,13 +143,13 @@ export async function POST(request: Request) {
 
     const { data: song } = await supabase
       .from("songs")
-      .select("id")
+      .select("id,channel_id")
       .eq("id", projectId)
       .eq("user_id", user.id)
       .single();
     if (!song) return NextResponse.json({ error: "Song not found." }, { status: 404 });
 
-    const accessToken = await getAccessToken(user.id);
+    const accessToken = await getAccessToken(user.id, clean(song.channel_id));
 
     const listUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
     listUrl.searchParams.set("part", "status");

@@ -23,6 +23,33 @@ export async function POST(request: Request) {
 
     const body = await request.json();
 
+    const channelId =
+      typeof body.channelId === "string"
+        ? body.channelId.trim()
+        : "";
+
+    if (!channelId) {
+      return NextResponse.json(
+        { error: "Please select a channel." },
+        { status: 400 }
+      );
+    }
+
+    // Verify the selected channel belongs to this user's workspace.
+    const { data: channel, error: channelError } = await supabase
+      .from("channels")
+      .select("id, workspace_id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .single();
+
+    if (channelError || !channel) {
+      return NextResponse.json(
+        { error: "The selected channel is not available." },
+        { status: 403 }
+      );
+    }
+
     const title = cleanString(body.title);
     const lyrics = cleanString(body.lyrics);
 
@@ -65,6 +92,7 @@ export async function POST(request: Request) {
       .from("songs")
       .insert({
         user_id: user.id,
+        channel_id: channel.id,
 
         // Imported songs use the same song record as
         // Studio-generated songs.
