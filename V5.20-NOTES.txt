@@ -1,0 +1,19 @@
+Suno Zara Universe V5.20 — production-stage batch
+
+This patch keeps the V5.15/V5.19 visual baseline and wires the existing Universe backend into the remaining Music Production stages.
+
+Included:
+- Lyrics manual save route with version preservation.
+- Suno Style generation/edit/copy + Continue to Audio.
+- Final Audio upload/download/replacement with duration metadata.
+- Visual Production Plan reuse (preserves edited Suno Styles), 3 concept selection, 3 landscape / 6 vertical / all 9 generation.
+- Full video local rendering, download, edited upload, explicit publishing version.
+- Six Shorts local rendering, per-slot edited upload, download, explicit publishing version.
+- Social campaign pack generation/refresh/regeneration + copy controls.
+- Publish readiness checklist + existing LocalReleasePublisher (YouTube + Buffer) shown only when full video + six Shorts + social pack are approved.
+- Continue buttons through every production stage.
+
+Not claimed in this patch:
+- semantic analysis of the actual audio waveform/performance for intelligent highlight detection (worker still uses supplied/default highlight timing).
+- redesigned global Publishing / Marketing / Analytics workspaces.
+- fully functional "start anywhere" creation for brand-new projects that do not yet have a song row.

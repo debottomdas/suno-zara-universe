@@ -125,6 +125,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json();
+    const action = typeof body.action === "string" ? body.action.trim() : "generate";
     const projectId = String(body.projectId || "").trim();
     const additionalDirection =
       typeof body.additionalDirection === "string"
@@ -171,6 +172,48 @@ export async function POST(request: Request) {
         { error: "Generate the full song before creating Suno styles." },
         { status: 400 }
       );
+    }
+
+    if (action === "save") {
+      const incoming = Array.isArray(body.styles) ? body.styles : [];
+      const styles = incoming
+        .filter((style: any) => style && typeof style.name === "string" && typeof style.prompt === "string")
+        .map((style: any) => ({
+          name: style.name.trim().slice(0, 160),
+          category: typeof style.category === "string" ? style.category.trim().slice(0, 80) : "Other",
+          recommended: Boolean(style.recommended),
+          whyItFits: typeof style.whyItFits === "string" ? style.whyItFits.trim().slice(0, 600) : "",
+          prompt: style.prompt.trim().slice(0, 1000),
+        }))
+        .filter((style: any) => style.name && style.prompt);
+
+      if (!styles.length) {
+        return NextResponse.json({ error: "At least one Suno style is required." }, { status: 400 });
+      }
+      if (styles.filter((style: any) => style.recommended).length !== 1) {
+        return NextResponse.json({ error: "Exactly one Suno style must remain recommended." }, { status: 400 });
+      }
+
+      const { error: deleteStylesError } = await supabase
+        .from("suno_styles")
+        .delete()
+        .eq("song_id", song.id)
+        .eq("user_id", user.id);
+      if (deleteStylesError) throw new Error(`Could not update Suno styles: ${deleteStylesError.message}`);
+
+      const { error: saveStylesError } = await supabase.from("suno_styles").insert(
+        styles.map((style: any) => ({
+          song_id: song.id,
+          user_id: user.id,
+          name: style.name,
+          category: style.category,
+          recommended: style.recommended,
+          why_it_fits: style.whyItFits,
+          prompt: style.prompt,
+        }))
+      );
+      if (saveStylesError) throw new Error(`Could not save Suno styles: ${saveStylesError.message}`);
+      return NextResponse.json({ styles, projectId: song.id, saved: true });
     }
 
     const systemPrompt = `

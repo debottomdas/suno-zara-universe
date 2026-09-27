@@ -36,6 +36,7 @@ export async function POST(request: Request) {
     const body = await request.json();
     const projectId = String(body.projectId || "").trim();
     const additionalDirection = String(body.additionalDirection || "").trim().slice(0, 600);
+    const preserveStyles = body.preserveStyles === true;
     if (!projectId) return NextResponse.json({ error: "projectId is required." }, { status: 400 });
 
     const { data: song, error: songError } = await supabase.from("songs").select("id,user_id,channel_id,title,idea,language,script,mood,genre,freedom,selected_hook,lyrics").eq("id",projectId).eq("user_id",user.id).single();
@@ -103,23 +104,40 @@ export async function POST(request: Request) {
     const parsed=JSON.parse(raw);
     const styles=cleanStyles(parsed.styles); const concepts=cleanConcepts(parsed.concepts); const landscapeBriefs=cleanBriefs(parsed.landscapeBriefs,3); const verticalBriefs=cleanBriefs(parsed.verticalBriefs,6);
 
-    await supabase.from("suno_styles").delete().eq("song_id",song.id).eq("user_id",user.id);
-    const { error: stylesError } = await supabase.from("suno_styles").insert(styles.map((x:any)=>({song_id:song.id,user_id:user.id,name:x.name,category:x.category,recommended:x.recommended,why_it_fits:x.whyItFits,prompt:x.prompt})));
-    if(stylesError) throw new Error(`Could not save planned music directions: ${stylesError.message}`);
+    let planStyles = styles;
+    if (preserveStyles) {
+      const { data: existingStyles, error: existingStylesError } = await supabase
+        .from("suno_styles")
+        .select("name,category,recommended,why_it_fits,prompt")
+        .eq("song_id", song.id)
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: true });
+      if (existingStylesError) throw new Error(`Could not preserve current Suno styles: ${existingStylesError.message}`);
+      if (existingStyles?.length) {
+        planStyles = existingStyles.map((x:any)=>({name:x.name,category:x.category||"Other",recommended:Boolean(x.recommended),whyItFits:x.why_it_fits||"",prompt:x.prompt||""}));
+      } else {
+        const { error: stylesError } = await supabase.from("suno_styles").insert(styles.map((x:any)=>({song_id:song.id,user_id:user.id,name:x.name,category:x.category,recommended:x.recommended,why_it_fits:x.whyItFits,prompt:x.prompt})));
+        if(stylesError) throw new Error(`Could not save planned music directions: ${stylesError.message}`);
+      }
+    } else {
+      await supabase.from("suno_styles").delete().eq("song_id",song.id).eq("user_id",user.id);
+      const { error: stylesError } = await supabase.from("suno_styles").insert(styles.map((x:any)=>({song_id:song.id,user_id:user.id,name:x.name,category:x.category,recommended:x.recommended,why_it_fits:x.whyItFits,prompt:x.prompt})));
+      if(stylesError) throw new Error(`Could not save planned music directions: ${stylesError.message}`);
+    }
 
     await supabase.from("song_visual_concepts").delete().eq("song_id",song.id).eq("user_id",user.id);
     const { data: savedConcepts, error: conceptsError } = await supabase.from("song_visual_concepts").insert(concepts.map((x:any)=>({song_id:song.id,user_id:user.id,user_ideas:additionalDirection||null,concept_number:x.conceptNumber,title:x.title,description:x.description,image_prompt:x.imagePrompt,selected:false}))).select("id,concept_number,title,description,image_prompt,selected").order("concept_number",{ascending:true});
     if(conceptsError) throw new Error(`Could not save planned visual concepts: ${conceptsError.message}`);
     const returnedConcepts=(savedConcepts||[]).map((x:any)=>({id:x.id,conceptNumber:x.concept_number,title:x.title,description:x.description,imagePrompt:x.image_prompt,selected:x.selected}));
 
-    const plan={version:1,songDNA:parsed.songDNA||{},styles,concepts:returnedConcepts,landscapeBriefs,verticalBriefs,socialDirection:parsed.socialDirection||{},additionalDirection,generatedAt:new Date().toISOString()};
+    const plan={version:1,songDNA:parsed.songDNA||{},styles:planStyles,concepts:returnedConcepts,landscapeBriefs,verticalBriefs,socialDirection:parsed.socialDirection||{},additionalDirection,generatedAt:new Date().toISOString()};
     const { error: planError }=await supabase.from("song_production_plans").upsert({song_id:song.id,user_id:user.id,channel_id:song.channel_id||null,version:1,plan,updated_at:new Date().toISOString()},{onConflict:"song_id"});
     if(planError) throw new Error(`Could not save production plan: ${planError.message}`);
 
     const usage:any=(response as any).usage||{};
     await supabase.from("ai_usage_events").insert({user_id:user.id,channel_id:song.channel_id||null,song_id:song.id,feature:"production-plan",provider:"openai",model:"gpt-5.6-luna",input_tokens:usage.input_tokens??usage.prompt_tokens??null,output_tokens:usage.output_tokens??usage.completion_tokens??null,total_tokens:usage.total_tokens??null,duration_ms:Date.now()-started,metadata:{replaced_calls:["suno-styles","image-concepts","image-shot-briefs:youtube","image-shot-briefs:shorts"]}});
 
-    return NextResponse.json({plan,styles,concepts:returnedConcepts,cached:false});
+    return NextResponse.json({plan,styles:planStyles,concepts:returnedConcepts,cached:false,preservedStyles:preserveStyles});
   } catch(error) {
     console.error("Production plan error:",error);
     return NextResponse.json({error:error instanceof Error?error.message:"Unable to create production plan."},{status:500});
