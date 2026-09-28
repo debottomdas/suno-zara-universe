@@ -5,7 +5,7 @@ import { createAdminClient } from "@/utils/supabase/admin";
 
 export const runtime = "nodejs";
 const STATE_COOKIE="sz_buffer_oauth_state", VERIFIER_COOKIE="sz_buffer_oauth_verifier", CHANNEL_COOKIE="sz_buffer_oauth_channel";
-function redirect(status:"connected"|"error", reason?:string){ const u=new URL("/music",process.env.NEXT_PUBLIC_APP_URL||"https://suno-zara-universe.vercel.app"); u.searchParams.set("workspace","publish"); u.searchParams.set("buffer",status); if(reason)u.searchParams.set("reason",reason); const r=NextResponse.redirect(u); for(const n of [STATE_COOKIE,VERIFIER_COOKIE,CHANNEL_COOKIE])r.cookies.set(n,"",{httpOnly:true,sameSite:"lax",secure:process.env.NODE_ENV==="production",path:"/",maxAge:0}); return r; }
+function redirect(status:"connected"|"error", reason?:string){ const u=new URL("/music-next",process.env.NEXT_PUBLIC_APP_URL||"https://suno-zara-universe.vercel.app"); u.searchParams.set("workspace","publish"); u.searchParams.set("buffer",status); if(reason)u.searchParams.set("reason",reason); const r=NextResponse.redirect(u); for(const n of [STATE_COOKIE,VERIFIER_COOKIE,CHANNEL_COOKIE])r.cookies.set(n,"",{httpOnly:true,sameSite:"lax",secure:process.env.NODE_ENV==="production",path:"/",maxAge:0}); return r; }
 export async function GET(request:Request){
  try{
   const url=new URL(request.url); if(url.searchParams.get("error")) return redirect("error","denied");
