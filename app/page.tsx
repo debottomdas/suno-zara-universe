@@ -57,7 +57,7 @@ export default function UniverseHome() {
 
   return (
     <div className="min-h-screen bg-[#05070b] text-white">
-      <header className="border-b border-white/[0.07] bg-[#070a10]/90 px-6 py-4 backdrop-blur-xl sm:px-10">
+      <header className="relative z-50 border-b border-white/[0.07] bg-[#070a10]/90 px-6 py-4 backdrop-blur-xl sm:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
           <Link href="/" className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-fuchsia-300/20 bg-gradient-to-br from-fuchsia-500/20 to-sky-500/10 text-lg font-black shadow-[0_12px_35px_-20px_rgba(217,70,239,.8)]">
