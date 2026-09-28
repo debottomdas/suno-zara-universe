@@ -1029,12 +1029,17 @@ export default function LocalReleasePublisher({
               {bufferChannels.length ? `${bufferChannels.length} channels connected` : "No Buffer channels connected"}
             </span>
             {bufferOauthConfigured && <button type="button" disabled={bufferBusy || !channelId} onClick={connectBuffer} className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.05] px-3 py-1.5 text-[8px] font-black text-cyan-100 disabled:opacity-35">{bufferAccounts.some((a:any) => !a.legacy) ? "Connect another Buffer account" : "Connect Buffer account"}</button>}
-            {bufferOauthConfigured && availableBufferAccounts.length > 0 && <>
-              <select value={existingBufferAccountId} onChange={(e) => setExistingBufferAccountId(e.target.value)} className="rounded-full border border-white/10 bg-[#0d2029] px-3 py-1.5 text-[8px] font-bold text-zinc-300">
-                {availableBufferAccounts.map((a:any) => <option key={a.id} value={a.id}>{a.display_name || a.email || "Buffer account"}</option>)}
-              </select>
-              <button type="button" disabled={bufferBusy || !existingBufferAccountId} onClick={() => void useExistingBufferAccount()} className="rounded-full border border-white/10 px-3 py-1.5 text-[8px] font-black text-zinc-300 disabled:opacity-35">Use existing Buffer account</button>
-            </>}
+            {bufferOauthConfigured && bufferChannels.length > 0 && bufferAccounts.some((a:any) => !a.legacy) && (
+              <span className="rounded-full border border-white/10 bg-[#0d2029] px-3 py-1.5 text-[8px] font-bold text-zinc-300">
+                {(() => {
+                  const bound = bufferAccounts.find((a:any) => !a.legacy);
+                  return bound?.display_name || bound?.email || "Buffer account connected";
+                })()}
+              </span>
+            )}
+            {bufferOauthConfigured && bufferChannels.length === 0 && availableBufferAccounts.length > 0 && (
+              <button type="button" disabled={bufferBusy || !channelId} onClick={() => void useExistingBufferAccount()} className="rounded-full border border-white/10 px-3 py-1.5 text-[8px] font-black text-zinc-300 disabled:opacity-35">Use existing Buffer account</button>
+            )}
             <button type="button" disabled={bufferBusy} onClick={() => void loadBufferStatus(true)} className="rounded-full border border-white/10 px-3 py-1.5 text-[8px] font-black text-zinc-400 disabled:opacity-35">Refresh Channels · API</button>
           </div>
         </div>
