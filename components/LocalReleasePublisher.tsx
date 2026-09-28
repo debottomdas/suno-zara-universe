@@ -1,5 +1,7 @@
 "use client";
 
+import BufferDraftScheduler from "./BufferDraftScheduler";
+import { singleDraftItem, submitBufferSchedule } from "@/utils/buffer-scheduling";
 import { releaseState } from "@/utils/release-state";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -17,6 +19,7 @@ type ShortSlot = {
 
 type Props = {
   projectId: string | null;
+  songTitle?: string;
   channelId: string | null;
   releaseReady: boolean;
   approvedFullVideo: LocalVideo | null;
@@ -100,6 +103,7 @@ async function jsonResponse<T = any>(response: Response, fallback: string): Prom
 
 export default function LocalReleasePublisher({
   projectId,
+  songTitle,
   channelId,
   releaseReady,
   approvedFullVideo,
@@ -672,6 +676,29 @@ export default function LocalReleasePublisher({
     }
   }
 
+  async function scheduleOneDraft(receipt: BufferReceipt, dueAt: string) {
+    if (!safeProjectId || bufferBusy) throw new Error("Publishing is busy or no song is selected.");
+    setBufferBusy(true); setBufferError(""); setBufferMessage("");
+    try {
+      const current = canonicalBufferMap.get(receipt.itemKey);
+      if (!current || current.postId !== receipt.postId) throw new Error("The current draft has changed. Review it again.");
+      const item = singleDraftItem(current, dueAt);
+      const result = await submitBufferSchedule(safeProjectId, [item]);
+      if (result.rateLimit) setBufferRateLimit(result.rateLimit);
+      const rows = result.results;
+      if (!Array.isArray(rows) || rows.length !== 1 || rows[0].post?.id !== current.postId || rows[0].post?.status !== "scheduled" || Date.parse(rows[0].post?.dueAt) !== Date.parse(dueAt)) {
+        throw new Error(rows?.[0]?.error || "Buffer returned an unexpected result. Stop and verify its status before trying again.");
+      }
+      await saveBufferReceipt({ ...current, status: rows[0].post.status, dueAt: rows[0].post.dueAt, externalLink: rows[0].post.externalLink || current.externalLink || null, publishMode: "schedule", updatedAt: new Date().toISOString(), errorMessage: null });
+      await loadWorkerStatus();
+      setBufferMessage("One existing draft scheduled. Other drafts were not changed.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Scheduling could not be verified.";
+      setBufferError(message + " No automatic retry was made.");
+      throw err;
+    } finally { setBufferBusy(false); }
+  }
+
   async function scheduleExistingBufferDrafts() {
     if (!safeProjectId) return;
     setBufferBusy(true);
@@ -706,14 +733,7 @@ export default function LocalReleasePublisher({
       }
 
       setBufferProgress(`Scheduling ${items.length} existing Buffer post${items.length === 1 ? "" : "s"} in one API request…`);
-      const result = await jsonResponse<any>(
-        await fetch("/api/publishing/buffer/schedule-posts-batch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ projectId: safeProjectId, items }),
-        }),
-        "Could not schedule Buffer drafts."
-      );
+      const result = await submitBufferSchedule(safeProjectId, items);
       if (result.rateLimit) setBufferRateLimit(result.rateLimit);
 
       let scheduledCount = 0;
@@ -1187,11 +1207,16 @@ export default function LocalReleasePublisher({
                   </div>
                   <p className="mt-1 truncate text-[8px] text-zinc-500">{receipt.channelName || receipt.channelId}</p>
                   {receipt.dueAt && <p className="mt-1 text-[8px] text-zinc-600">{new Date(receipt.dueAt).toLocaleString()}</p>}
+                  {status === "draft" && <BufferDraftScheduler
+                    songTitle={songTitle || "Untitled song"} receipt={receipt}
+                    disabled={bufferBusy || bufferQuotaLow || !workerReady || !bufferConfigured || !receipt.mediaUrl || !bufferChannels.some(c => c.id === receipt.channelId)}
+                    onSchedule={dueAt => scheduleOneDraft(receipt, dueAt)}
+                  />}
                   {receipt.errorMessage && <p className="mt-1 text-[8px] text-red-300">{receipt.errorMessage}</p>}
                   {receipt.cleanedAt && <p className="mt-1 text-[8px] text-emerald-400/70">Temporary media cleaned ✓</p>}
                 </div>
               );
-              return receipt.externalLink ? <a key={receipt.itemKey} href={receipt.externalLink} target="_blank" rel="noreferrer">{card}</a> : <div key={receipt.itemKey}>{card}</div>;
+              return <div key={receipt.itemKey}>{card}{receipt.externalLink && <a className="text-xs text-cyan-200" href={receipt.externalLink} target="_blank" rel="noreferrer">View platform post ↗</a>}</div>;
             })}
           </div>
         )}
