@@ -239,10 +239,12 @@ export default function LocalReleasePublisher({
       const channels: BufferChannel[] = Array.isArray(data.channels) ? data.channels : [];
       setBufferConfigured(Boolean(data.configured));
       setBufferOauthConfigured(Boolean(data.oauthConfigured));
-      setBufferAccounts(Array.isArray(data.accounts) ? data.accounts : []);
+      const boundAccounts = Array.isArray(data.accounts) ? data.accounts : [];
+      setBufferAccounts(boundAccounts);
       const availableAccounts = Array.isArray(data.availableAccounts) ? data.availableAccounts : [];
       setAvailableBufferAccounts(availableAccounts);
-      setExistingBufferAccountId((current) => current || clean(availableAccounts[0]?.id));
+      const boundAccountId = clean(boundAccounts.find((account: any) => !account?.legacy)?.id);
+      setExistingBufferAccountId(boundAccountId || clean(availableAccounts[0]?.id));
       setBufferChannels(channels);
       setSelectedBufferChannelIds((current) => {
         const stillValid = current.filter((id) => channels.some((channel) => channel.id === id));
