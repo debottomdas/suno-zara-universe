@@ -10,7 +10,7 @@ const modules = [
   {
     name: "Music Studio",
     description: "Write lyrics, shape Suno styles, create artwork, prepare videos, publish releases and measure performance.",
-    href: "/music",
+    href: "/music-next",
     status: "Ready",
     symbol: "♪",
     accent: "from-rose-500/20 via-fuchsia-500/10 to-transparent",
@@ -96,7 +96,7 @@ export default function UniverseHome() {
             </div>
 
             <div className="mt-12 flex flex-wrap gap-3">
-              <Link href="/music" className="rounded-2xl bg-white px-6 py-3.5 text-sm font-bold text-black transition hover:bg-zinc-200">
+              <Link href="/music-next" className="rounded-2xl bg-white px-6 py-3.5 text-sm font-bold text-black transition hover:bg-zinc-200">
                 Open Music Studio →
               </Link>
               <a href="#worlds" className="rounded-2xl border border-white/10 bg-white/[0.03] px-6 py-3.5 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white">
