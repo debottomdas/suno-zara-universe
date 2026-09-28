@@ -196,7 +196,19 @@ export default function LocalReleasePublisher({
   const canonicalBufferReceipts = useMemo(() => {
     const connectedIds = new Set(bufferChannels.map((channel) => channel.id));
     return bufferReceipts.filter(
-      (receipt) => connectedIds.has(receipt.channelId) && receipt.itemKey === bufferKey(receipt.channelId, receipt.slot)
+      (receipt) =>
+        connectedIds.has(receipt.channelId) &&
+        receipt.itemKey === bufferKey(receipt.channelId, receipt.slot) &&
+        receipt.status !== "error"
+    );
+  }, [bufferReceipts, bufferChannels]);
+  const failedBufferReceipts = useMemo(() => {
+    const connectedIds = new Set(bufferChannels.map((channel) => channel.id));
+    return bufferReceipts.filter(
+      (receipt) =>
+        connectedIds.has(receipt.channelId) &&
+        receipt.itemKey === bufferKey(receipt.channelId, receipt.slot) &&
+        receipt.status === "error"
     );
   }, [bufferReceipts, bufferChannels]);
 
@@ -542,7 +554,7 @@ export default function LocalReleasePublisher({
       for (let slot = 1; slot <= 6; slot += 1) {
         const pending = selectedBufferChannels.filter((channel) => {
           const receipt = current.get(bufferKey(channel.id, slot));
-          return !receipt || receipt.status === "error";
+          return !receipt;
         });
         if (!pending.length) continue;
 
@@ -1191,6 +1203,13 @@ export default function LocalReleasePublisher({
               return receipt.externalLink ? <a key={receipt.itemKey} href={receipt.externalLink} target="_blank" rel="noreferrer">{card}</a> : <div key={receipt.itemKey}>{card}</div>;
             })}
           </div>
+        )}
+
+        {failedBufferReceipts.length > 0 && (
+          <details className="mt-3 rounded-xl border border-white/[0.06] bg-black/10 p-3">
+            <summary className="cursor-pointer text-[8px] font-black text-zinc-500">Previous failed Buffer attempts · {failedBufferReceipts.length}</summary>
+            <p className="mt-2 text-[8px] leading-4 text-zinc-600">Historical failures are kept for debugging only. They are not treated as reusable drafts and do not count toward publishing completion.</p>
+          </details>
         )}
 
         {bufferReceipts.some((receipt) => receipt.itemKey !== bufferKey(receipt.channelId, receipt.slot)) && (
