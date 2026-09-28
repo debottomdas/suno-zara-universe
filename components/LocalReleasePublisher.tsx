@@ -605,6 +605,32 @@ export default function LocalReleasePublisher({
         if (post?.id) createdCount += 1; else failedCount += 1;
       }
 
+      const successfulPaths = new Set(
+        results
+          .filter((result: any) => result?.post?.id)
+          .map((result: any) => batchItems.find((item) => item.slot === Number(result.slot) && item.channelId === String(result.channelId))?.storagePath)
+          .filter(Boolean)
+      );
+      const failedOnlyPaths = Array.from(new Set(batchItems.map((item) => item.storagePath))).filter((path) => !successfulPaths.has(path));
+      for (const storagePath of failedOnlyPaths) {
+        try {
+          await jsonResponse<any>(
+            await fetch("/api/publishing/buffer/cleanup", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ projectId: safeProjectId, storagePath }),
+            }),
+            "Could not clean failed temporary Buffer media."
+          );
+          for (const receipt of current.values()) {
+            if (receipt.storagePath !== storagePath || receipt.status !== "error") continue;
+            const cleanedReceipt: BufferReceipt = { ...receipt, mediaUrl: undefined, cleanedAt: new Date().toISOString() };
+            await saveBufferReceipt(cleanedReceipt);
+            current.set(cleanedReceipt.itemKey, cleanedReceipt);
+          }
+        } catch {}
+      }
+
       await loadWorkerStatus();
       setBufferProgress("");
       if (failedCount) {
@@ -706,7 +732,7 @@ export default function LocalReleasePublisher({
         await fetch("/api/publishing/buffer/post-status", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ postIds: uniqueIds }),
+          body: JSON.stringify({ projectId: safeProjectId, postIds: uniqueIds }),
         }),
         "Could not refresh Buffer status."
       );
