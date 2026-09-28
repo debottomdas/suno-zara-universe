@@ -666,7 +666,7 @@ export default function LocalReleasePublisher({
       const finalTime = start + 5 * Math.max(1, bufferGapMinutes) * 60_000;
       if (finalTime > Date.now() + 29 * 24 * 60 * 60 * 1000) throw new Error("Keep the final Buffer Short within the next 29 days while temporary media remains available.");
 
-      const items: Array<{ itemKey: string; postId: string; dueAt: string }> = [];
+      const items: Array<{ itemKey: string; postId: string; dueAt: string; slot: number; channelId: string; service: string; mediaUrl: string }> = [];
       for (let slot = 1; slot <= 6; slot += 1) {
         const dueAt = new Date(start + (slot - 1) * Math.max(1, bufferGapMinutes) * 60_000).toISOString();
         for (const channel of selectedBufferChannels) {
@@ -674,7 +674,8 @@ export default function LocalReleasePublisher({
           const receipt = canonicalBufferMap.get(key);
           if (!receipt?.postId) throw new Error(`${channel.name} · Short ${slot} has no Buffer draft receipt.`);
           if (receipt.status === "sent" || receipt.status === "sending" || (receipt.status === "scheduled" && receipt.dueAt)) continue;
-          items.push({ itemKey: key, postId: receipt.postId, dueAt });
+          if (!receipt.mediaUrl) throw new Error(`${channel.name} · Short ${slot} temporary media link is missing. Prepare this Buffer draft again.`);
+          items.push({ itemKey: key, postId: receipt.postId, dueAt, slot, channelId: channel.id, service: channel.service, mediaUrl: receipt.mediaUrl });
         }
       }
 
