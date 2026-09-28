@@ -20,7 +20,12 @@ export async function GET(request:Request){
   const admin=createAdminClient(), now=new Date().toISOString(), expiresAt=new Date(Date.now()+Number(tokens.expires_in||3600)*1000).toISOString();
   const {data:acct,error:acctErr}=await admin.from("buffer_accounts").upsert({user_id:user.id,workspace_id:(channel as any).workspace_id,external_account_id:account.account.id,email:account.account.email||null,display_name:account.account.email||"Buffer account",access_token:tokens.access_token,refresh_token:tokens.refresh_token,token_type:tokens.token_type||"Bearer",scope:tokens.scope||"",expires_at:expiresAt,status:"connected",updated_at:now},{onConflict:"user_id,external_account_id"}).select("id").single(); if(acctErr||!acct)throw new Error(acctErr?.message||"Could not save Buffer account");
   const rows:any[]=[]; for(const org of account.account.organizations||[]){const d=await gql<{channels:Array<{id:string,name:string,service:string}>}>(`query Channels($organizationId: OrganizationId!) { channels(input:{organizationId:$organizationId}) { id name service } }`,{organizationId:org.id}); for(const x of d.channels||[]){const service=String(x.service||"").toLowerCase();if(!["facebook","instagram","tiktok"].includes(service))continue;rows.push({user_id:user.id,channel_id:channelId,buffer_account_id:acct.id,buffer_channel_id:x.id,service,display_name:x.name||null,metadata:{organization_id:org.id,organization_name:org.name}});}}
-  if(rows.length){const {error:e}=await admin.from("buffer_channel_bindings").upsert(rows,{onConflict:"user_id,buffer_channel_id",ignoreDuplicates:true});if(e)throw new Error(e.message);}
+  const destinationIds=rows.map((x:any)=>x.buffer_channel_id);
+  const {data:owned}=destinationIds.length?await admin.from("buffer_channel_bindings").select("buffer_channel_id,channel_id").eq("user_id",user.id).in("buffer_channel_id",destinationIds):{data:[] as any[]};
+  const owners=new Map((owned||[]).map((x:any)=>[x.buffer_channel_id,x.channel_id]));
+  const safeRows=rows.filter((x:any)=>!owners.has(x.buffer_channel_id)||owners.get(x.buffer_channel_id)===channelId);
+  const {error:clearErr}=await admin.from("buffer_channel_bindings").delete().eq("user_id",user.id).eq("channel_id",channelId);if(clearErr)throw new Error(clearErr.message);
+  if(safeRows.length){const {error:e}=await admin.from("buffer_channel_bindings").upsert(safeRows,{onConflict:"user_id,buffer_channel_id"});if(e)throw new Error(e.message);}
   return redirect("connected");
  }catch(e){console.error("Buffer OAuth callback error:",e);return redirect("error","unexpected");}
 }
