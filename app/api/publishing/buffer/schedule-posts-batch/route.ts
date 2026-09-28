@@ -1,3 +1,4 @@
+import { claimBufferSchedule } from "@/utils/buffer-media-ledger";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { assertBufferBudget, bufferGraphqlDetailed, getBufferRateLimit, type BufferService } from "@/utils/buffer-api";
@@ -103,6 +104,7 @@ export async function POST(request: Request) {
     });
 
     assertBufferBudget();
+    const releaseMedia = await claimBufferSchedule(user.id, projectId, validItems, accountIds.length === 1 ? String(accountIds[0]) : null);
     const response = await bufferGraphqlDetailed<Record<string, { post?: any; message?: string }>>(
       `mutation ScheduleSunoZaraBufferPosts(${variableDefs.join(", ")}) { ${fields.join("\n")} }`,
       variables,
@@ -113,6 +115,7 @@ export async function POST(request: Request) {
       const result = response.data[`p${index}`];
       return result?.post?.id ? { ...item, post: result.post } : { ...item, error: result?.message || "Buffer did not schedule the post." };
     });
+    await releaseMedia();
     return NextResponse.json({ results, rateLimit: getBufferRateLimit(), apiRequestsUsed: 1 });
   } catch (error) {
     console.error("Buffer schedule-posts-batch error:", error);

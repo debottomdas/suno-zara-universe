@@ -1,4 +1,5 @@
 'use client';
+import {loadReleaseState} from '@/utils/release-state';
 import {useEffect,useMemo,useState} from 'react';
 import Link from 'next/link';
 import s from './MusicNext.module.css';
@@ -25,12 +26,12 @@ function bytes(v:any){const n=Number(v);if(!Number.isFinite(n)||n<=0)return '';i
 function duration(v:any){const n=Number(v);if(!Number.isFinite(n)||n<=0)return '';const m=Math.floor(n/60),sec=Math.round(n%60);return `${m}:${String(sec).padStart(2,'0')}`}
 function dimensions(meta:any){const w=Number(meta?.width),h=Number(meta?.height);return Number.isFinite(w)&&w>0&&Number.isFinite(h)&&h>0?`${Math.round(w)}×${Math.round(h)}`:''}
 function parts(values:(string|false|null|undefined)[]){return values.filter(Boolean).join(' · ')}
-async function completionFor(song:Song){
+async function completionFor(song:Song,channelId:string){
  const q=encodeURIComponent(song.id);
  const [styles,audio,artwork,images,localFull,stagedFull,localShorts,stagedShorts,yf,ys,platform,campaign]=await Promise.all([json(`/api/suno-styles?projectId=${q}`),json(`/api/media/final-audio?projectId=${q}`),json(`/api/media/artwork?projectId=${q}`),json(`/api/generate-image?projectId=${q}`),json(`${LOCAL_VIDEO_WORKER}/full-video/status?projectId=${q}`),json(`/api/media/youtube-video?projectId=${q}`),json(`${LOCAL_VIDEO_WORKER}/shorts/status?projectId=${q}`),json(`/api/media/vertical-video?projectId=${q}`),json(`/api/social-media/youtube-full?projectId=${q}`),json(`/api/social-media/youtube-shorts?projectId=${q}`),json(`/api/social-media/platform-pack?projectId=${q}`),json(`/api/publishing/campaigns?projectId=${q}`)]);
  const done:Stage[]=[]; if(song.lyrics?.trim())done.push('Lyrics'); if(Array.isArray(styles?.styles)&&styles.styles.length)done.push('Suno Style'); if(audio?.asset)done.push('Final Audio'); if((artwork?.assets||[]).length||(images?.images||[]).length)done.push('Visuals');
  const hasFull=Boolean(localFull?.generatedVideo||localFull?.uploadedVideo||stagedFull?.asset); const shortSlots=new Set<number>(); (localShorts?.slots||[]).forEach((x:any)=>{if(x?.generatedVideo||x?.uploadedVideo)shortSlots.add(Number(x.slot||0))}); (stagedShorts?.assets||[]).forEach((x:any)=>shortSlots.add(Number(x.slot||0))); if(hasFull&&shortSlots.size>=6)done.push('Video & Shorts');
- if(yf?.youtubeFull&&ys?.youtubeShorts&&platform?.instagram&&platform?.facebook&&platform?.tiktok)done.push('Social'); const jobs=Array.isArray(campaign?.jobs)?campaign.jobs:[]; const published=jobs.some((j:any)=>Boolean(j?.published_at||j?.external_post_id||['published','scheduled','complete','completed'].includes(String(j?.status||'').toLowerCase()))); if(['published','released','complete','completed'].includes(String(song.status||'').toLowerCase())||published)done.push('Publish'); return done;
+ if(yf?.youtubeFull&&ys?.youtubeShorts&&platform?.instagram&&platform?.facebook&&platform?.tiktok)done.push('Social'); const publishing=await loadReleaseState(song.id,channelId); if(publishing.complete)done.push('Publish'); return done;
 }
 function socialDetail(yf:any,ys:any,p:any){
  const lines:string[]=[];
@@ -78,7 +79,7 @@ export default function LibraryNext(){
   }
   if(!cancelled){setItems(out);setLoading(false)}})();return()=>{cancelled=true}},[songs,view]);
  function changeView(v:View){setView(v);setSelected(null);const q=v==='all'?'/library-next':`/library-next?view=${v}`;window.history.replaceState(null,'',q)}
- useEffect(()=>{const song=projectFilter?songs.find(x=>x.id===projectFilter):null;if(!song){setCompletedStages([]);setCompletionLoading(false);return}let cancelled=false;setCompletionLoading(true);completionFor(song).then(done=>{if(!cancelled)setCompletedStages(done)}).finally(()=>{if(!cancelled)setCompletionLoading(false)});return()=>{cancelled=true}},[projectFilter,songs]);
+ useEffect(()=>{const song=projectFilter?songs.find(x=>x.id===projectFilter):null;if(!song){setCompletedStages([]);setCompletionLoading(false);return}let cancelled=false;setCompletionLoading(true);completionFor(song,channelId).then(done=>{if(!cancelled)setCompletedStages(done)}).finally(()=>{if(!cancelled)setCompletionLoading(false)});return()=>{cancelled=true}},[projectFilter,songs,channelId]);
  const visible=useMemo(()=>items.filter(x=>(!projectFilter||x.projectId===projectFilter)&&(!search.trim()||`${x.label} ${x.projectTitle} ${x.summary} ${x.detail||''}`.toLowerCase().includes(search.toLowerCase()))),[items,projectFilter,search]);
  const active=views.find(v=>v.id===view)!;const channel=channels.find(c=>c.id===channelId);const busy=loading||songsLoading;const hasFilters=Boolean(projectFilter||search.trim());
  useEffect(()=>{if(selected&&!visible.some(x=>x.id===selected.id))setSelected(null)},[visible,selected]);

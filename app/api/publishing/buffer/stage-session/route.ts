@@ -1,3 +1,4 @@
+import { createAdminClient } from "@/utils/supabase/admin";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { MEDIA_BUCKET, cleanString, safeFilename } from "@/utils/media-source";
@@ -34,6 +35,8 @@ export async function POST(request: Request) {
     if (!song) return NextResponse.json({ error: "Song not found." }, { status: 404 });
 
     const storagePath = `${user.id}/${song.id}/buffer-temp/short-${slot}/${crypto.randomUUID()}-${safeFilename(originalFilename)}`;
+    const { error: ledgerError } = await createAdminClient().from("buffer_staged_media").insert({ storage_path: storagePath, user_id: user.id, song_id: projectId });
+    if (ledgerError) throw new Error("Buffer media protection is not installed. Apply the media ledger migration before preparing new drafts.");
     const { data, error } = await supabase.storage.from(MEDIA_BUCKET).createSignedUploadUrl(storagePath);
     if (error || !data?.token) throw new Error(`Could not prepare temporary Buffer upload: ${error?.message || "No upload token returned"}`);
 

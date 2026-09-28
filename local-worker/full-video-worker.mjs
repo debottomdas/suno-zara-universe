@@ -1,4 +1,5 @@
 import http from "node:http";
+import { recordBufferReceipt } from "./buffer-receipts.mjs";
 import os from "node:os";
 import path from "node:path";
 import { createReadStream, createWriteStream } from "node:fs";
@@ -1018,15 +1019,18 @@ async function storePublishingReceipt(projectId, receipt) {
   await saveManifest(manifest);
 }
 
-async function storeBufferReceipt(projectId, receipt) {
+let bufferReceiptWrite = Promise.resolve();
+function storeBufferReceipt(projectId, receipt) {
+  const write = bufferReceiptWrite.then(() => persistBufferReceipt(projectId, receipt));
+  bufferReceiptWrite = write.catch(() => {});
+  return write;
+}
+async function persistBufferReceipt(projectId, receipt) {
   const manifest = await loadManifest();
   manifest.projects ||= {};
   const existing = manifest.projects[projectId] || { projectId };
   const publishingReceipts = existing.publishingReceipts && typeof existing.publishingReceipts === "object" ? existing.publishingReceipts : {};
-  const buffer = publishingReceipts.buffer && typeof publishingReceipts.buffer === "object" ? publishingReceipts.buffer : {};
-  buffer[receipt.itemKey] = receipt;
-  publishingReceipts.buffer = buffer;
-  manifest.projects[projectId] = { ...existing, publishingReceipts };
+  manifest.projects[projectId] = { ...existing, publishingReceipts: recordBufferReceipt(publishingReceipts, receipt) };
   await saveManifest(manifest);
 }
 
@@ -1036,7 +1040,7 @@ async function publishingStatus(projectId) {
   const buffer = manifest.projects?.[projectId]?.publishingReceipts?.buffer || {};
   const youtubeItems = Object.values(youtube).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
   const bufferItems = Object.values(buffer).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
-  return { youtube: youtubeItems, buffer: bufferItems };
+  return { youtube: youtubeItems, buffer: bufferItems, bufferHistory: Object.values(manifest.projects?.[projectId]?.publishingReceipts?.bufferAttemptHistory || {}) };
 }
 
 async function stageApprovedShortForBuffer(body) {

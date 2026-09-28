@@ -1,5 +1,6 @@
 "use client";
 
+import { releaseState } from "@/utils/release-state";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 type LocalVideo = {
@@ -104,11 +105,13 @@ export default function LocalReleasePublisher({
   approvedFullVideo,
   shortSlots,
   onPublishComplete,
-}: Props & { onPublishComplete?: () => void }) {
+}: Props & { onPublishComplete?: (complete:boolean) => void }) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [workerReady, setWorkerReady] = useState(false);
   const [receipts, setReceipts] = useState<YouTubeReceipt[]>([]);
   const [bufferReceipts, setBufferReceipts] = useState<BufferReceipt[]>([]);
+  const [bufferHistory, setBufferHistory] = useState<BufferReceipt[]>([]);
+  const [bufferLoaded, setBufferLoaded] = useState(false);
   const [bufferConfigured, setBufferConfigured] = useState(false);
   const [bufferOauthConfigured, setBufferOauthConfigured] = useState(false);
   const [bufferAccounts, setBufferAccounts] = useState<any[]>([]);
@@ -194,23 +197,19 @@ export default function LocalReleasePublisher({
   );
 
   const canonicalBufferReceipts = useMemo(() => {
-    const connectedIds = new Set(bufferChannels.map((channel) => channel.id));
     return bufferReceipts.filter(
       (receipt) =>
-        connectedIds.has(receipt.channelId) &&
         receipt.itemKey === bufferKey(receipt.channelId, receipt.slot) &&
         receipt.status !== "error"
     );
-  }, [bufferReceipts, bufferChannels]);
+  }, [bufferReceipts]);
   const failedBufferReceipts = useMemo(() => {
-    const connectedIds = new Set(bufferChannels.map((channel) => channel.id));
     return bufferReceipts.filter(
       (receipt) =>
-        connectedIds.has(receipt.channelId) &&
         receipt.itemKey === bufferKey(receipt.channelId, receipt.slot) &&
         receipt.status === "error"
     );
-  }, [bufferReceipts, bufferChannels]);
+  }, [bufferReceipts]);
 
   const loadConnections = useCallback(async () => {
     try {
@@ -235,10 +234,12 @@ export default function LocalReleasePublisher({
       );
       setReceipts(Array.isArray(status.youtube) ? status.youtube : []);
       setBufferReceipts(Array.isArray(status.buffer) ? status.buffer : []);
+      setBufferHistory(Array.isArray(status.bufferHistory) ? status.bufferHistory : []);
     } catch {
       setWorkerReady(false);
       setReceipts([]);
       setBufferReceipts([]);
+      setBufferHistory([]);
     }
   }, [safeProjectId]);
 
@@ -265,9 +266,12 @@ export default function LocalReleasePublisher({
         const stillValid = current.filter((id) => channels.some((channel) => channel.id === id));
         return stillValid.length ? stillValid : channels.map((channel) => channel.id);
       });
-      setBufferError("");
+      const accountError = boundAccounts.find((account: any) => account.error)?.error;
+      setBufferLoaded(!accountError);
+      setBufferError(accountError ? String(accountError) : "");
       if (force) setBufferMessage(`Buffer channels refreshed ✓ ${channels.length} connected channel${channels.length === 1 ? "" : "s"}.`);
     } catch (err) {
+      setBufferLoaded(false);
       setBufferConfigured(false);
       if (force) {
         setBufferError(err instanceof Error ? err.message : "Could not refresh Buffer channels.");
@@ -275,7 +279,7 @@ export default function LocalReleasePublisher({
         setBufferError(err instanceof Error ? err.message : "Could not load Buffer.");
       }
     }
-  }, [channelId]);;
+  }, [channelId]);
 
   useEffect(() => {
     setError("");
@@ -848,33 +852,20 @@ export default function LocalReleasePublisher({
 
   const youtubeScheduledCount = receipts.filter((receipt) => Boolean(receipt.scheduledAt)).length;
   const bufferPreparedTotal = canonicalBufferReceipts.filter((receipt) => receipt.status !== "error").length;
-  const bufferScheduledTotal = canonicalBufferReceipts.filter((receipt) => Boolean(receipt.dueAt) || ["scheduled", "sending", "sent"].includes(receipt.status || "")).length;
+  const bufferScheduledTotal = canonicalBufferReceipts.filter((receipt) => ["scheduled", "sending", "sent"].includes(receipt.status || "")).length;
   const bufferSentTotal = canonicalBufferReceipts.filter((receipt) => receipt.status === "sent").length;
-  const bufferFailedTotal = canonicalBufferReceipts.filter((receipt) => receipt.status === "error").length;
+  const bufferFailedTotal = failedBufferReceipts.length;
   const stagedPaths = Array.from(new Set(canonicalBufferReceipts.map((receipt) => receipt.storagePath).filter((value): value is string => Boolean(value))));
   const cleanedPaths = new Set(canonicalBufferReceipts.filter((receipt) => receipt.cleanedAt && receipt.storagePath).map((receipt) => receipt.storagePath as string));
   const pendingTempCount = Math.max(0, stagedPaths.length - cleanedPaths.size);
-  const expectedAllBufferPosts = bufferChannels.length * 6;
-  const schedulingComplete = youtubeScheduledCount === 7 && expectedAllBufferPosts > 0 && bufferScheduledTotal >= expectedAllBufferPosts;
-  const publishingComplete = allYouTubePublished && expectedAllBufferPosts > 0 && bufferPreparedTotal === expectedAllBufferPosts && bufferFailedTotal === 0;
-  const releaseStatusLabel = schedulingComplete ? "Release Scheduled ✓" : publishingComplete ? "Publishing Complete ✓" : "Release Ready";
+  const publishing = releaseState(receipts, bufferReceipts, bufferChannels.map(c=>c.id), bufferLoaded && workerReady);
+  const expectedAllBufferPosts = publishing.expected;
+  const publishingComplete = publishing.complete;
+  const releaseStatusLabel = publishingComplete ? "Publishing Complete ✓" : publishing.state === "scheduled" ? "Buffer Scheduled" : publishing.expected > 0 && publishing.prepared === publishing.expected ? `${publishing.prepared}/${publishing.expected} Prepared · awaiting publication` : "Release Ready";
 
   useEffect(() => {
-    if (!publishingComplete || !safeProjectId) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const response = await fetch("/api/songs", {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ projectId: safeProjectId, status: "published" }),
-        });
-        if (!response.ok) return;
-        if (!cancelled) onPublishComplete?.();
-      } catch {}
-    })();
-    return () => { cancelled = true; };
-  }, [publishingComplete, safeProjectId, onPublishComplete]);
+    onPublishComplete?.(publishingComplete);
+  }, [publishingComplete, onPublishComplete]);
 
   if (!releaseReady) return null;
 
@@ -918,7 +909,7 @@ export default function LocalReleasePublisher({
         </div>
         <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2.5">
           <p className="text-[8px] font-black uppercase tracking-[0.12em] text-zinc-500">Buffer</p>
-          <p className="mt-1 text-[9px] font-bold text-fuchsia-200">{bufferPreparedTotal}/{expectedAllBufferPosts || 0} prepared · {bufferScheduledTotal} scheduled · {bufferSentTotal} sent{bufferFailedTotal ? ` · ${bufferFailedTotal} failed` : ""}</p>
+          <p className="mt-1 text-[9px] font-bold text-fuchsia-200">{bufferPreparedTotal}/{expectedAllBufferPosts || 0} prepared · {bufferScheduledTotal} scheduled · {bufferSentTotal} sent · {bufferFailedTotal} current failures</p>
         </div>
         <div className="rounded-xl border border-white/[0.07] bg-black/15 px-3 py-2.5">
           <p className="text-[8px] font-black uppercase tracking-[0.12em] text-zinc-500">Temporary media</p>
@@ -1141,11 +1132,11 @@ export default function LocalReleasePublisher({
         )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <button disabled={bufferBusy || bufferQuotaLow || !bufferConfigured || !workerReady || !selectedBufferChannels.length || approvedShorts.length !== 6} onClick={() => void runBufferBatch()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
-            {bufferBusy ? "Working…" : selectedBufferCreatedCount > 0 ? "Retry Missing / Failed · 1 API call" : `Prepare ${expectedBufferPosts} Buffer Posts · 1 API call`}
+          <button disabled={bufferBusy || bufferQuotaLow || !bufferConfigured || !workerReady || !selectedBufferChannels.length || approvedShorts.length !== 6 || selectedBufferCreatedCount === expectedBufferPosts} onClick={() => void runBufferBatch()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
+            {bufferBusy ? "Working…" : selectedBufferCreatedCount === expectedBufferPosts && expectedBufferPosts > 0 ? "All selected posts prepared" : selectedBufferCreatedCount > 0 ? "Retry Missing / Failed · 1 API call" : `Prepare ${expectedBufferPosts} Buffer Posts · 1 API call`}
           </button>
           <button disabled={bufferBusy || bufferQuotaLow || !bufferReceipts.length} onClick={() => void refreshBufferStatuses()} className="rounded-xl border border-white/10 px-3 py-3 text-[10px] font-black text-zinc-300 disabled:opacity-35">Refresh + Cleanup · 1 API call</button>
-          <span className="text-[9px] text-zinc-500">{selectedBufferCreatedCount}/{expectedBufferPosts || 0} selected destinations prepared</span>
+          <span className="text-[9px] text-zinc-500">{selectedBufferCreatedCount}/{expectedBufferPosts || 0} selected destinations prepared · {bufferFailedTotal} current failures</span>
         </div>
 
         {canonicalBufferReceipts.length > 0 && (
@@ -1205,10 +1196,11 @@ export default function LocalReleasePublisher({
           </div>
         )}
 
-        {failedBufferReceipts.length > 0 && (
+        {bufferHistory.filter(r=>r.status === "error").length > 0 && (
           <details className="mt-3 rounded-xl border border-white/[0.06] bg-black/10 p-3">
-            <summary className="cursor-pointer text-[8px] font-black text-zinc-500">Previous failed Buffer attempts · {failedBufferReceipts.length}</summary>
+            <summary className="cursor-pointer text-[8px] font-black text-zinc-500">Historical Buffer failure records · {bufferHistory.filter(r=>r.status === "error").length}</summary>
             <p className="mt-2 text-[8px] leading-4 text-zinc-600">Historical failures are kept for debugging only. They are not treated as reusable drafts and do not count toward publishing completion.</p>
+            {bufferHistory.filter(r=>r.status === "error").map((r,i)=><p key={i} className="mt-2 text-xs text-zinc-500">{r.service} · Short {r.slot} · {r.postId || "No post created"} · {r.errorMessage || "Failed attempt"}</p>)}
           </details>
         )}
 

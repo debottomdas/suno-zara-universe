@@ -1,3 +1,4 @@
+import { claimBufferMedia, recordBufferMedia } from "@/utils/buffer-media-ledger";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { assertBufferBudget, bufferGraphqlDetailed, getBufferRateLimit, type BufferService } from "@/utils/buffer-api";
@@ -66,6 +67,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A valid projectId and up to 30 valid Buffer post items are required." }, { status: 400 });
     }
     const validItems = items as BatchItem[];
+    if (new Set(validItems.map(item => `${item.channelId}:${item.slot}`)).size !== validItems.length) {
+      return NextResponse.json({ error: "Each destination and Short slot must occur only once per batch." }, { status: 400 });
+    }
 
     const { data: song, error: songError } = await supabase
       .from("songs")
@@ -137,6 +141,7 @@ export async function POST(request: Request) {
     });
 
     assertBufferBudget();
+    await claimBufferMedia(user.id, projectId, validItems, accountIds.length === 1 ? String(accountIds[0]) : null);
     const response = await bufferGraphqlDetailed<Record<string, { post?: any; message?: string }>>(
       `mutation CreateSunoZaraBufferPosts(${variableDefs.join(", ")}) { ${fields.join("\n")} }`,
       variables,
@@ -151,6 +156,7 @@ export async function POST(request: Request) {
       return { slot: item.slot, channelId: item.channelId, service: item.service, publishMode: item.publishMode, dueAt: result.post.dueAt || item.dueAt || null, text: item.text, post: result.post };
     });
 
+    await recordBufferMedia(user.id, projectId, validItems, results);
     return NextResponse.json({ results, rateLimit: getBufferRateLimit(), apiRequestsUsed: 1 });
   } catch (error) {
     console.error("Buffer create-posts-batch error:", error);
