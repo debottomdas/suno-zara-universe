@@ -103,7 +103,8 @@ export default function LocalReleasePublisher({
   releaseReady,
   approvedFullVideo,
   shortSlots,
-}: Props) {
+  onPublishComplete,
+}: Props & { onPublishComplete?: () => void }) {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [workerReady, setWorkerReady] = useState(false);
   const [receipts, setReceipts] = useState<YouTubeReceipt[]>([]);
@@ -192,10 +193,12 @@ export default function LocalReleasePublisher({
     [bufferChannels, selectedBufferChannelIds]
   );
 
-  const canonicalBufferReceipts = useMemo(
-    () => bufferReceipts.filter((receipt) => receipt.itemKey === bufferKey(receipt.channelId, receipt.slot)),
-    [bufferReceipts]
-  );
+  const canonicalBufferReceipts = useMemo(() => {
+    const connectedIds = new Set(bufferChannels.map((channel) => channel.id));
+    return bufferReceipts.filter(
+      (receipt) => connectedIds.has(receipt.channelId) && receipt.itemKey === bufferKey(receipt.channelId, receipt.slot)
+    );
+  }, [bufferReceipts, bufferChannels]);
 
   const loadConnections = useCallback(async () => {
     try {
@@ -841,7 +844,25 @@ export default function LocalReleasePublisher({
   const pendingTempCount = Math.max(0, stagedPaths.length - cleanedPaths.size);
   const expectedAllBufferPosts = bufferChannels.length * 6;
   const schedulingComplete = youtubeScheduledCount === 7 && expectedAllBufferPosts > 0 && bufferScheduledTotal >= expectedAllBufferPosts;
-  const releaseStatusLabel = schedulingComplete ? "Release Scheduled ✓" : allYouTubePublished && bufferPreparedTotal >= expectedAllBufferPosts && expectedAllBufferPosts > 0 ? "Publishing Prepared" : "Release Ready";
+  const publishingComplete = allYouTubePublished && expectedAllBufferPosts > 0 && bufferPreparedTotal === expectedAllBufferPosts && bufferFailedTotal === 0;
+  const releaseStatusLabel = schedulingComplete ? "Release Scheduled ✓" : publishingComplete ? "Publishing Complete ✓" : "Release Ready";
+
+  useEffect(() => {
+    if (!publishingComplete || !safeProjectId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/songs", {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ projectId: safeProjectId, status: "published" }),
+        });
+        if (!response.ok) return;
+        if (!cancelled) onPublishComplete?.();
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, [publishingComplete, safeProjectId, onPublishComplete]);
 
   if (!releaseReady) return null;
 
