@@ -1,3 +1,5 @@
+import {loadReleaseShortSlots} from '@/utils/social/release-slots';
+import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
@@ -302,20 +304,13 @@ export async function PATCH(request: Request) {
     };
 
     const { error: saveError } =
-      await supabase
-        .from("social_media_packs")
-        .upsert(
-          {
+      await saveSocialPack(supabase,user.id,projectId,{
             song_id: projectId,
             user_id: user.id,
             youtube_shorts: cleanedPack,
             updated_at:
               new Date().toISOString(),
-          },
-          {
-            onConflict: "song_id,user_id",
-          }
-        );
+          });
 
     if (saveError) {
       throw new Error(
@@ -348,7 +343,7 @@ export async function PATCH(request: Request) {
 
 
 // ============================================================
-// POST — generate 10 coordinated Shorts
+// POST — generate 6 coordinated Shorts
 // ============================================================
 
 export async function POST(request: Request) {
@@ -421,13 +416,14 @@ export async function POST(request: Request) {
       );
     }
 
+    const shortCount=(await loadReleaseShortSlots(supabase,user.id,projectId))?.length||6;
     const systemPrompt = `
 You are a senior YouTube Shorts strategist for original music.
 
-Create EXACTLY 10 genuinely different YouTube Shorts concepts
+Create EXACTLY ${shortCount} genuinely different YouTube Shorts concepts
 for one finished original song.
 
-The goal is NOT to repeat the same lyric ten times.
+The goal is NOT to repeat the same lyric six times.
 
 Study the complete song and identify different emotional moments,
 lyrics, ideas and visual opportunities.
@@ -441,7 +437,7 @@ IMPORTANT:
 2. Opening hooks must be immediately understandable and emotionally
    interesting.
 
-3. Use different sections or emotional angles across the 10 Shorts.
+3. Use different sections or emotional angles across the ${shortCount} Shorts.
 
 4. Avoid repeating the same lyric unless absolutely necessary.
 
@@ -467,7 +463,7 @@ IMPORTANT:
 13. visualDirection should describe a practical vertical 9:16 visual
     idea. Do not assume a specific final video already exists.
 
-14. The 10 Shorts should differ substantially in:
+14. The ${shortCount} Shorts should differ substantially in:
     - opening hook
     - emotional angle
     - lyric selection
@@ -497,11 +493,11 @@ Return ONLY valid JSON in exactly this structure:
   ]
 }
 
-There must be exactly 10 objects in shorts.
+There must be exactly ${shortCount} objects in shorts.
 `.trim();
 
     const userPrompt = `
-Create 10 high-quality YouTube Shorts packages for this song.
+Create ${shortCount} high-quality YouTube Shorts packages for this song.
 
 SONG TITLE:
 ${song.title || "Untitled"}
@@ -534,7 +530,7 @@ ${
   "No additional Shorts direction supplied. Use your best judgement."
 }
 
-Create EXACTLY 10 substantially different Shorts.
+Create EXACTLY ${shortCount} substantially different Shorts.
 
 For each Short provide:
 
@@ -550,7 +546,7 @@ For each Short provide:
 - practical 9:16 visual direction
 
 Do not invent lyrics.
-Do not repeat the same approach ten times.
+Do not repeat the same approach six times.
 `.trim();
 
     const response =
@@ -598,10 +594,10 @@ Do not repeat the same approach ten times.
 
     if (
       !Array.isArray(parsed.shorts) ||
-      parsed.shorts.length !== 10
+      parsed.shorts.length !== shortCount
     ) {
       throw new Error(
-        "AI did not return exactly 10 Shorts."
+        "AI did not return copy for every release Short slot."
       );
     }
 
@@ -629,20 +625,13 @@ Do not repeat the same approach ten times.
     };
 
     const { error: saveError } =
-      await supabase
-        .from("social_media_packs")
-        .upsert(
-          {
+      await saveSocialPack(supabase,user.id,projectId,{
             song_id: song.id,
             user_id: user.id,
             youtube_shorts: youtubeShorts,
             updated_at:
               new Date().toISOString(),
-          },
-          {
-            onConflict: "song_id,user_id",
-          }
-        );
+          });
 
     if (saveError) {
       throw new Error(

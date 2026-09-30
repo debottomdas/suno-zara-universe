@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+function load(file,modules={}){const code=ts.transpileModule(fs.readFileSync(new URL('../'+file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const ctx={exports:{},require:n=>modules[n],Intl};vm.runInNewContext(code,ctx);return ctx.exports;}
+const pref=load('utils/publishing/preference.ts');
+function api(user){let update=null;const route=load('app/api/publishing/preference/route.ts',{'next/server':{NextResponse:{json:(body,options)=>({body,status:options?.status||200})}},'@/utils/publishing/preference':pref,'@/utils/supabase/server':{createClient:async()=>({auth:{getUser:async()=>({data:{user}}),updateUser:async input=>{update=input;user.user_metadata={...user.user_metadata,...input.data};return {error:null}}}})}});return {...route,update:()=>update};}
+test('first choice is unset, never inferred from device timezone',async()=>{const route=api({user_metadata:{}});assert.equal((await route.GET()).body.timezone,null);assert.equal(route.update(),null)});
+test('preference persists only to signed-in account and other metadata survives',async()=>{const user={id:'alice',user_metadata:{name:'Alice'}};const a=api(user),b=api({id:'bob',user_metadata:{}});assert.equal((await a.POST({json:async()=>({timezone:'Europe/London',userId:'bob'})})).status,200);assert.equal((await a.GET()).body.timezone,'Europe/London');assert.equal((await b.GET()).body.timezone,null);assert.equal(user.user_metadata.name,'Alice');assert.deepEqual(Object.keys(a.update().data),['publishing_timezone']);});
+test('unauthenticated and invalid preference writes are rejected',async()=>{const a=api(null);assert.equal((await a.GET()).status,401);assert.equal((await a.POST({})).status,401);const b=api({user_metadata:{}});for(const timezone of ['',null,'London','fake/zone'])assert.equal((await b.POST({json:async()=>({timezone})})).status,400);assert.equal(b.update(),null);});
+test('draft adopts new zone without changing local entries or approved snapshot',()=>{const approved=Object.freeze({timezone:'Europe/London',rows:Object.freeze([{localTime:'2026-10-24T18:00'}])});const draft=pref.applyDraftTimezone(approved,'Asia/Dhaka');assert.equal(draft.timezone,'Asia/Dhaka');assert.equal(draft.rows[0].localTime,'2026-10-24T18:00');assert.equal(approved.timezone,'Europe/London');assert.throws(()=>pref.applyDraftTimezone(approved,'bad'));});

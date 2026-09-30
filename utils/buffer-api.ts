@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type BufferService = "tiktok" | "instagram" | "facebook";
 
 export type BufferChannel = {
@@ -22,8 +24,22 @@ export type BufferRateLimitSnapshot = {
 };
 
 const CHANNEL_CACHE_MS = 10 * 60 * 1000;
-let channelCache: { expiresAt: number; channels: BufferChannel[] } | null = null;
-let lastRateLimit: BufferRateLimitSnapshot | null = null;
+type Discovery = { expiresAt: number; refreshedAt: number; channels: BufferChannel[] };
+type Budget = { snapshot: BufferRateLimitSnapshot | null; blockedUntil: number };
+// Shared by route modules within this server process; never store raw credentials as keys.
+const globalState = globalThis as typeof globalThis & { __bufferQuota?: {
+  channels: Map<string, Discovery>; pending: Map<string, Promise<BufferChannel[]>>;
+  budgets: Map<string, Budget>; queues: Map<string, Promise<unknown>>;
+} };
+const state: NonNullable<typeof globalState.__bufferQuota> = globalState.__bufferQuota ??= { channels: new Map(), pending: new Map(), budgets: new Map(), queues: new Map() };
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+// Buffer quotas belong to an API key or OAuth app client, not an individual account.
+function budgetKey(accessToken?: string) { return hash(accessToken ? `oauth:${process.env.BUFFER_CLIENT_ID || "app"}` : `key:${apiKey()}`); }
+function budget(accessToken?: string) {
+  const key = budgetKey(accessToken);
+  if (!state.budgets.has(key)) state.budgets.set(key, { snapshot: null, blockedUntil: 0 });
+  return state.budgets.get(key)!;
+}
 
 function apiKey() {
   return String(process.env.BUFFER_API_KEY || "").trim();
@@ -79,40 +95,42 @@ function parseRateLimitHeaders(headers: Headers): BufferRateLimitSnapshot | null
   return { windows, capturedAt: new Date().toISOString() };
 }
 
-function rememberRateLimit(headers: Headers) {
+function rememberRateLimit(headers: Headers, accessToken?: string) {
   const parsed = parseRateLimitHeaders(headers);
-  if (parsed) lastRateLimit = parsed;
+  if (parsed) budget(accessToken).snapshot = parsed;
   return parsed;
 }
 
-export function getBufferRateLimit() {
-  return lastRateLimit;
+export function getBufferRateLimit(accessToken?: string) {
+  const saved = budget(accessToken).snapshot;
+  if (!saved) return null;
+  const elapsed = (Date.now() - Date.parse(saved.capturedAt)) / 1000;
+  return { ...saved, capturedAt: new Date().toISOString(), windows: saved.windows
+    .filter(w => w.resetSeconds > elapsed)
+    .map(w => ({ ...w, resetSeconds: Math.max(0, Math.ceil(w.resetSeconds - elapsed)) })) };
 }
 
-export function bufferRateLimitIsLow(threshold = 0.1) {
-  const snapshot = lastRateLimit;
-  if (!snapshot) return false;
-  return snapshot.windows.some((window) => {
-    if (!window.quota || window.quota <= 0) return window.remaining <= 5;
-    return window.remaining <= Math.max(1, Math.floor(window.quota * threshold));
-  });
+export function bufferRateLimitIsLow(threshold = 0.1, accessToken?: string) {
+  return getBufferRateLimit(accessToken)?.windows.some(w => w.remaining <= (w.quota ? Math.max(1, Math.floor(w.quota * threshold)) : 5)) || false;
 }
 
-export function assertBufferBudget() {
-  const snapshot = lastRateLimit;
-  if (!snapshot || !bufferRateLimitIsLow()) return;
-  const tightest = [...snapshot.windows]
-    .filter((window) => window.quota)
-    .sort((a, b) => a.remaining / Math.max(1, a.quota || 1) - b.remaining / Math.max(1, b.quota || 1))[0];
-  if (!tightest) return;
-  const minutes = Math.max(1, Math.ceil(tightest.resetSeconds / 60));
-  throw new Error(`Buffer API quota is running low (${tightest.remaining}/${tightest.quota} left). Universe paused this request. Try again after about ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+export class BufferQuotaError extends Error {
+  readonly status = 429;
+  constructor(message: string, public retryAfter: number) { super(message); }
 }
 
-export async function bufferGraphqlDetailed<T>(query: string, variables: Record<string, unknown> = {}, accessToken?: string) {
+export function assertBufferBudget(accessToken?: string) {
+  const cooldown = Math.ceil((budget(accessToken).blockedUntil - Date.now()) / 1000);
+  const low = getBufferRateLimit(accessToken)?.windows.filter(w => w.remaining <= (w.quota ? Math.max(1, Math.floor(w.quota * 0.1)) : 5)) || [];
+  const wait = Math.max(cooldown, ...low.map(w => w.resetSeconds));
+  if (wait > 0) throw new BufferQuotaError(`Buffer API quota is low or temporarily limited. Universe paused this request. Try again in ${Math.ceil(wait / 60)} minute(s).`, wait);
+}
+
+async function sendGraphql<T>(query: string, variables: Record<string, unknown> = {}, accessToken?: string) {
   const key = String(accessToken || apiKey()).trim();
   if (!key) throw new Error("BUFFER_API_KEY is not configured.");
 
+  assertBufferBudget(accessToken);
   const response = await fetch("https://api.buffer.com", {
     method: "POST",
     headers: {
@@ -123,17 +141,19 @@ export async function bufferGraphqlDetailed<T>(query: string, variables: Record<
     cache: "no-store",
   });
 
-  const rateLimit = rememberRateLimit(response.headers);
-  const retryAfter = Number(response.headers.get("retry-after") || 0);
+  const rateLimit = rememberRateLimit(response.headers, accessToken);
+  const retryHeader = response.headers.get("retry-after");
+  const retryAfter = retryHeader && /^\d+(?:\.\d+)?$/.test(retryHeader) ? Number(retryHeader) : retryHeader ? (Date.parse(retryHeader) - Date.now()) / 1000 : NaN;
   const payload = (await response.json().catch(() => ({}))) as {
     data?: T;
     errors?: Array<{ message?: string; extensions?: { code?: string; window?: string } }>;
   };
 
   if (response.status === 429) {
-    const wait = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 60;
+    const wait = Math.max(1, Math.ceil(Number.isFinite(retryAfter) && retryAfter >= 0 ? retryAfter : Math.max(60, ...(rateLimit?.windows.filter(w => w.remaining === 0).map(w => w.resetSeconds) || []))));
+    budget(accessToken).blockedUntil = Date.now() + wait * 1000;
     const minutes = Math.max(1, Math.ceil(wait / 60));
-    throw new Error(`Buffer API rate limit reached. Universe stopped automatically. Retry after about ${minutes} minute${minutes === 1 ? "" : "s"}.`);
+    throw new BufferQuotaError(`Buffer API rate limit reached. Universe stopped automatically. Retry after about ${minutes} minute${minutes === 1 ? "" : "s"}.`, wait);
   }
   if (!response.ok) {
     throw new Error(payload.errors?.[0]?.message || `Buffer API request failed (HTTP ${response.status}).`);
@@ -145,23 +165,36 @@ export async function bufferGraphqlDetailed<T>(query: string, variables: Record<
   return { data: payload.data, rateLimit };
 }
 
+export async function bufferGraphqlDetailed<T>(query: string, variables: Record<string, unknown> = {}, accessToken?: string) {
+  // Serialize per client so a burst observes the preceding response's budget/429.
+  // Never retry mutations or uncertain requests automatically.
+  const key = budgetKey(accessToken);
+  const prior = state.queues.get(key) || Promise.resolve();
+  const next = prior.catch(() => {}).then(() => sendGraphql<T>(query, variables, accessToken));
+  state.queues.set(key, next);
+  try { return await next; } finally { if (state.queues.get(key) === next) state.queues.delete(key); }
+}
+
 export async function bufferGraphql<T>(query: string, variables: Record<string, unknown> = {}, accessToken?: string) {
   return (await bufferGraphqlDetailed<T>(query, variables, accessToken)).data;
 }
 
 export async function loadBufferChannels(options: { force?: boolean; accessToken?: string; cacheKey?: string } = {}): Promise<BufferChannel[]> {
-  if (!options.accessToken && !options.force && channelCache && channelCache.expiresAt > Date.now()) {
-    return channelCache.channels;
-  }
-
-  assertBufferBudget();
+  const key = hash(String(options.accessToken || apiKey()).trim());
+  const cached = state.channels.get(key);
+  // Manual refresh bypasses the normal TTL, but not a 30-second click/burst guard.
+  if (cached && cached.expiresAt > Date.now() && (!options.force || Date.now() - cached.refreshedAt < 30_000)) return cached.channels;
+  const pending = state.pending.get(key);
+  if (pending) return pending;
+  const load = async () => {
+  assertBufferBudget(options.accessToken);
   const account = await bufferGraphql<{
     account: { organizations: Array<{ id: string; name: string }> };
   }>(`query BufferOrganizations { account { organizations { id name } } }`, {}, options.accessToken);
 
   const rows: BufferChannel[] = [];
   for (const org of account.account?.organizations || []) {
-    assertBufferBudget();
+    assertBufferBudget(options.accessToken);
     const data = await bufferGraphql<{
       channels: Array<{ id: string; name: string; service: string }>;
     }>(
@@ -180,10 +213,17 @@ export async function loadBufferChannels(options: { force?: boolean; accessToken
     }
   }
 
-  if (!options.accessToken) channelCache = { expiresAt: Date.now() + CHANNEL_CACHE_MS, channels: rows };
+  // Bound retained credential hashes without evicting in-flight work.
+  for (const [id, value] of state.channels) if (value.expiresAt <= Date.now()) state.channels.delete(id);
+  if (state.channels.size >= 256) state.channels.delete(state.channels.keys().next().value!);
+  state.channels.set(key, { expiresAt: Date.now() + CHANNEL_CACHE_MS, refreshedAt: Date.now(), channels: rows });
   return rows;
+  };
+  const task = load();
+  state.pending.set(key, task);
+  try { return await task; } finally { if (state.pending.get(key) === task) state.pending.delete(key); }
 }
 
 export function clearBufferChannelCache() {
-  channelCache = null;
+  state.channels.clear();
 }

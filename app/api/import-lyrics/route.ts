@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     }
 
     const title = cleanString(body.title);
-    const lyrics = cleanString(body.lyrics);
+    const lyrics = typeof body.lyrics === "string" ? body.lyrics : "";
 
     const language =
       cleanString(body.language) || "Hindi";
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!lyrics) {
+    if (!lyrics.trim()) {
       return NextResponse.json(
         { error: "Please paste the complete song lyrics." },
         { status: 400 }

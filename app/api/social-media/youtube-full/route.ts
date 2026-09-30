@@ -1,3 +1,4 @@
+import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
@@ -437,19 +438,12 @@ export async function PATCH(request: Request) {
         : [],
     };
 
-    const { error: saveError } = await supabase
-      .from("social_media_packs")
-      .upsert(
-        {
+    const { error: saveError } = await saveSocialPack(supabase,user.id,projectId,{
           song_id: projectId,
           user_id: user.id,
           youtube_full: cleanedPack,
           updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "song_id,user_id",
-        }
-      );
+        });
 
     if (saveError) {
       throw new Error(
@@ -961,19 +955,12 @@ Do not use generic filler.
       );
     }
 
-    const { error: saveError } = await supabase
-      .from("social_media_packs")
-      .upsert(
-        {
+    const { error: saveError } = await saveSocialPack(supabase,user.id,projectId,{
           song_id: song.id,
           user_id: user.id,
           youtube_full: youtubeFull,
           updated_at: new Date().toISOString(),
-        },
-        {
-          onConflict: "song_id,user_id",
-        }
-      );
+        });
 
     if (saveError) {
       throw new Error(

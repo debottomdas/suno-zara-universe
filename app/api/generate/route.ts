@@ -143,7 +143,7 @@ Rules:
         hooks: result.hooks,
         selected_hook: null,
         lyrics: null,
-        title: null,
+        title: typeof body.title === "string" ? body.title.trim().slice(0,120) || null : null,
         status: "hooks-generated",
       })
       .select("id, created_at, updated_at")

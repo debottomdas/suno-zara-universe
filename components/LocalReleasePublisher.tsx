@@ -172,12 +172,13 @@ export default function LocalReleasePublisher({
       const response = await fetch("/api/publishing/buffer/bind", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ channelId, accountId: existingBufferAccountId }) });
       const data = await jsonResponse<any>(response, "Could not use existing Buffer account.");
       setBufferMessage(`Buffer account mapped ✓ ${Number(data.bound || 0)} destination${Number(data.bound || 0) === 1 ? "" : "s"} available to this channel.`);
-      await loadBufferStatus(true);
+      await loadBufferStatus();
     } catch (err) { setBufferError(err instanceof Error ? err.message : "Could not use existing Buffer account."); } finally { setBufferBusy(false); }
   }
   function connectBuffer() {
     if (!channelId) { setBufferError("Choose a Universe channel before connecting Buffer."); return; }
-    window.location.assign(`/api/publishing/buffer/connect?channelId=${encodeURIComponent(channelId)}`);
+    const returnTo = window.location.pathname + window.location.search + window.location.hash;
+    window.location.assign(`/api/publishing/buffer/connect?channelId=${encodeURIComponent(channelId)}&returnTo=${encodeURIComponent(returnTo)}`);
   }
 
   function connectYouTube() {
@@ -273,7 +274,7 @@ export default function LocalReleasePublisher({
       const accountError = boundAccounts.find((account: any) => account.error)?.error;
       setBufferLoaded(!accountError);
       setBufferError(accountError ? String(accountError) : "");
-      if (force) setBufferMessage(`Buffer channels refreshed ✓ ${channels.length} connected channel${channels.length === 1 ? "" : "s"}.`);
+      if (force && !accountError) setBufferMessage(`Buffer channels refreshed ✓ ${channels.length} connected channel${channels.length === 1 ? "" : "s"}.`);
     } catch (err) {
       setBufferLoaded(false);
       setBufferConfigured(false);
@@ -823,7 +824,7 @@ export default function LocalReleasePublisher({
 
       await loadWorkerStatus();
       setBufferProgress("");
-      const requestNote = data.apiRequestsUsed ? ` (${data.apiRequestsUsed} Buffer API request${data.apiRequestsUsed === 1 ? "" : "s"})` : "";
+      const requestNote = data.apiRequestsUsed ? ` (${data.apiRequestsUsed + cleaned} Buffer API request${data.apiRequestsUsed + cleaned === 1 ? "" : "s"})` : "";
       setBufferMessage(cleaned ? `Buffer status refreshed${requestNote}. ${cleaned} temporary staged video${cleaned === 1 ? "" : "s"} cleaned up after publishing.` : `Buffer status refreshed${requestNote}.`);
     } catch (err) {
       setBufferProgress("");
@@ -846,7 +847,18 @@ export default function LocalReleasePublisher({
   const allYouTubePublished = fullPublished && shortPublishedCount === 6;
 
   const bufferRateWindows = useMemo(() => Array.isArray(bufferRateLimit?.windows) ? [...bufferRateLimit!.windows!].sort((a, b) => (a.windowSeconds || 0) - (b.windowSeconds || 0)) : [], [bufferRateLimit]);
-  const bufferQuotaLow = bufferRateWindows.some((window) => window.quota && window.remaining <= Math.max(1, Math.floor(window.quota * 0.1)));
+  // Expire quota warnings locally; this timer never contacts Buffer.
+  useEffect(() => {
+    if (!bufferRateLimit?.capturedAt || !bufferRateWindows.length) return;
+    const captured = Date.parse(bufferRateLimit.capturedAt);
+    if (!Number.isFinite(captured)) return;
+    const nextReset = Math.min(...bufferRateWindows.map(w => captured + w.resetSeconds * 1000));
+    const timer = window.setTimeout(() => setBufferRateLimit(current => current ? {
+      ...current, windows: (current.windows || []).filter(w => Date.parse(current.capturedAt || '') + w.resetSeconds * 1000 > Date.now()),
+    } : current), Math.min(2_147_483_647, Math.max(1, nextReset - Date.now() + 1)));
+    return () => window.clearTimeout(timer);
+  }, [bufferRateLimit, bufferRateWindows]);
+  const bufferQuotaLow = bufferRateWindows.some((window) => window.remaining <= (window.quota ? Math.max(1, Math.floor(window.quota * 0.1)) : 5));
   function bufferWindowLabel(seconds?: number) {
     if (seconds === 900) return "15m";
     if (seconds === 86400) return "24h";
@@ -1155,7 +1167,7 @@ export default function LocalReleasePublisher({
           <button disabled={bufferBusy || bufferQuotaLow || !bufferConfigured || !workerReady || !selectedBufferChannels.length || approvedShorts.length !== 6 || selectedBufferCreatedCount === expectedBufferPosts} onClick={() => void runBufferBatch()} className="rounded-xl bg-gradient-to-r from-[#9fe8d5] to-[#6fc8dc] px-4 py-3 text-[10px] font-black text-[#092028] disabled:cursor-not-allowed disabled:opacity-35">
             {bufferBusy ? "Working…" : selectedBufferCreatedCount === expectedBufferPosts && expectedBufferPosts > 0 ? "All selected posts prepared" : selectedBufferCreatedCount > 0 ? "Retry Missing / Failed · 1 API call" : `Prepare ${expectedBufferPosts} Buffer Posts · 1 API call`}
           </button>
-          <button disabled={bufferBusy || bufferQuotaLow || !bufferReceipts.length} onClick={() => void refreshBufferStatuses()} className="rounded-xl border border-white/10 px-3 py-3 text-[10px] font-black text-zinc-300 disabled:opacity-35">Refresh + Cleanup · 1 API call</button>
+          <button disabled={bufferBusy || bufferQuotaLow || !bufferReceipts.length} onClick={() => void refreshBufferStatuses()} className="rounded-xl border border-white/10 px-3 py-3 text-[10px] font-black text-zinc-300 disabled:opacity-35">Refresh + Cleanup · uses Buffer API</button>
           <span className="text-[9px] text-zinc-500">{selectedBufferCreatedCount}/{expectedBufferPosts || 0} selected destinations prepared · {bufferFailedTotal} current failures</span>
         </div>
 

@@ -228,7 +228,7 @@ Use exactly this structure:
     } = await supabase
       .from("songs")
       .update({
-        title: result.title,
+        title: project.title || result.title,
         lyrics: result.lyrics,
         status: "song-generated",
         updated_at: now,

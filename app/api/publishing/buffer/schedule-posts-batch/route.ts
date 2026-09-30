@@ -40,6 +40,7 @@ function parseItem(value: unknown): ScheduleItem | null {
 }
 
 export async function POST(request: Request) {
+  let accessToken: string | undefined;
   try {
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -69,7 +70,7 @@ export async function POST(request: Request) {
     if (requestedBufferIds.some((id) => !allowed.has(id))) return NextResponse.json({ error: "A selected Buffer destination does not belong to this Universe channel." }, { status: 403 });
     const accountIds = [...new Set((bindings || []).map((item: any) => item.buffer_account_id).filter(Boolean))];
     if (accountIds.length > 1) return NextResponse.json({ error: "This batch spans more than one Buffer account." }, { status: 400 });
-    const accessToken = accountIds.length === 1 ? await bufferAccessToken(String(accountIds[0]), user.id) : undefined;
+    accessToken = accountIds.length === 1 ? await bufferAccessToken(String(accountIds[0]), user.id) : undefined;
 
     const { data: packRow, error: packError } = await supabase.from("social_media_packs").select("facebook,instagram,tiktok").eq("song_id", projectId).eq("user_id", user.id).maybeSingle();
     if (packError) throw new Error(`Could not load social pack: ${packError.message}`);
@@ -103,7 +104,7 @@ export async function POST(request: Request) {
       };
     });
 
-    assertBufferBudget();
+    assertBufferBudget(accessToken);
     const releaseMedia = await claimBufferSchedule(user.id, projectId, validItems, accountIds.length === 1 ? String(accountIds[0]) : null);
     const response = await bufferGraphqlDetailed<Record<string, { post?: any; message?: string }>>(
       `mutation ScheduleSunoZaraBufferPosts(${variableDefs.join(", ")}) { ${fields.join("\n")} }`,
@@ -116,9 +117,10 @@ export async function POST(request: Request) {
       return result?.post?.id ? { ...item, post: result.post } : { ...item, error: result?.message || "Buffer did not schedule the post." };
     });
     await releaseMedia();
-    return NextResponse.json({ results, rateLimit: getBufferRateLimit(), apiRequestsUsed: 1 });
+    return NextResponse.json({ results, rateLimit: getBufferRateLimit(accessToken), apiRequestsUsed: 1 });
   } catch (error) {
+    const limited = error as { status?: number; retryAfter?: number };
     console.error("Buffer schedule-posts-batch error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not schedule Buffer posts.", rateLimit: getBufferRateLimit() }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not schedule Buffer posts.", rateLimit: getBufferRateLimit(accessToken) }, { status: limited?.status === 429 ? 429 : 500, headers: limited?.status === 429 ? { "Retry-After": String(limited.retryAfter || 60) } : undefined });
   }
 }

@@ -35,7 +35,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Media is protected: complete server-side dependency records are required before cleanup." }, { status: 409 });
     }
     const token = media.buffer_account_id ? await bufferAccessToken(media.buffer_account_id, user.id) : undefined;
-    assertBufferBudget();
+    assertBufferBudget(token);
     const ids = [...new Set<string>(media.attempts.map((a:any)=>String(a.postId)))];
     if (ids.length > 30) return NextResponse.json({error:"Media dependencies require manual review."},{status:409});
     const defs = ids.map((_,i)=>`$p${i}: PostInput!`).join(",");
@@ -54,7 +54,8 @@ export async function POST(request: Request) {
     await admin.from("buffer_staged_media").update({state:"deleted"}).eq("storage_path",storagePath).eq("user_id",user.id).eq("state","deleting");
     return NextResponse.json({ ok: true, storagePath });
   } catch (error) {
+    const limited = error as { status?: number; retryAfter?: number };
     console.error("Buffer cleanup error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not clean temporary Buffer media." }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not clean temporary Buffer media." }, { status: limited?.status === 429 ? 429 : 500, headers: limited?.status === 429 ? { "Retry-After": String(limited.retryAfter || 60) } : undefined });
   }
 }

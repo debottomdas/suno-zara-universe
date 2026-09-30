@@ -104,7 +104,9 @@ export async function POST(request: Request) {
     const slot = Math.max(1, Math.min(6, Number(body.slot || 1)));
     const sizeBytes = Number(body.sizeBytes || 0);
     const mimeType = clean(body.mimeType) || "video/mp4";
-    const privacyStatus = clean(body.privacyStatus);
+    const publishAt = clean(body.publishAt);
+    if (publishAt && (!Number.isFinite(Date.parse(publishAt)) || Date.parse(publishAt) <= Date.now() + 120_000)) throw new Error("Choose a future publication time.");
+    const privacyStatus = publishAt ? "private" : clean(body.privacyStatus);
     const selfDeclaredMadeForKids = Boolean(body.selfDeclaredMadeForKids);
     const containsSyntheticMedia = Boolean(body.containsSyntheticMedia);
 
@@ -154,6 +156,7 @@ export async function POST(request: Request) {
       .eq("platform", "youtube")
       .eq("status", "connected")
       .eq("channel_id", song.channel_id)
+      .filter("id", body.connectionId ? "eq" : "not.is", body.connectionId || null)
       .order("is_primary", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -194,6 +197,7 @@ export async function POST(request: Request) {
         snippet: { title, description, tags },
         status: {
           privacyStatus,
+          ...(publishAt ? { publishAt: new Date(publishAt).toISOString() } : {}),
           selfDeclaredMadeForKids,
           containsSyntheticMedia,
         },

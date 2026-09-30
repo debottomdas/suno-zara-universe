@@ -94,6 +94,8 @@ export async function POST(request: Request) {
 
     const itemKey = kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`;
     const now = new Date().toISOString();
+    const publishAt = clean(body.publishAt);
+    if (publishAt && !Number.isFinite(Date.parse(publishAt))) throw new Error("Invalid schedule.");
     const url = `https://www.youtube.com/watch?v=${videoId}`;
 
     let campaignId = "";
@@ -119,7 +121,7 @@ export async function POST(request: Request) {
       campaignId = created.id;
     }
 
-    const { data: connection } = await admin.from("publishing_connections").select("id").eq("user_id", user.id).eq("platform", "youtube").eq("status", "connected").order("is_primary", { ascending: false }).limit(1).maybeSingle();
+    const { data: connection } = await admin.from("publishing_connections").select("id").eq("user_id", user.id).eq("platform", "youtube").eq("status", "connected").eq("channel_id", song.channel_id).order("is_primary", { ascending: false }).limit(1).maybeSingle();
     const { data: existingJob } = await admin.from("publishing_jobs").select("id").eq("campaign_id", campaignId).eq("user_id", user.id).eq("item_key", itemKey).maybeSingle();
     const values = {
       campaign_id: campaignId,
@@ -135,14 +137,15 @@ export async function POST(request: Request) {
       description: description || null,
       hashtags: [],
       tags,
-      payload: { localFirst: true, localMedia: true, shortNumber: kind === "short" ? slot : null, privacyStatus, thumbnailStatus },
+      payload: { localFirst: true, localMedia: true, shortNumber: kind === "short" ? slot : null, privacyStatus, thumbnailStatus, timezone: clean(body.timezone) || null },
       ready_to_publish: true,
-      status: "published",
+      status: publishAt ? "scheduled" : "published",
+      scheduled_for: publishAt || null,
       external_post_id: videoId,
       external_url: url,
       error_message: null,
       validation_errors: [],
-      published_at: now,
+      published_at: publishAt ? null : now,
       updated_at: now,
     };
     if (existingJob?.id) {

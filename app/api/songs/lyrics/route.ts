@@ -9,20 +9,30 @@ export async function POST(request: Request) {
 
     const body = await request.json();
     const projectId = String(body.projectId || "").trim();
-    const lyrics = String(body.lyrics || "").trim();
+    const channelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
+    const lyrics = typeof body.lyrics === "string" ? body.lyrics : "";
     if (!projectId) return NextResponse.json({ error: "projectId is required." }, { status: 400 });
-    if (!lyrics) return NextResponse.json({ error: "Lyrics cannot be empty." }, { status: 400 });
+    if (!lyrics.trim()) return NextResponse.json({ error: "Lyrics cannot be empty." }, { status: 400 });
 
     const { data: current, error: currentError } = await supabase
       .from("songs")
-      .select("id, title, lyrics, updated_at")
+      .select("id, channel_id, title, lyrics, updated_at")
       .eq("id", projectId)
       .eq("user_id", user.id)
       .single();
     if (currentError || !current) return NextResponse.json({ error: "Song not found." }, { status: 404 });
 
+    if (channelId && current.channel_id !== channelId) return NextResponse.json({ error: "Song not found in the selected channel." }, { status: 403 });
+
+    const context: Record<string, string> = {};
+    for (const key of ["title", "idea", "language", "script", "mood", "genre"]) {
+      if (typeof body[key] === "string") context[key] = body[key].trim();
+    }
+    if (("title" in context && !context.title) || ("language" in context && !context.language)) {
+      return NextResponse.json({ error: "Song title and language cannot be empty." }, { status: 400 });
+    }
     const now = new Date().toISOString();
-    if (current.lyrics?.trim() && current.lyrics.trim() !== lyrics) {
+    if (current.lyrics?.trim() && current.lyrics !== lyrics) {
       const { error: versionError } = await supabase.from("song_versions").insert({
         song_id: projectId,
         user_id: user.id,
@@ -36,14 +46,14 @@ export async function POST(request: Request) {
 
     const { data: song, error } = await supabase
       .from("songs")
-      .update({ lyrics, status: "creating", updated_at: now })
+      .update({ ...context, lyrics, status: "creating", updated_at: now })
       .eq("id", projectId)
       .eq("user_id", user.id)
       .select("id, lyrics, status, updated_at")
       .single();
     if (error || !song) return NextResponse.json({ error: error?.message || "Could not save lyrics." }, { status: 500 });
 
-    return NextResponse.json({ projectId: song.id, lyrics: song.lyrics, status: song.status, updatedAt: song.updated_at, saved: true });
+    return NextResponse.json({ projectId: song.id, lyrics: song.lyrics, status: song.status, updatedAt: song.updated_at, context, saved: true });
   } catch (error) {
     console.error("Save lyrics error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not save lyrics." }, { status: 500 });

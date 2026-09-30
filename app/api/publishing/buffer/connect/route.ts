@@ -2,6 +2,8 @@ import { createHash, randomBytes } from "crypto";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 
+import { bufferOrigin, bufferReturnPath, createBufferState, BUFFER_CALLBACK_PATH } from "@/utils/buffer-oauth-state";
+
 export const runtime = "nodejs";
 const STATE_COOKIE = "sz_buffer_oauth_state";
 const VERIFIER_COOKIE = "sz_buffer_oauth_verifier";
@@ -20,15 +22,17 @@ export async function GET(request: Request) {
     const { data: channel } = await supabase.from("channels").select("id,workspace_id,workspaces!inner(owner_user_id)").eq("id",channelId).eq("workspaces.owner_user_id",user.id).maybeSingle();
     if (!channel) return NextResponse.json({ error: "The selected channel is not available." }, { status: 403 });
     const clientId = String(process.env.BUFFER_CLIENT_ID || "").trim();
-    const redirectUri = String(process.env.BUFFER_REDIRECT_URI || "https://suno-zara-universe.vercel.app/api/publishing/buffer/callback").trim();
+    const origin = bufferOrigin(request.url);
+    const redirectUri = origin + BUFFER_CALLBACK_PATH;
+    const returnTo = bufferReturnPath(new URL(request.url).searchParams.get("returnTo"), origin, channelId);
     if (!clientId) throw new Error("BUFFER_CLIENT_ID is not configured.");
-    const state = b64(randomBytes(32));
+    const state = createBufferState(origin, returnTo, channelId, user.id);
     const verifier = b64(randomBytes(64));
     const challenge = b64(createHash("sha256").update(verifier).digest());
     const url = new URL("https://auth.buffer.com/auth");
     url.searchParams.set("client_id",clientId); url.searchParams.set("redirect_uri",redirectUri); url.searchParams.set("response_type","code");
     url.searchParams.set("scope",SCOPES.join(" ")); url.searchParams.set("state",state); url.searchParams.set("code_challenge",challenge); url.searchParams.set("code_challenge_method","S256"); url.searchParams.set("prompt","consent");
-    const response = NextResponse.redirect(url); const secure = process.env.NODE_ENV === "production";
+    const response = NextResponse.redirect(url); const secure = origin.startsWith("https:");
     for (const [name,value] of [[STATE_COOKIE,state],[VERIFIER_COOKIE,verifier],[CHANNEL_COOKIE,channelId]] as const) response.cookies.set(name,value,{httpOnly:true,sameSite:"lax",secure,path:"/",maxAge:MAX_AGE});
     return response;
   } catch (error) { console.error("Buffer OAuth connect error:",error); return NextResponse.json({error:error instanceof Error?error.message:"Could not start Buffer OAuth."},{status:500}); }
