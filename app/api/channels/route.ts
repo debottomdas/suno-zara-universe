@@ -41,10 +41,10 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
     const workspace = await ensureWorkspace(supabase, user);
-    let { data: channels, error } = await supabase.from("channels")
+    let { data: channels, error: channelsError } = await supabase.from("channels")
       .select("id, workspace_id, name, description, language, channel_type, profile, is_archived, created_at, updated_at")
       .eq("workspace_id", workspace.id).eq("is_archived", false).order("created_at", { ascending: true });
-    if (error) throw error;
+    if (channelsError) throw channelsError;
     if (!channels?.length) {
       const { data: first, error: createError } = await supabase.from("channels")
         .insert({ workspace_id: workspace.id, name: "Suno Zara", channel_type: "music", profile: {} })
@@ -107,5 +107,98 @@ export async function POST(request: Request) {
   } catch (error) {
     console.error("Channels POST error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create channel." }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    }
+
+    const workspace = await ensureWorkspace(supabase, user);
+    const body = await request.json();
+
+    const channelId = clean(body.channelId);
+
+    if (!channelId) {
+      return NextResponse.json(
+        { error: "Channel ID is required." },
+        { status: 400 }
+      );
+    }
+
+    const { data: existing, error: loadError } = await supabase
+      .from("channels")
+      .select("id, workspace_id, name, is_archived")
+      .eq("id", channelId)
+      .eq("workspace_id", workspace.id)
+      .maybeSingle();
+
+    if (loadError) throw loadError;
+
+    if (!existing) {
+      return NextResponse.json(
+        { error: "Channel not found." },
+        { status: 404 }
+      );
+    }
+
+    const updates: Record<string, unknown> = {};
+
+    if (body.name !== undefined) {
+      const name = clean(body.name);
+
+      if (!name) {
+        return NextResponse.json(
+          { error: "Channel name is required." },
+          { status: 400 }
+        );
+      }
+
+      updates.name = name;
+    }
+
+    if (body.archive === true) {
+      updates.is_archived = true;
+    }
+
+    if (!Object.keys(updates).length) {
+      return NextResponse.json(
+        { error: "No channel changes supplied." },
+        { status: 400 }
+      );
+    }
+
+    const { data: channel, error } = await supabase
+      .from("channels")
+      .update(updates)
+      .eq("id", channelId)
+      .eq("workspace_id", workspace.id)
+      .select(
+        "id, workspace_id, name, description, language, channel_type, profile, is_archived, created_at, updated_at"
+      )
+      .single();
+
+    if (error || !channel) {
+      throw error || new Error("Could not update channel.");
+    }
+
+    return NextResponse.json({ channel });
+  } catch (error) {
+    console.error("Channels PATCH error:", error);
+
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Could not update channel."
+      },
+      { status: 500 }
+    );
   }
 }

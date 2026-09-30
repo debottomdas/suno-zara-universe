@@ -7,6 +7,7 @@ export const runtime = "nodejs";
 const STATE_COOKIE = "sz_youtube_oauth_state";
 const VERIFIER_COOKIE = "sz_youtube_oauth_verifier";
 const CHANNEL_COOKIE = "sz_youtube_oauth_channel";
+const RETURN_TO_COOKIE = "sz_youtube_oauth_return_to";
 const COOKIE_MAX_AGE = 10 * 60;
 
 const SCOPES = [
@@ -36,8 +37,17 @@ export async function GET(request: Request) {
       );
     }
 
-    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    const requestUrl = new URL(request.url);
+    const channelId = requestUrl.searchParams.get("channelId")?.trim() || "";
+    const requestedReturnTo = requestUrl.searchParams.get("returnTo")?.trim() || "";
+
     if (!channelId) throw new Error("A Universe channel is required before connecting YouTube.");
+
+    // Only permit an internal application path. Never store an external redirect.
+    const returnTo =
+      requestedReturnTo.startsWith("/") && !requestedReturnTo.startsWith("//")
+        ? requestedReturnTo
+        : `/music-next?channelId=${encodeURIComponent(channelId)}`;
     const { data: channel } = await supabase
       .from("channels")
       .select("id, workspace_id, workspaces!inner(owner_user_id)")
@@ -92,6 +102,14 @@ export async function GET(request: Request) {
 
     response.cookies.set(CHANNEL_COOKIE, channelId, {
       httpOnly: true, sameSite: "lax", secure, path: "/", maxAge: COOKIE_MAX_AGE,
+    });
+
+    response.cookies.set(RETURN_TO_COOKIE, returnTo, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure,
+      path: "/",
+      maxAge: COOKIE_MAX_AGE,
     });
 
     return response;
