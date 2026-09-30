@@ -1,4 +1,6 @@
 import Link from "next/link";
+import UniverseSidebar from "./universe-next/UniverseSidebar";
+import shell from "./universe-next/MusicNext.module.css";
 
 type Props = {
   title: string;
@@ -10,7 +12,7 @@ type Props = {
 
 export default function UniverseModulePlaceholder({ title, eyebrow, description, phases, accent }: Props) {
   return (
-    <div className="min-h-screen bg-[#05070b] px-6 py-8 text-white sm:px-10">
+    <div className={shell.page}><div className={shell.layout}><UniverseSidebar/><div className="min-w-0 min-h-screen bg-[#05070b] px-6 py-8 text-white sm:px-10">
       <div className="mx-auto max-w-6xl">
         <Link href="/" className="text-sm font-semibold text-zinc-500 transition hover:text-white">← Suno Zara Universe</Link>
         <section className="mt-10 overflow-hidden rounded-[32px] border border-white/[0.08] bg-[#090d14] p-8 sm:p-12">
@@ -30,6 +32,6 @@ export default function UniverseModulePlaceholder({ title, eyebrow, description,
           </div>
         </section>
       </div>
-    </div>
+    </div></div></div>
   );
 }

@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import UniverseSidebar from "@/components/universe-next/UniverseSidebar";
+import shell from "@/components/universe-next/MusicNext.module.css";
 import { useEffect, useState } from "react";
 import AccountMenu from "@/components/AccountMenu";
 import PublicFooter from "@/components/PublicFooter";
@@ -56,7 +58,7 @@ export default function UniverseHome() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#05070b] text-white">
+    <div className={shell.page}><div className={shell.layout}><UniverseSidebar/><div className="min-w-0 min-h-screen bg-[#05070b] text-white">
       <header className="relative z-50 border-b border-white/[0.07] bg-[#070a10]/90 px-6 py-4 backdrop-blur-xl sm:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
           <Link href="/" className="flex items-center gap-3">
@@ -153,6 +155,6 @@ export default function UniverseHome() {
         </section>
       </main>
       <PublicFooter />
-    </div>
+    </div></div></div>
   );
 }
