@@ -395,6 +395,12 @@ export default function UniverseSidebar({
                   <div className={nav.channelMenu}>
                     <button
                       type="button"
+                      onClick={()=>window.location.assign(`/channels/${encodeURIComponent(c.id)}/identity`)}
+                    >
+                      Identity &amp; Brand
+                    </button>
+                    <button
+                      type="button"
                       onClick={()=>{
                         setChannelMenuId(null);
                         setConnectionsChannel(c);
