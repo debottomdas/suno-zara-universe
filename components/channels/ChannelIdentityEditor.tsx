@@ -1,12 +1,25 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { emptyDna, FIELDS, LABELS, SECTIONS, STAGES, type AssetReference, type ChannelDna, type DnaVersion, type LockChange, type Rule, type Section, type Stage } from '@/utils/channel-dna/model';
+import { emptyDna, FIELDS, LABELS, SECTIONS, STAGES, type AssetReference, type ChannelDna, type DnaVersion, type LockChange, type Rule, type Section, type Stage, type VisualIdentity, type VisualIdentityOverride } from '@/utils/channel-dna/model';
 import { rulesOf, validateDna, validateLockChanges } from '@/utils/channel-dna/validation';
 import s from './ChannelIdentityEditor.module.css';
 type History = Pick<DnaVersion, 'revision' | 'created_at' | 'created_by' | 'change_note' | 'lock_changes'>;
 type Loaded = { channel: { name: string; active_dna_revision: number | null }; version: DnaVersion | null; history: History[] };
 const label = (value: string) => value.replace(/([A-Z])/g, ' $1').replace(/^./, x => x.toUpperCase());
+// Created only by an explicit editor action; legacy loads never receive defaults.
+function newVisualIdentity(): VisualIdentity {
+  return {
+    branding: { enabled: true, position: 'bottom-right', opacity: 0.65, size: 'medium', horizontalMargin: 60, verticalMargin: 60 },
+    title: { enabled: true, showRomanTitle: true, position: 'centre', style: 'cinematic', durationSeconds: 5 },
+    subtitles: { enabled: true, position: 'lower-middle', style: 'clean', size: 'medium', highlight: 'none' },
+  };
+}
+const brandPositions = ['top-left', 'top-right', 'bottom-left', 'bottom-centre', 'bottom-right'] as const;
+const titlePositions = ['upper-centre', 'centre', 'lower-centre'] as const;
+const subtitlePositions = ['centre', 'lower-middle', 'lower'] as const;
+const sizes = ['small', 'medium', 'large'] as const;
+const optionLabel = (value: string) => label(value.replace(/-/g, ' '));
 export default function ChannelIdentityEditor({ channelId }: { channelId: string }) {
   const endpoint = `/api/channels/${encodeURIComponent(channelId)}/dna`;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -63,6 +76,29 @@ export default function ChannelIdentityEditor({ channelId }: { channelId: string
     };
   }, [dirty]);
   function edit(next: ChannelDna) { requestId.current.sequence++; setDocument(next); setPreview(''); setMessage(''); }
+  const identity = document.sections.visual.identity;
+  function editIdentity(value: VisualIdentity) {
+    edit({ ...document, sections: { ...document.sections, visual: { ...document.sections.visual, identity: value } } });
+  }
+  function editOverride(layout: 'landscape' | 'portrait', group: keyof VisualIdentityOverride, key: string, value: string | number | undefined) {
+    if (!identity) return;
+    const override = { ...identity[layout] };
+    const values: Record<string, string | number> = { ...override[group] };
+    if (value === undefined) delete values[key]; else values[key] = value;
+    if (Object.keys(values).length) override[group] = values; else delete override[group];
+    const next = { ...identity };
+    if (Object.keys(override).length) next[layout] = override; else delete next[layout];
+    editIdentity(next);
+  }
+  function selectControl<T extends string>(name: string, value: T, options: readonly T[], change: (value: T) => void) {
+    return <label>{name}<select value={value} onChange={event => change(event.target.value as T)}>{options.map(option => <option key={option} value={option}>{optionLabel(option)}</option>)}</select></label>;
+  }
+  function numberControl(name: string, value: number, max: number, change: (value: number) => void, min = 0, step: number | 'any' = 1) {
+    return <label>{name}<input type="number" min={min} max={max} step={step} value={Number.isFinite(value) ? value : ''} onChange={event => change(event.target.valueAsNumber)} /></label>;
+  }
+  function flagControl(name: string, value: boolean, change: (value: boolean) => void) {
+    return <label>{name}<input type="checkbox" checked={value} onChange={event => change(event.target.checked)} /></label>;
+  }
   const previousRules = rulesOf(loaded?.version?.document ?? emptyDna());
   const changes: LockChange[] = rulesOf(document).filter(r => (previousRules.find(p => p.id === r.id)?.locked ?? false) !== r.locked).map(r => ({ id: r.id, locked: r.locked }));
   function updateRule(id: string, patch: Partial<Rule>) {
@@ -126,6 +162,49 @@ export default function ChannelIdentityEditor({ channelId }: { channelId: string
         <p>These notes are editable defaults. Put requirements you want protected into locked rules below.</p>
         {section === 'publishing' && <p>Templates support {'{title}, {channelName}, {language}, {credits}'}. Lists and HTTPS links use one item per line. Templates are stored only.</p>}
         <div className={s.fields}>{FIELDS[section].map(field => <label key={`${section}-${field}`}>{label(field)}<textarea maxLength={2000} rows={3} value={(document.sections[section].fields as Record<string, string>)[field]||''} onChange={event => edit({ ...document, sections: { ...document.sections, [section]: { ...document.sections[section], fields: { ...document.sections[section].fields, [field]: event.target.value } } } })} /></label>)}</div>
+        {section === 'visual' && <div className={s.rule}>
+          <h2>Visual Identity</h2>
+          <p><small>Visual Identity layout controls are being prepared for the V5.29 renderer.</small></p>
+          {!identity ? <button type="button" onClick={() => editIdentity(newVisualIdentity())}>Configure Visual Identity</button> : <>
+            <fieldset><legend>Branding</legend><div className={s.fields}>
+              {flagControl('Enabled', identity.branding.enabled, enabled => editIdentity({ ...identity, branding: { ...identity.branding, enabled } }))}
+              {selectControl('Branding position', identity.branding.position, brandPositions, position => editIdentity({ ...identity, branding: { ...identity.branding, position } }))}
+              {numberControl('Opacity (%)', identity.branding.opacity * 100, 100, percent => editIdentity({ ...identity, branding: { ...identity.branding, opacity: percent / 100 } }), 0, 0.1)}
+              {selectControl('Branding size', identity.branding.size, sizes, size => editIdentity({ ...identity, branding: { ...identity.branding, size } }))}
+              {numberControl('Horizontal margin', identity.branding.horizontalMargin, 500, horizontalMargin => editIdentity({ ...identity, branding: { ...identity.branding, horizontalMargin } }), 0, 'any')}
+              {numberControl('Vertical margin', identity.branding.verticalMargin, 500, verticalMargin => editIdentity({ ...identity, branding: { ...identity.branding, verticalMargin } }), 0, 'any')}
+            </div></fieldset>
+            <fieldset><legend>Song title</legend><div className={s.fields}>
+              {flagControl('Show title', identity.title.enabled, enabled => editIdentity({ ...identity, title: { ...identity.title, enabled } }))}
+              {flagControl('Show Roman title', identity.title.showRomanTitle, showRomanTitle => editIdentity({ ...identity, title: { ...identity.title, showRomanTitle } }))}
+              {selectControl('Title position', identity.title.position, titlePositions, position => editIdentity({ ...identity, title: { ...identity.title, position } }))}
+              {selectControl('Title style', identity.title.style, ['clean', 'cinematic', 'minimal'], style => editIdentity({ ...identity, title: { ...identity.title, style } }))}
+              {numberControl('Duration (seconds)', identity.title.durationSeconds, 30, durationSeconds => editIdentity({ ...identity, title: { ...identity.title, durationSeconds } }), 0.01, 'any')}
+            </div></fieldset>
+            <fieldset><legend>Subtitles</legend><div className={s.fields}>
+              {flagControl('Show subtitles', identity.subtitles.enabled, enabled => editIdentity({ ...identity, subtitles: { ...identity.subtitles, enabled } }))}
+              {selectControl('Subtitle position', identity.subtitles.position, subtitlePositions, position => editIdentity({ ...identity, subtitles: { ...identity.subtitles, position } }))}
+              {selectControl('Subtitle style', identity.subtitles.style, ['clean', 'backed', 'cinematic'], style => editIdentity({ ...identity, subtitles: { ...identity.subtitles, style } }))}
+              {selectControl('Subtitle size', identity.subtitles.size, sizes, size => editIdentity({ ...identity, subtitles: { ...identity.subtitles, size } }))}
+              {selectControl('Highlight', identity.subtitles.highlight, ['none', 'current-phrase'], highlight => editIdentity({ ...identity, subtitles: { ...identity.subtitles, highlight } }))}
+            </div></fieldset>
+            <h3>Layout overrides</h3>
+            {(['landscape', 'portrait'] as const).map(layout => <details key={layout}>
+              <summary>{layout === 'landscape' ? 'Landscape 16:9' : 'Portrait 9:16'}</summary>
+              <div className={s.fields}>
+                {(['branding', 'title', 'subtitles'] as const).map(group => {
+                  const options = group === 'branding' ? brandPositions : group === 'title' ? titlePositions : subtitlePositions;
+                  return <label key={group}>{group === 'branding' ? 'Brand' : group === 'title' ? 'Title' : 'Subtitle'} position<select aria-label={`${optionLabel(layout)} ${group} position`} value={identity[layout]?.[group]?.position ?? ''} onChange={event => editOverride(layout, group, 'position', event.target.value || undefined)}>
+                    <option value="">Use default</option>{options.map(value => <option key={value} value={value}>{optionLabel(value)}</option>)}
+                  </select></label>;
+                })}
+                {(['horizontalMargin', 'verticalMargin'] as const).map(key => <label key={key}>Brand {key === 'horizontalMargin' ? 'horizontal' : 'vertical'} margin<input aria-label={`${optionLabel(layout)} ${label(key)}`} type="number" min={0} max={500} step="any" placeholder="Use default" value={identity[layout]?.branding?.[key] ?? ''} onChange={event => editOverride(layout, 'branding', key, event.target.value === '' ? undefined : event.target.valueAsNumber)} />
+                  <button type="button" onClick={() => editOverride(layout, 'branding', key, undefined)}>Use default</button>
+                </label>)}
+              </div>
+            </details>)}
+          </>}
+        </div>}
         <h2>Creator rules</h2><p>Required = must satisfy. Preferred = a preference. Avoid = must not include. Save an unlock before editing or removing a previously locked rule.</p>
         {document.sections[section].rules.map(rule => {
           const protectedRule = rule.locked || previousRules.some(r => r.id === rule.id && r.locked);

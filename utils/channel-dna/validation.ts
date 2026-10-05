@@ -34,6 +34,44 @@ function text(v: unknown, limit = 2000): asserts v is string {
   if (typeof v === 'string' && hasUnpairedSurrogate(v)) throw new DnaError('Text contains an unpaired Unicode surrogate.');
   if (typeof v !== 'string' || v.length > limit || /[\u0000-\u0008\u000b\u000c\u000e-\u001f]/.test(v)) throw new DnaError(`Text must contain at most ${limit} characters and no control characters.`);
 }
+// Mirror the optional identity contract in 20261005_channel_visual_identity_contract.sql.
+function validateVisualIdentity(value: unknown) {
+  const identity = object(value);
+  const groups = ['branding', 'title', 'subtitles'] as const;
+  if (groups.some(key => !Object.hasOwn(identity, key)) || Object.keys(identity).some(key => ![...groups, 'landscape', 'portrait'].includes(key))) throw new DnaError('Invalid visual identity groups.');
+  for (const layout of ['base', 'landscape', 'portrait']) {
+    if (layout !== 'base' && !Object.hasOwn(identity, layout)) continue;
+    const settings = layout === 'base' ? identity : object(identity[layout]);
+    if (layout !== 'base' && Object.keys(settings).some(key => !(groups as readonly string[]).includes(key))) throw new DnaError('Invalid visual identity override groups.');
+    for (const group of groups) {
+      if (!Object.hasOwn(settings, group)) continue;
+      const values = object(settings[group]);
+      const keys = layout !== 'base'
+        ? (group === 'branding' ? ['position', 'horizontalMargin', 'verticalMargin'] : ['position'])
+        : group === 'branding' ? ['enabled', 'position', 'opacity', 'size', 'horizontalMargin', 'verticalMargin']
+        : group === 'title' ? ['enabled', 'showRomanTitle', 'position', 'style', 'durationSeconds']
+        : ['enabled', 'position', 'style', 'size', 'highlight'];
+      if (layout === 'base') exact(values, keys);
+      else if (Object.keys(values).some(key => !keys.includes(key))) throw new DnaError('Invalid visual identity override keys.');
+      for (const [key, value] of Object.entries(values)) {
+        if (key === 'enabled' || key === 'showRomanTitle') {
+          if (typeof value !== 'boolean') throw new DnaError('Visual identity flags must be booleans.');
+        } else if (['opacity', 'horizontalMargin', 'verticalMargin', 'durationSeconds'].includes(key)) {
+          const max = key === 'opacity' ? 1 : key === 'durationSeconds' ? 30 : 500;
+          if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > max || (key === 'durationSeconds' && value === 0)) throw new DnaError(`Invalid visual identity ${key} range.`);
+        } else {
+          const allowed = key === 'position'
+            ? group === 'branding' ? ['top-left', 'top-right', 'bottom-left', 'bottom-centre', 'bottom-right']
+              : group === 'title' ? ['upper-centre', 'centre', 'lower-centre'] : ['centre', 'lower-middle', 'lower']
+            : key === 'size' ? ['small', 'medium', 'large']
+            : key === 'style' ? (group === 'title' ? ['clean', 'cinematic', 'minimal'] : ['clean', 'backed', 'cinematic'])
+            : ['none', 'current-phrase'];
+          if (typeof value !== 'string' || !allowed.includes(value)) throw new DnaError(`Invalid visual identity ${group}.${key}.`);
+        }
+      }
+    }
+  }
+}
 export function rulesOf(doc: ChannelDna): Rule[] { return SECTIONS.flatMap(s => doc.sections[s].rules); }
 export function validateDna(value: unknown): ChannelDna {
   const d = object(value); exact(d, ['schemaVersion', 'sections', 'assets']);
@@ -42,7 +80,9 @@ export function validateDna(value: unknown): ChannelDna {
   const sections = object(d.sections); exact(sections, SECTIONS);
   const ids = new Set<string>();
   for (const section of SECTIONS) {
-    const s = object(sections[section]); exact(s, ['fields', 'rules']);
+    const s = object(sections[section]);
+    exact(s, section === 'visual' && Object.hasOwn(s, 'identity') ? ['fields', 'rules', 'identity'] : ['fields', 'rules']);
+    if (section === 'visual' && Object.hasOwn(s, 'identity')) validateVisualIdentity(s.identity);
     const fields = object(s.fields);
     if(section==='publishing'){const required=FIELDS.publishing.filter(k=>!(OPTIONAL_PUBLISHING_FIELDS as readonly string[]).includes(k));if(required.some(k=>!Object.hasOwn(fields,k))||Object.keys(fields).some(k=>!(FIELDS.publishing as readonly string[]).includes(k)))throw new DnaError('Invalid publishing fields.');}
     else exact(fields, FIELDS[section]);

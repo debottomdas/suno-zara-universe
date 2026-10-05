@@ -115,8 +115,8 @@ test('migration contract restricts writes, locks ownership rows, guards activati
   assert.doesNotMatch(sql,/(?:update|insert into|delete from) public\.(?:songs|song_media_assets|publishing_\w+)/);
 });
 
-async function editorHarness({ locked = false, conflict = false, delayedPreview = false, refreshFails = false } = {}) {
-  const saved = doc(); saved.sections.core.rules[0].locked = locked;
+async function editorHarness({ locked = false, conflict = false, delayedPreview = false, refreshFails = false, initialDocument } = {}) {
+  const saved = initialDocument ? structuredClone(initialDocument) : doc(); saved.sections.core.rules[0].locked = locked;
   let record = { channel: { name: 'Test Channel', active_dna_revision: 1 }, version: { document: saved, revision: 1 }, history: [] };
   const listeners = {}, cleanups = {};
   let confirmResult = false, confirmCalls = 0, resolvePreview;
@@ -259,3 +259,142 @@ test('malformed UTF-8 request bytes are rejected rather than replaced', async ()
   assert.equal(h.rpcCalls,0);
 });
 test('extended publishing settings remain channel-scoped and legacy documents retain their exact compiler hash',()=>{const legacy=doc();for(const field of model.OPTIONAL_PUBLISHING_FIELDS)delete legacy.sections.publishing.fields[field];const before=JSON.stringify(legacy),valid=validation.validateDna(legacy);assert.equal(JSON.stringify(valid),before);const modern=doc();Object.assign(modern.sections.publishing.fields,{shortTitleTemplate:'{hook} · {shortNumber}',defaultPlaylistIds:'PL1234567890',privacyStatus:'private',relatedVideoPolicy:'required-studio'});assert.ok(validation.validateDna(modern));for(const change of [{privacyStatus:'invalid'},{defaultPlaylistIds:'bad url'},{relatedVideoPolicy:'invented-api'}]){const d=doc();Object.assign(d.sections.publishing.fields,change);assert.throws(()=>validation.validateDna(d));}});
+
+test('visual identity preserves legacy documents and matches the B1.1 SQL fixtures', () => {
+  const legacy = doc(), snapshot = JSON.stringify(legacy);
+  assert.equal(JSON.stringify(validation.validateDna(legacy)), snapshot);
+  assert.equal(Object.hasOwn(model.emptyDna().sections.visual, 'identity'), false);
+  const sql = fs.readFileSync('tests/channel-visual-identity-contract.sql', 'utf8');
+  const identity = JSON.parse(sql.match(/identity_value jsonb := '([^']+)'::jsonb/)[1]);
+  const d = doc(); d.sections.visual.identity = identity;
+  assert.equal(JSON.stringify(validation.validateDna(d)), JSON.stringify(d));
+  for (const layout of ['landscape', 'portrait']) {
+    for (const override of [{}, {branding:{}}, {branding:{position:'top-left',horizontalMargin:0,verticalMargin:500}}, {title:{position:'upper-centre'}}, {subtitles:{position:'lower'}}]) {
+      const next = structuredClone(d); next.sections.visual.identity[layout] = override;
+      assert.equal(JSON.stringify(validation.validateDna(next)), JSON.stringify(next));
+    }
+  }
+  for (const match of sql.matchAll(/\('([^']+)'::jsonb\)/g)) {
+    const next = structuredClone(d); Object.assign(next.sections.visual.identity, JSON.parse(match[1]));
+    assert.throws(() => validation.validateDna(next), JSON.stringify(JSON.parse(match[1])));
+  }
+  const saved = validation.validateSave(body(d, 1));
+  assert.equal(JSON.stringify(saved.document.sections.visual.identity), JSON.stringify(identity));
+  assert.equal(JSON.stringify(legacy), snapshot);
+});
+
+test('visual identity rejects missing settings, malformed objects, wrong types and extra override keys', () => {
+  const sql = fs.readFileSync('tests/channel-visual-identity-contract.sql', 'utf8');
+  const identity = JSON.parse(sql.match(/identity_value jsonb := '([^']+)'::jsonb/)[1]);
+  const invalid = mutation => { const d = doc(); d.sections.visual.identity = structuredClone(identity); mutation(d); assert.throws(() => validation.validateDna(d)); };
+  for (const value of [null, [], true, 'identity', 3, undefined]) invalid(d => {d.sections.visual.identity=value;});
+  for (const group of ['branding','title','subtitles']) {
+    invalid(d => {delete d.sections.visual.identity[group];});
+    for (const key of Object.keys(identity[group])) {
+      invalid(d => {delete d.sections.visual.identity[group][key];});
+      for (const value of [null, [], {}, undefined]) invalid(d => {d.sections.visual.identity[group][key]=value;});
+    }
+    for (const value of [null, [], true, 'group']) invalid(d => {d.sections.visual.identity[group]=value;});
+  }
+  for (const layout of ['landscape','portrait']) {
+    for (const value of [null, [], true, 'layout']) invalid(d => {d.sections.visual.identity[layout]=value;});
+    invalid(d => {d.sections.visual.identity[layout]={extra:{}};});
+    for (const group of ['branding','title','subtitles']) {
+      invalid(d => {d.sections.visual.identity[layout]={[group]:{enabled:true}};});
+      invalid(d => {d.sections.visual.identity[layout]={[group]:{position:'invalid'}};});
+      invalid(d => {d.sections.visual.identity[layout]={[group]:null};});
+    }
+  }
+  for (const key of ['opacity','horizontalMargin','verticalMargin']) {
+    for (const value of [NaN,Infinity,-Infinity,'0',true]) invalid(d => {d.sections.visual.identity.branding[key]=value;});
+  }
+  invalid(d => {d.sections.visual.identity.title.position='bottom-right';});
+  invalid(d => {d.sections.visual.identity.title.durationSeconds=-1;});
+  invalid(d => {d.sections.visual.identity.subtitles.enabled='true';});
+  invalid(d => {d.sections.core.identity=identity;});
+});
+
+test('visual identity accepts inclusive bounds and all declared enums', () => {
+  const sql = fs.readFileSync('tests/channel-visual-identity-contract.sql', 'utf8');
+  const identity = JSON.parse(sql.match(/identity_value jsonb := '([^']+)'::jsonb/)[1]);
+  const valid = (group,key,value) => {const d=doc();d.sections.visual.identity=structuredClone(identity);d.sections.visual.identity[group][key]=value;validation.validateDna(d);};
+  for (const [group,key,values] of [
+    ['branding','position',['top-left','top-right','bottom-left','bottom-centre','bottom-right']],
+    ['branding','size',['small','medium','large']],['branding','opacity',[0,1]],
+    ['branding','horizontalMargin',[0,500]],['branding','verticalMargin',[0,500]],
+    ['title','position',['upper-centre','centre','lower-centre']],['title','style',['clean','cinematic','minimal']],
+    ['title','durationSeconds',[0.01,30]],['subtitles','position',['centre','lower-middle','lower']],
+    ['subtitles','style',['clean','backed','cinematic']],['subtitles','size',['small','medium','large']],
+    ['subtitles','highlight',['none','current-phrase']],
+  ]) for (const value of values) valid(group,key,value);
+});
+
+
+function identityControl(h, name) {
+  const label = h.nodes().find(n => n.type === 'label' && Array.isArray(n.props.children) && n.props.children[0] === name);
+  assert.ok(label, `Control ${name} exists`);
+  return h.nodes(label).find(n => ['input','select'].includes(n.type));
+}
+async function saveEditorDocument(h) {
+  h.button('Save & activate DNA').props.onClick(); await h.flush();
+  return JSON.parse(h.calls.filter(c => c.method === 'PUT').at(-1).body).document;
+}
+test('visual editor leaves legacy DNA unchanged until explicit configuration and preserves existing content', async () => {
+  const original = doc(); original.sections.visual.fields.watermark = 'Keep prose';
+  const h = await editorHarness({initialDocument:original});
+  h.button('Visual Identity / Brand Kit').props.onClick(); h.render();
+  assert.ok(h.button('Configure Visual Identity'));
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 0);
+  assert.equal(h.button('Save & activate DNA').props.disabled, true);
+  h.button('Configure Visual Identity').props.onClick(); h.render();
+  const saved = await saveEditorDocument(h);
+  const identity = saved.sections.visual.identity;
+  assert.deepEqual(identity, {
+    branding:{enabled:true,position:'bottom-right',opacity:0.65,size:'medium',horizontalMargin:60,verticalMargin:60},
+    title:{enabled:true,showRomanTitle:true,position:'centre',style:'cinematic',durationSeconds:5},
+    subtitles:{enabled:true,position:'lower-middle',style:'clean',size:'medium',highlight:'none'},
+  });
+  validation.validateDna(saved);
+  const restored = structuredClone(saved); delete restored.sections.visual.identity;
+  assert.equal(JSON.stringify(restored), JSON.stringify(original));
+  assert.equal(identityControl(h,'Opacity (%)').props.value,65);
+  const reload = await editorHarness({initialDocument:saved});reload.button('Visual Identity / Brand Kit').props.onClick();reload.render();
+  assert.equal(identityControl(reload,'Opacity (%)').props.value,65);
+  assert.equal(reload.button('Save & activate DNA').props.disabled,true);
+});
+test('visual editor maps controls to identity and removes landscape/portrait overrides for inheritance', async () => {
+  const fixture = fs.readFileSync('tests/channel-visual-identity-contract.sql','utf8');
+  const original = doc();original.sections.visual.identity=JSON.parse(fixture.match(/identity_value jsonb := '([^']+)'::jsonb/)[1]);
+  const h=await editorHarness({initialDocument:original});h.button('Visual Identity / Brand Kit').props.onClick();h.render();
+  const changes=[
+    ['Enabled',{checked:false}],['Branding position',{value:'top-left'}],['Opacity (%)',{valueAsNumber:25}],['Branding size',{value:'large'}],
+    ['Horizontal margin',{valueAsNumber:12}],['Vertical margin',{valueAsNumber:13}],
+    ['Show title',{checked:false}],['Show Roman title',{checked:false}],['Title position',{value:'upper-centre'}],['Title style',{value:'minimal'}],['Duration (seconds)',{valueAsNumber:3}],
+    ['Show subtitles',{checked:false}],['Subtitle position',{value:'lower'}],['Subtitle style',{value:'backed'}],['Subtitle size',{value:'small'}],['Highlight',{value:'current-phrase'}],
+  ];
+  for(const [name,target] of changes){identityControl(h,name).props.onChange({target});h.render();}
+  const changed=await saveEditorDocument(h);
+  assert.deepEqual(changed.sections.visual.identity,{
+    branding:{enabled:false,position:'top-left',opacity:0.25,size:'large',horizontalMargin:12,verticalMargin:13},
+    title:{enabled:false,showRomanTitle:false,position:'upper-centre',style:'minimal',durationSeconds:3},
+    subtitles:{enabled:false,position:'lower',style:'backed',size:'small',highlight:'current-phrase'},
+  });
+  for(const layout of ['Landscape','Portrait']){
+    const control=name=>h.nodes().find(n=>n.props?.['aria-label']===`${layout} ${name}`);
+    for(const [name,target] of [['branding position',{value:'bottom-centre'}],['Horizontal Margin',{value:'20',valueAsNumber:20}],['Vertical Margin',{value:'30',valueAsNumber:30}],['title position',{value:'lower-centre'}],['subtitles position',{value:'centre'}]]){
+      control(name).props.onChange({target});h.render();
+    }
+    const overridden=await saveEditorDocument(h);
+    assert.deepEqual(overridden.sections.visual.identity[layout.toLowerCase()],{branding:{position:'bottom-centre',horizontalMargin:20,verticalMargin:30},title:{position:'lower-centre'},subtitles:{position:'centre'}});
+    validation.validateDna(overridden);
+    for(const name of ['branding position','Horizontal Margin','Vertical Margin','title position','subtitles position']){
+      control(name).props.onChange({target:{value:''}});h.render();
+    }
+    const inherited=await saveEditorDocument(h);
+    assert.equal(Object.hasOwn(inherited.sections.visual.identity,layout.toLowerCase()),false);
+    assert.deepEqual(inherited.sections.visual.identity,changed.sections.visual.identity);
+  }
+  const restored=structuredClone(changed);delete restored.sections.visual.identity;
+  const baseline=structuredClone(original);delete baseline.sections.visual.identity;
+  assert.deepEqual(restored,baseline);
+});
