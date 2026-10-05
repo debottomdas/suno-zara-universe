@@ -36,15 +36,15 @@ test('changing active DNA invalidates render dependency keys without signed URLs
 });
 test('explicit DNA credits replace stale generic release credits in the publishing description',()=>{const c=fixture(0),pack=applyChannelPublishing(c,song,'youtube_full',{title:'Song',finalDescription:'Creative\n\nOld generic credits',credits:'Old generic credits'});assert.equal(pack.credits,'Credits 0');assert.ok(pack.description.includes('Credits 0'));assert.ok(!pack.description.includes('Old generic credits'));});
 
-function structuredFixture(){const c=fixture(0);c.dna.sections.visual.identity={branding:{enabled:true,position:'bottom-right',opacity:.65,size:'medium',horizontalMargin:60,verticalMargin:60},title:{enabled:true},subtitles:{enabled:true},landscape:{branding:{horizontalMargin:0}},portrait:{branding:{position:'top-left',verticalMargin:0}}};return c;}
-test('structured layouts inherit base branding, preserve zero margins and ignore title/subtitle settings',()=>{
+function structuredFixture(){const c=fixture(0);c.dna.sections.visual.identity={branding:{enabled:true,position:'bottom-right',opacity:.65,size:'medium',horizontalMargin:60,verticalMargin:60},title:{enabled:false,showRomanTitle:true,position:'centre',style:'cinematic',durationSeconds:5},subtitles:{enabled:true},landscape:{branding:{horizontalMargin:0}},portrait:{branding:{position:'top-left',verticalMargin:0}}};return c;}
+test('structured layouts inherit base branding, preserve zero margins and ignore subtitle settings',()=>{
  const c=structuredFixture(),before=JSON.stringify(c),full=brandingFinishing(c,'landscape'),short=brandingFinishing(c,'portrait');
  assert.equal(full.brandHorizontalMargin,0);assert.equal(full.brandVerticalMargin,60);assert.equal(full.brandAlignment,3);
  assert.equal(short.brandHorizontalMargin,60);assert.equal(short.brandVerticalMargin,0);assert.equal(short.brandAlignment,7);
  assert.equal(JSON.stringify(brandingFinishing(c)),JSON.stringify(full));
  for(const f of [full,short]){validateFinishing(f,30);assert.equal(f.brandOpacity,.65);assert.equal(f.subtitles,false);assert.equal(f.intro,1);assert.equal(f.outro,3);assert.equal(f.introBrandOpacity,.35);}
  assert.equal(JSON.stringify(c),before);
- c.dna.sections.visual.identity.title={enabled:false,position:'top'};c.dna.sections.visual.identity.subtitles={enabled:false,style:'different'};
+ c.dna.sections.visual.identity.subtitles={enabled:false,style:'different'};
  assert.equal(JSON.stringify(brandingFinishing(c)),JSON.stringify(full));assert.equal(before,JSON.stringify(structuredFixture()));
 });
 test('all structured positions, sizes, opacity and margins reach ASS and asset composition in both layouts',()=>{
@@ -103,4 +103,39 @@ test('lockup leaves text-only, asset-only, disabled and legacy positioning uncha
  const legacy=brandingFinishing(fixture(0));assert.equal(assDocument({...legacy,renderAssets:[asset]},30),assDocument(legacy,30));assert.ok(brandingRenderSpec(legacy,30,0,[asset],'/tmp/f.ass').filter.includes('overlay=x=W-w-60:y=H-h-60'));
  const assets=[asset,{...asset,role:'watermark'}],multi={...f,renderAssets:assets};assert.equal(assDocument(multi,30).match(/^Style: Brand,.*$/m)[0].split(',')[20],'492');assert.ok(brandingRenderSpec(multi,30,0,assets,'/tmp/f.ass').filter.includes('overlay=x=W-w-246:y=H-h-0'));
  const intros=[{...asset,role:'intro'},{...asset,role:'outro'}];assert.deepEqual(brandingRenderSpec({...f,renderAssets:[asset]},30,0,intros,'/tmp/f.ass'),brandingRenderSpec(f,30,0,intros,'/tmp/f.ass'));
+});
+
+function titleFixture(){const c=structuredFixture();Object.assign(c.dna.sections.visual.identity.title,{enabled:true});const f=brandingFinishing(c);Object.assign(f.openingTitle,{nativeTitle:'ঝিরঝিরে বৃষ্টিতে',secondaryTitle:'Jhirjhiri Brishtite'});f.language='Bengali';return f;}
+test('opening config inherits layout position only, remains optional and never consumes subtitles',()=>{
+ const c=structuredFixture(),before=JSON.stringify(c);c.dna.sections.visual.identity.landscape.title={position:'lower-centre'};c.dna.sections.visual.identity.portrait.title={position:'upper-centre'};const snapshot=JSON.stringify(c);
+ for(const [layout,position] of [['landscape','lower-centre'],['portrait','upper-centre']]){const f=brandingFinishing(c,layout);assert.equal(f.openingTitle.position,position);assert.equal(f.openingTitle.style,'cinematic');assert.equal(f.openingTitle.durationSeconds,5);assert.equal(f.subtitles,false);}
+ assert.equal(JSON.stringify(c),snapshot);assert.ok(!('openingTitle' in brandingFinishing(fixture(0))));assert.ok(before);
+});
+test('opening ASS renders native/optional distinct secondary/channel lines, all styles and positions on output timeline',()=>{
+ for(const slot of [0,1])for(const [position,fraction] of [['upper-centre',.25],['centre',.5],['lower-centre',.7]])for(const [style,sizes] of [['clean',[64,40,26]],['cinematic',[72,44,28]],['minimal',[52,34,24]]]){
+  const f=titleFixture();Object.assign(f.openingTitle,{position,style});validateFinishing(f,30);const ass=assDocument(f,3,slot,90),event=ass.split('\n').find(s=>s.startsWith('Dialogue: 3,'));
+  assert.ok(event.includes('0:00:00.00,0:00:03.00'));assert.ok(event.includes(`\\pos(${slot?540:960},${Math.round((slot?1920:1080)*fraction)})`));assert.ok(event.includes('\\fad(300,300)'));
+  for(const size of sizes)assert.ok(event.includes(`\\fs${size}`));assert.ok(event.includes('ঝিরঝিরে বৃষ্টিতে'));assert.ok(event.includes('Jhirjhiri Brishtite'));assert.ok(event.includes(f.channelName));assert.equal(event.split('\\N').length,3);
+  assert.ok(event.includes(`\\bord${style==='minimal'?1:2}`));assert.ok(event.includes(`\\b${style==='cinematic'?1:0}\\fsp0`));assert.ok(ass.includes('Dialogue: 1,'));
+  assert.ok(!ass.includes('Dialogue: 2,0:00:00.00,0:00:01.00,IntroBrand'));if(!slot)assert.ok(ass.includes('Dialogue: 2,0:00:00.00,0:00:03.00,IntroBrand'));
+ }
+ const f=titleFixture();const native=f.openingTitle.nativeTitle;f.openingTitle.nativeTitle='Latin title';assert.ok(assDocument(f,30).includes('\\fs72\\b1\\fsp1'));f.openingTitle.nativeTitle=native;f.openingTitle.durationSeconds=.001;assert.ok(assDocument(f,3).includes('\\fad(0,0)'));
+ f.openingTitle.durationSeconds=2;assert.ok(assDocument(f,30).includes('Dialogue: 3,0:00:00.00,0:00:02.00'));
+ for(const value of ['', '  Same   Title ']){f.openingTitle.nativeTitle='Same Title';f.openingTitle.secondaryTitle=value;assert.equal(assDocument(f,30).split('\n').find(s=>s.startsWith('Dialogue: 3,')).split('\\N').length,2);}
+ f.openingTitle.secondaryTitle='Different';f.openingTitle.showRomanTitle=false;assert.ok(!assDocument(f,30).includes('Different'));
+ f.openingTitle.enabled=false;assert.ok(!assDocument(f,30).includes('Dialogue: 3,'));assert.ok(assDocument(f,30).includes('Dialogue: 2,0:00:00.00,0:00:01.00'));
+ f.openingTitle.enabled=true;f.openingTitle.nativeTitle='{\\pos(1,1)}';assert.ok(assDocument(f,30).includes('\\{\\\\pos(1,1)\\}'));
+});
+test('intro media precedes the single ASS stage while persistent assets and outro remain afterward',()=>{
+ const f=titleFixture(),assets=['watermark','outro','intro'].map(role=>({role,file:'/tmp/'+role+'.png',mimeType:'image/png'}));
+ const spec=brandingRenderSpec(f,30,0,assets,'/tmp/f.ass'),intro=spec.filter.indexOf("between(t,0,1)"),ass=spec.filter.indexOf('ass='),outro=spec.filter.indexOf("between(t,27,30)");assert.ok(intro<ass);assert.ok(ass<outro);assert.equal((spec.filter.match(/ass=/g)||[]).length,1);assert.ok(spec.inputs.includes('/tmp/intro.png'));assert.ok(spec.inputs.includes('/tmp/watermark.png'));assert.ok(spec.inputs.includes('/tmp/outro.png'));
+ f.openingTitle.enabled=false;assert.ok(brandingRenderSpec(f,30,0,assets,'/tmp/f.ass').filter.startsWith('[0:v]ass='));
+});
+test('owned-song title/language become authoritative finishing content and retain configured typography',async()=>{
+ const c=structuredFixture();c.dna.sections.visual.identity.title.enabled=true;c.dna.assets=[];c.dna.sections.visual.fields.typography='';
+ const selections=[];const db={auth:{getUser:async()=>({data:{user:{id:'owner'}}})},from(){const q={select(value){selections.push(value);return q},eq(){return q},single:async()=>({data:{channel_id:c.channelId,title:'ঝিরঝিরে বৃষ্টিতে',english_title:'Jhirjhiri Brishtite',language:'Bengali'}})};return q;}};
+ const ctx={exports:{},Response,URL,require:n=>({'@/utils/supabase/server':{createClient:async()=>db},'@/utils/channel-dna/server':{resolveActiveChannelDNA:async()=>c},'@/utils/channel-dna/context':{brandingFinishing},'@/utils/media-source':{}})[n]};vm.runInNewContext(ts.transpileModule(fs.readFileSync('app/api/channel-context/route.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,ctx);
+ const get=async()=>{const r=await ctx.exports.GET(new Request('http://local/api/channel-context?projectId=song'));assert.equal(r.status,200);return(await r.json()).finishing;};
+ const f=await get();assert.equal(selections[0],'channel_id,title,english_title,language');assert.equal(f.openingTitle.nativeTitle,'ঝিরঝিরে বৃষ্টিতে');assert.equal(f.openingTitle.secondaryTitle,'Jhirjhiri Brishtite');assert.equal(f.language,'Bengali');assert.equal(f.font,'Kohinoor Bangla');validateFinishing(f,30);
+ c.dna.sections.visual.fields.typography='Configured Font';assert.equal((await get()).font,'Configured Font');delete c.dna.sections.visual.identity;c.dna.sections.visual.fields.typography='';const legacy=await get();assert.equal(legacy.font,brandingFinishing(c).font);assert.ok(!legacy.openingTitle);
 });

@@ -8,9 +8,10 @@ export async function GET(request:Request){
   const params=new URL(request.url).searchParams,layout=params.get('layout')??'landscape';
   if(layout!=='landscape'&&layout!=='portrait')throw Error('Choose landscape or portrait layout.');
   const projectId=params.get('projectId');
-  const {data:song,error}=await db.from('songs').select('channel_id').eq('id',projectId).eq('user_id',user.id).single();if(error||!song)throw Error('Song not found.');
+  const {data:song,error}=await db.from('songs').select('channel_id,title,english_title,language').eq('id',projectId).eq('user_id',user.id).single();if(error||!song)throw Error('Song not found.');
   const context=await resolveActiveChannelDNA(db,user.id,song.channel_id);
-  const finishing=brandingFinishing(context,layout);
+  const finishing=brandingFinishing({...context,...(context.dna?.sections.visual.identity?{language:song.language||''}:{})},layout);
+  if(finishing.openingTitle)Object.assign(finishing,{openingTitle:{...finishing.openingTitle,nativeTitle:song.title||'',secondaryTitle:song.english_title||''},language:song.language||''});
   const refs=finishing.assets.filter(a=>['watermark','logo','intro','outro','font'].includes(a.role)&&!(finishing.structuredBranding&&finishing.watermarkEnabled===false&&['logo','watermark'].includes(a.role)));
   const renderAssets=[];
   if(refs.length){

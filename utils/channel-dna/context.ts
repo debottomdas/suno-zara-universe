@@ -16,6 +16,7 @@ export function brandingFinishing(c:ChannelContext,layout:'landscape'|'portrait'
  const legacy=channelBranding(c);
  const identity=c.dna?.sections.visual.identity;
  const branding=identity?{...identity.branding,...identity[layout]?.branding}:null;
+ const title=identity?{...identity.title,...identity[layout]?.title}:null;
  const size=branding?{small:{font:26,width:.08},medium:{font:32,width:.12},large:{font:42,width:.16}}[branding.size]:null;
- return {...legacy,...(branding&&size?{structuredBranding:true,watermarkEnabled:branding.enabled,brandAlignment:{'top-left':7,'top-right':9,'bottom-left':1,'bottom-centre':2,'bottom-right':3}[branding.position],brandOpacity:branding.opacity,brandFontSize:size.font,brandLogoWidth:size.width,brandHorizontalMargin:branding.horizontalMargin,brandVerticalMargin:branding.verticalMargin,introBrandOpacity:legacy.brandOpacity,introBrandFontSize:legacy.brandFontSize,introBrandAlignment:legacy.brandAlignment}:{}),subtitles:false,cues:[],lyrics:'',language:'',reviewed:true,transition:'fade' as const};
+ return {...legacy,...(title?{openingTitle:{...title,nativeTitle:'',secondaryTitle:''}}:{}),...(branding&&size?{structuredBranding:true,watermarkEnabled:branding.enabled,brandAlignment:{'top-left':7,'top-right':9,'bottom-left':1,'bottom-centre':2,'bottom-right':3}[branding.position],brandOpacity:branding.opacity,brandFontSize:size.font,brandLogoWidth:size.width,brandHorizontalMargin:branding.horizontalMargin,brandVerticalMargin:branding.verticalMargin,introBrandOpacity:legacy.brandOpacity,introBrandFontSize:legacy.brandFontSize,introBrandAlignment:legacy.brandAlignment}:{}),subtitles:false,cues:[],lyrics:'',language:'',reviewed:true,transition:'fade' as const};
 }
