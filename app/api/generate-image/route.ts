@@ -1,3 +1,6 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
+import {channelBranding} from '@/utils/channel-dna/context';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import sharp from "sharp";
@@ -150,6 +153,7 @@ export async function POST(request: Request) {
       .from("songs")
       .select(
         `
+        channel_id,
         id,
         user_id,
         title,
@@ -218,6 +222,10 @@ export async function POST(request: Request) {
       imageSetNumber = imageSet.set_number;
     }
 
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'visual');
+    const brand = channelBranding(channelContext);
+    const applyBranding = channelContext.dna ? brand.watermarkEnabled : imageIncludeBranding;
     const isYouTube = format === "youtube";
 
     const size = isYouTube
@@ -232,7 +240,7 @@ Important composition rules:
 - exact landscape framing
 - strong central or rule-of-thirds visual focus
 - leave some natural breathing room where title typography could later be placed
-- do NOT actually render any title, logo, watermark or lettering
+- apply Channel DNA branding; otherwise do NOT render title, logo, watermark or lettering
 - composition must still work when viewed as a YouTube thumbnail
 `
       : `
@@ -243,7 +251,7 @@ Important composition rules:
 - important subject matter must remain inside the central safe area
 - avoid placing important faces or details at the extreme top or bottom
 - create strong immediate visual impact for mobile viewing
-- do NOT render any title, logo, watermark or lettering
+- apply Channel DNA branding; otherwise do NOT render title, logo, watermark or lettering
 `;
 
     const youtubeVariationInstructions: Record<number, string> = {
@@ -351,6 +359,8 @@ CRITICAL VARIATION RULES:
 `;
 
     const prompt = `
+${dnaInstructions}
+
 You are creating premium artwork for an original song.
 
 SONG TITLE:
@@ -406,8 +416,8 @@ ARTWORK RULES:
 - coherent clothing and environment
 - no random text
 - no subtitles
-- no logos
-- no watermark
+- no logos unless Channel DNA requires them
+- no watermark unless Channel DNA requires it
 - no UI elements
 - no collage
 - no split-screen
@@ -456,7 +466,7 @@ Generate one finished image.
 
     if (
       mainTextLines.length > 0 ||
-      imageIncludeBranding
+      applyBranding
     ) {
       const fontSizeMultiplier =
         imageFontSize === "small"
@@ -607,7 +617,7 @@ Generate one finished image.
         `
         : "";
 
-      const brandingSvg = imageIncludeBranding
+      const brandingSvg = applyBranding
         ? `
           <text
             x="${outputWidth / 2}"
@@ -622,7 +632,7 @@ Generate one finished image.
             stroke="rgba(0,0,0,0.75)"
             stroke-width="3"
             paint-order="stroke fill"
-          >Suno Zara Original</text>
+          >${escapeSvgText(brand.brandText)}</text>
         `
         : "";
 

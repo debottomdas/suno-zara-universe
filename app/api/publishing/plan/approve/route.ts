@@ -38,7 +38,16 @@ export async function POST(req:Request){let lock='',acquired=false;try{
  if(!fresh.ready||JSON.stringify(fresh.assets.map((a:any)=>a.version))!==JSON.stringify(state.assets.map((a:any)=>a.version))||JSON.stringify(fresh.social)!==JSON.stringify(state.social))throw Error('Release changed during scheduling. Remaining posts were stopped.');
  const slot=row.asset.slot,kind=slot?'short':'full',itemKey=keyFor(row),old=state.canonicalReceipts.find((r:any)=>r.itemKey===itemKey);
  const receiptPath=row.destination.platform==='youtube'?'/publishing/youtube/receipt':'/publishing/buffer/receipt';
- const base={...old,itemKey,slot:slot||1,kind,platform:row.destination.platform,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,status:'submitting'};
+ const shortRecords=(state.social?.youtube_shorts as {shorts?:{shortNumber:number;relatedVideo?:{dependency?:string;[key:string]:unknown}}[]}|undefined)?.shorts;
+ const shortCopy=slot?shortRecords?.find(s=>s.shortNumber===slot):null;
+ const related=shortCopy?.relatedVideo;
+ let relatedVideo;
+ if(row.destination.platform==='youtube'&&slot&&related?.dependency==='publish-long-video-first'){
+  const long=fresh.canonicalReceipts.find((r:{itemKey:string;channelId:string;assetVersion:string;status:string;videoId?:string})=>r.itemKey==='youtube-full'&&r.channelId===row.destination.id&&r.assetVersion===fresh.assets.find(a=>a.slot===0)?.version&&['scheduled','published'].includes(r.status));
+  if(!/^[A-Za-z0-9_-]{11}$/.test(long?.videoId||''))throw Error('The corresponding long video ID is unavailable. Shorts were stopped.');
+  relatedVideo={...related,youtubeVideoId:long.videoId,method:'youtube-studio',status:'needs-studio-link-after-long-is-public-or-unlisted'};
+ }
+ const base={...old,...(relatedVideo?{relatedVideo}:{}),itemKey,slot:slot||1,kind,platform:row.destination.platform,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,status:'submitting'};
  await worker(receiptPath,{projectId,receipt:base});
  // An interrupted attempt stays submitting. A retry must reconcile provider state,
  // rather than treating an unknown outcome as permission to create a duplicate.

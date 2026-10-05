@@ -1,0 +1,44 @@
+import {createHash} from 'node:crypto';
+import {canonical,compileBrandContext} from '../channel-dna/compile';
+import type {ChannelContext} from '../channel-dna/context';
+import type {CreativeWorkspace,VisualSlot} from './model';
+export type SceneInput={title:string;lyrics:string;context:string;instructions:string;bible:string;channel:ChannelContext};
+export type Scene={slotId:string;beat:string;state:'present'|'memory'|'imagined'|'abstract'|'performance';location:string;characters:string[];action:string;composition:string;evidence:{source:'lyrics'|'context'|'instructions'|'bible';quote:string}[]};
+export type ScenePlan={version:1;sourceKey:string;channelId:string;dnaRevision:number|null;reviewed:boolean;scenes:Scene[]};
+const clean=(s:string)=>s.toLocaleLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}\s]/gu,' ').replace(/\s+/gu,' ').trim();
+const tokens=(s:string)=>new Set(clean(s).split(' ').filter(w=>w.length>2));
+const similar=(a:string,b:string)=>{const x=tokens(a),y=tokens(b);return [...x].filter(w=>y.has(w)).length/Math.max(1,new Set([...x,...y]).size);};
+export function sceneSourceKey(input:SceneInput){return createHash('sha256').update(canonical({...input,channel:compileBrandContext(input.channel.channelId,input.channel.dnaRevision,input.channel.dna,'visual')?.structured??{channelId:input.channel.channelId,channelName:input.channel.channelName},channelName:input.channel.channelName})).digest('hex');}
+export function scenePlanInstructions(input:SceneInput,slots:VisualSlot[]){return `Create a DISTINCT SCENE PLAN before any image generation, from these approved inputs. The Bible controls character/world continuity, never one repeated location, pose or action. Each slot needs a different narrative beat, concrete location, named character identities, physical action, composition, and present/memory state. Camera angle changes alone are not variation. Use multiple appropriate locations when the source provides them. Do not force unrelated settings. Repeated choruses must progress through different story moments. Keep an absent character in memory when the source requires it; do not invent a reunion or answer an unresolved lyric. Cite exact source excerpts in evidence. Match every supplied slot once. Reserve empty safe space for deterministic channel branding; do not ask the image model to spell brand text. Return JSON: {"scenes":[{"slotId":"id","beat":"story moment","state":"present|memory|imagined|abstract|performance","location":"concrete place","characters":["Bible identity"],"action":"physical action","composition":"specific arrangement, subject scale and foreground","evidence":[{"source":"lyrics|context|instructions|bible","quote":"EXACT excerpt"}]}]}.\n${canonical({title:input.title,lyrics:input.lyrics,context:input.context,instructions:input.instructions,bible:input.bible,visualDNA:compileBrandContext(input.channel.channelId,input.channel.dnaRevision,input.channel.dna,'visual')?.structured,channelName:input.channel.channelName,slots:slots.map(s=>({id:s.id,kind:s.kind,label:s.label}))})}`;}
+export function validateScenes(input:SceneInput,slots:VisualSlot[],value:unknown):Scene[]{
+ if(!Array.isArray(value)||value.length!==slots.length)throw Error('Scene plan must assign exactly one scene to every visual slot.');
+ const scenes=value as Scene[],seen=new Set<string>();
+ for(const s of scenes){
+  if(!s||!slots.some(slot=>slot.id===s.slotId)||seen.has(s.slotId))throw Error('Scene plan has an unknown or repeated slot.');seen.add(s.slotId);
+  for(const key of ['beat','location','action','composition'] as const)if(typeof s[key]!=='string'||s[key].trim().length<8||s[key].length>2500)throw Error(`Scene ${s.slotId} needs a concrete ${key}.`);
+  if(!['present','memory','imagined','abstract','performance'].includes(s.state)||!Array.isArray(s.characters)||s.characters.length>12||s.characters.some(v=>typeof v!=='string'||!v.trim()||v.length>300))throw Error(`Scene ${s.slotId} needs valid characters and story state.`);
+  if(!Array.isArray(s.evidence)||!s.evidence.length||s.evidence.some(e=>!e||!['lyrics','context','instructions','bible'].includes(e.source)||typeof e.quote!=='string'||e.quote.trim().length<4||!clean(input[e.source]).includes(clean(e.quote))))throw Error(`Scene ${s.slotId} must cite an exact approved source excerpt.`);
+ }
+ for(let i=0;i<scenes.length;i++)for(let j=0;j<i;j++){
+  const a=scenes[i],b=scenes[j];
+  if(clean(a.beat)===clean(b.beat)||similar(a.beat,b.beat)>.85)throw Error(`Repetitive narrative beats: ${a.slotId} and ${b.slotId}. Plan different story moments before generating.`);
+  if(a.state===b.state&&similar(a.location,b.location)>.65&&(similar(a.action,b.action)>.6||clean(a.action)===clean(b.action)))throw Error(`Repetitive scenes: ${a.slotId} and ${b.slotId}. Changing camera angles alone is insufficient.`);
+ }
+ if(scenes.length>=4){
+  const locations=new Map<string,number>();for(const s of scenes)locations.set(clean(s.location),(locations.get(clean(s.location))||0)+1);
+  // A deliberate single-location treatment can be valid; actions and beats must still differ.
+  if(locations.size>1&&Math.max(...locations.values())>Math.ceil(scenes.length*.6))throw Error('One location dominates the scene plan. Distribute the source-supported story moments before generating.');
+ }
+ return scenes.map(s=>structuredClone(s));
+}
+export function makeScenePlan(input:SceneInput,slots:VisualSlot[],scenes:unknown,reviewed=false):ScenePlan{return {version:1,sourceKey:sceneSourceKey(input),channelId:input.channel.channelId,dnaRevision:input.channel.dnaRevision,reviewed,scenes:validateScenes(input,slots,scenes)};}
+export function requireScenePlan(input:SceneInput,w:CreativeWorkspace,slotId:string){const p=w.scenePlan;if(!p||!p.reviewed)throw Error('Prepare and approve a distinct scene plan before image generation.');if(p.channelId!==input.channel.channelId||p.dnaRevision!==input.channel.dnaRevision||p.sourceKey!==sceneSourceKey(input))throw Error('Lyrics, direction or active Channel DNA changed. Replan and review the scenes before generating.');validateScenes(input,w.slots,p.scenes);const scene=p.scenes.find(s=>s.slotId===slotId);if(!scene)throw Error('Visual slot has no assigned scene.');return scene;}
+// The planner sees the full Bible. Per-image requests carry continuity/constraints,
+// not all alternative scenes or the dominant opening-location description.
+export function continuityBible(bible:string){
+ const sections=bible.split(/(?=^#{1,3}\s)/mu);
+ if(sections.length===1)return bible;
+ return sections.filter(section=>/^(?:#{1,3}\s.*(?:protagonist|character|loved one|wardrobe|continuity|identity|avoid|colour|palette|cinematography|style|relationship))/iu.test(section.trim())).join('\n');
+}
+function visualConstraints(instructions:string){return instructions.split(/\n\s*\n/gu).filter(p=>/\b(?:avoid|never|do not|continuity|maintain|preserve|photorealistic|realistic|wardrobe)\b/iu.test(p)).join('\n');}
+export function sceneImagePrompt(input:SceneInput,scene:Scene,slot:VisualSlot){return `ASSIGNED SCENE — controls location, action and story state:\n${canonical(scene)}\nContinuity Bible — preserve identities, wardrobe and world rules; use ONLY this scene's location and action, never default to the Bible's opening scene:\n${continuityBible(input.bible)}\nSong: ${input.title}\nApproved lyric/source evidence: ${canonical(scene.evidence)}\nGlobal creative constraints: ${visualConstraints(input.instructions)}\nSong context/creative direction is represented by the exact scene evidence above, rather than repeating all alternate scenes.\nActive channel: ${input.channel.channelName}\nACTIVE VISUAL DNA (must control palette, cultural identity, realism, avoid rules and thumbnail treatment):\n${compileBrandContext(input.channel.channelId,input.channel.dnaRevision,input.channel.dna,'visual')?.prompt||'No active visual DNA.'}\n${slot.kind==='short'?'9:16 portrait':slot.kind==='cover'?'Square cover artwork':'16:9 landscape'}. Composition: ${scene.composition}. Any additional slot notes are secondary to the assigned scene: ${slot.prompt}\nCreate one cinematic image of THIS narrative beat. No lettering, logos or watermark in provider pixels: required channel typography/branding will be composited deterministically onto the final image. Leave an unobtrusive corner safe area. Do not turn a memory into a present-day reunion.`;}

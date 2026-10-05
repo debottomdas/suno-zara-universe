@@ -128,20 +128,29 @@ export async function POST(request: Request) {
       .maybeSingle();
     if (packError) throw new Error(`Could not load saved social pack: ${packError.message}`);
 
+    let currentPack:Record<string,unknown>|null=pack;
+    if(process.env.NODE_ENV==='development'){
+      const {snapshot:releaseSnapshot}=await import('@/utils/publishing/snapshot');
+      const local=await releaseSnapshot(projectId,song.channel_id);
+      if('localCampaign' in local&&local.localCampaign){if(!local.ready)throw new Error(local.reasons.join(' '));currentPack=local.social;}
+    }
     let title = "";
     let description = "";
     let tags: string[] = [];
+    let publishingSettings:Record<string,unknown>={};
     if (kind === "full") {
-      const full = (pack?.youtube_full && typeof pack.youtube_full === "object" ? pack.youtube_full : {}) as any;
+      const full = (currentPack?.youtube_full && typeof currentPack.youtube_full === "object" ? currentPack.youtube_full : {}) as any;
+      publishingSettings=full;
       title = clean(full.recommendedTitle) || clean(song.title) || "Suno Zara Original";
       description = clean(full.finalDescription) || clean(full.fullDescription) || clean(full.openingDescription);
       const hashtags = stringArray(full.hashtags, 30);
       description = appendHashtags(description, hashtags);
       tags = stringArray(full.tags, 50);
     } else {
-      const shortsPack = (pack?.youtube_shorts && typeof pack.youtube_shorts === "object" ? pack.youtube_shorts : {}) as any;
+      const shortsPack = (currentPack?.youtube_shorts && typeof currentPack.youtube_shorts === "object" ? currentPack.youtube_shorts : {}) as any;
       const shorts = Array.isArray(shortsPack.shorts) ? shortsPack.shorts : [];
       const item = shorts.find((x: any) => Number(x?.shortNumber) === slot) || shorts[slot - 1] || {};
+      publishingSettings=item;
       title = clean(item.title) || `${clean(song.title) || "Suno Zara"} — Short ${slot}`;
       description = appendHashtags(clean(item.description), stringArray(item.hashtags, 15));
       tags = stringArray(item.tags, 30);
@@ -194,7 +203,10 @@ export async function POST(request: Request) {
         "x-upload-content-type": mimeType,
       },
       body: JSON.stringify({
-        snippet: { title, description, tags },
+        snippet: { title, description, tags,
+          ...(/^\d+$/.test(clean(publishingSettings.categoryId))?{categoryId:clean(publishingSettings.categoryId)}:{}),
+          ...(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(clean(publishingSettings.defaultLanguage))?{defaultLanguage:clean(publishingSettings.defaultLanguage)}:{}),
+        },
         status: {
           privacyStatus,
           ...(publishAt ? { publishAt: new Date(publishAt).toISOString() } : {}),
@@ -215,6 +227,7 @@ export async function POST(request: Request) {
       description,
       tags,
       connectionId: connection.id,
+      playlistPreparation: {ids:stringArray(publishingSettings.playlistIds),method:'youtube-studio-after-upload',automaticallyApplied:false},
       itemKey: kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`,
     });
   } catch (error) {

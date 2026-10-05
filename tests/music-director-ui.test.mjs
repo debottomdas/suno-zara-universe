@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+const fields = ['genre','fusion','tempo','energy','groove','instrumentation','vocalCharacter','pronunciation','melodicBehaviour','arrangementArc','productionTexture','emotionalTrajectory','intro','verse','chorus','bridge','outro','avoid'];
+const input = { project: { title:'Hope',language:'Bengali',channelId:'bangla',songId:'song' }, lyrics:{text:'  আমার গান\n  '}, dna:{revision:5,rules:[],context:{}}, intelligence:{snapshot:{emotionalCore:'Hope'}}, fingerprint:'reviewed-source' };
+const results = ['signature','alternative','experimental'].map(kind => ({ recipe: { input, approval:null,persisted:false,candidate:{kind,direction:Object.fromEntries(fields.map(f=>[f,`${kind} ${f}`])),explanation:`Why ${kind} fits Hope`,creatorTreatment:'Unplugged',ruleEvidence:[]} }, adaptation:{prompt:`Bengali ${kind}`,compressed:false},adaptationError:null }));
+function harness({ fail = false, deferred = false } = {}) {
+  let index=0, values=[], effects=[], cleanups=[], tree, resolvePending; const calls=[];
+  const react = {useState(initial){const i=index++;if(!(i in values))values[i]=initial;return[values[i],value=>{values[i]=typeof value==='function'?value(values[i]):value}]},useRef(initial){const i=index++;return values[i]??=({current:initial})},useEffect(fn){if(!effects.length&&!cleanups.length)effects.push(fn)}};
+  const jsx=(type,props,key)=>({type,props,key});
+  const model={FIELDS:fields}, rules={approvalReadiness:(_input,evidence)=>({rulesReady:!evidence.some(e=>e.status==='review'||e.status==='conflict')})};
+  const context={exports:{},console,AbortController,fetch:async(url,options={})=>{
+    calls.push({url,options}); if(deferred&&options.method!=='POST')await new Promise(r=>resolvePending=r);
+    return{ok:!fail,json:async()=>fail?{error:'Inputs unavailable'}:options.method==='POST'?{recipes:results}:{input}};
+  },require:name=>name==='react'?react:name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='@/utils/music-director/model'?model:name==='@/utils/music-director/rules'?rules:name==='next/link'?{default:'Link'}:name.endsWith('.css')?{default:{}}:{}};
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync('components/music-director/MusicDirectorPreview.tsx','utf8')+'\nexport {ScopedPreview};',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,context);
+  const props={projectId:'song',channelId:'bangla'};
+  function render(){index=0;tree=context.exports.ScopedPreview(props);return tree}
+  function nodes(node=tree){return !node||typeof node!=='object'?[]:Array.isArray(node)?node.flatMap(n=>nodes(n)):[node,...nodes(node.props?.children??null)]}
+  function text(node=tree){return node==null?'':typeof node==='string'||typeof node==='number'?String(node):Array.isArray(node)?node.map(text).join(''):text(node.props?.children??null)}
+  const flush=async()=>{await new Promise(r=>setImmediate(r));render()};
+  render();effects.forEach(fn=>cleanups.push(fn()));
+  return{calls,values,render,nodes,text,flush,props,wrapper:()=>context.exports.default(props),unmount:()=>cleanups.forEach(fn=>fn?.()),resolve:()=>resolvePending?.(),button:label=>nodes().find(n=>n.type==='button'&&text(n)===label),async generate(){await flush();nodes().find(n=>n.type==='input'&&n.props.type==='checkbox').props.onChange({target:{checked:true}});render();await this.button('Generate three directions').props.onClick();render();}};
+}
+test('input inspection is read-only and generation requires explicit review',async()=>{const h=harness();await h.flush();assert.equal(h.calls.length,1);assert.equal(h.calls[0].options.method,undefined);assert.equal(h.button('Generate three directions').props.disabled,true);assert.ok(h.text().includes(input.lyrics.text));assert.match(h.text(),/No separate approval snapshot/);});
+test('creator note propagates in POST without sending client lyrics or DNA',async()=>{const h=harness();await h.flush();h.nodes().find(n=>n.type==='textarea').props.onChange({target:{value:'Indian Bengali pronunciation'}});await h.generate();const body=JSON.parse(h.calls[1].options.body);assert.equal(body.creatorInstruction,'Indian Bengali pronunciation');assert.equal(body.sourceFingerprint,'reviewed-source');assert.equal(body.channelId,'bangla');assert.equal('lyrics' in body,false);assert.equal('dna' in body,false);});
+test('three comparisons show structure, why, rule checks and adaptation without scores',async()=>{const h=harness();await h.generate();assert.equal(h.nodes().filter(n=>n.type==='article').length,3);assert.equal(h.nodes().filter(n=>n.type==='dt').length,54);for(const kind of ['signature','alternative','experimental'])assert.ok(h.text().includes(`Why ${kind} fits Hope`));assert.match(h.text(),/Inspect Suno adaptation/);assert.doesNotMatch(h.text(),/quality score/i);});
+test('choosing candidate is temporary and approval stays disabled without a write',async()=>{const h=harness();await h.generate();const choose=h.nodes().find(n=>n.type==='button'&&h.text(n)==='Choose for comparison');choose.props.onClick();h.render();assert.ok(h.button('Selected for comparison'));const approvals=h.nodes().filter(n=>n.type==='button'&&h.text(n)==='Approve recipe (database gated)');assert.equal(approvals.length,3);assert.ok(approvals.every(n=>n.props.disabled));assert.equal(h.calls.length,2);});
+test('modifying creator note clears stale comparisons before regeneration',async()=>{const h=harness();await h.generate();h.nodes().find(n=>n.type==='textarea').props.onChange({target:{value:'more rock'}});h.render();assert.equal(h.nodes().filter(n=>n.type==='article').length,0);assert.equal(h.calls.length,2);});
+test('channel and project scope key forces fresh state and aborts requests on leaving',async()=>{const h=harness({deferred:true});const first=h.wrapper().key;h.props.channelId='bhakti';assert.notEqual(h.wrapper().key,first);h.unmount();assert.equal(h.calls[0].options.signal.aborted,true);h.resolve();await h.flush();assert.equal(h.values[0],null);});
+test('loading errors block generation and remain visible',async()=>{const h=harness({fail:true});await h.flush();assert.match(h.text(),/Inputs unavailable/);assert.equal(h.button('Generate three directions'),undefined);assert.equal(h.calls.length,1);});
+test('existing Music workflow adds only a development link in Suno Style stage',()=>{const source=fs.readFileSync('components/universe-next/MusicNext.tsx','utf8');assert.match(source,/if\(stage==='Suno Style'\)[\s\S]*?process\.env\.NODE_ENV === 'development' && <p><Link href=\{`\/music-director\?projectId=/);assert.match(source,/\/api\/suno-styles/);assert.match(source,/Generate 5–8/);});
+test('server page is development-gated and explicitly keyed to channel/project',()=>{const source=fs.readFileSync('app/music-director/page.tsx','utf8');assert.match(source,/NODE_ENV !== 'development'\) notFound\(\)/);assert.match(source,/key=\{`\$\{params.channelId\}:\$\{params.projectId\}`\}/);});

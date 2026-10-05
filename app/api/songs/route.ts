@@ -50,6 +50,7 @@ export async function GET(request: Request) {
       .select(`
         id,
         title,
+        english_title,
         idea,
         language,
         script,
@@ -87,6 +88,7 @@ export async function GET(request: Request) {
         projectId: song.id,
 
         title: song.title,
+        englishTitle: song.english_title || "",
         idea: song.idea,
         language: song.language,
         script: song.script,
@@ -216,11 +218,11 @@ export async function POST(request: Request) {
     const clean = (v: unknown, max: number) => typeof v === 'string' ? v.trim().slice(0, max) : '';
     const requestId=clean(body.projectId,100);
     if(requestId&&!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))return NextResponse.json({error:'Invalid project request.'},{status:400});
-    const channelId = clean(body.channelId, 100), title = clean(body.title, 120), language = clean(body.language, 80);
+    const channelId = clean(body.channelId, 100), title = clean(body.title, 120), englishTitle = clean(body.englishTitle, 120), language = clean(body.language, 80);
     if (!channelId || !title || !language) return NextResponse.json({error: 'Choose a channel and enter the song title and language.'}, {status: 400});
     const {data: channel, error: channelError} = await db.from('channels').select('id, workspaces!inner(owner_user_id)').eq('id', channelId).eq('workspaces.owner_user_id', user.id).single();
     if (channelError || !channel) return NextResponse.json({error: 'The selected channel is not available.'}, {status: 403});
-    const {data: project, error} = await db.from('songs').insert({...(requestId?{id:requestId}:{}),user_id:user.id, channel_id:channel.id, title, language, idea:clean(body.idea, 4000), script:'Native', mood:'', genre:'', freedom:'50', hooks:[], selected_hook:null, lyrics:null, status:'creating'}).select('id,title,language,idea,lyrics,status,hooks').single();
+    const {data: project, error} = await db.from('songs').insert({...(requestId?{id:requestId}:{}),user_id:user.id, channel_id:channel.id, title, english_title:englishTitle||null, language, idea:clean(body.idea, 4000), script:'Native', mood:'', genre:'', freedom:'50', hooks:[], selected_hook:null, lyrics:null, status:'creating'}).select('id,title,language,idea,lyrics,status,hooks').single();
     if(error?.code==='23505'&&requestId){const {data:existing}=await db.from('songs').select('id,title,language,idea,lyrics,status,hooks').eq('id',requestId).eq('user_id',user.id).eq('channel_id',channel.id).single();if(existing)return NextResponse.json({projectId:existing.id,project:existing,saved:true});}
     if (error || !project) return NextResponse.json({error:'The project could not be saved. Your details are still available to retry.'}, {status:500});
     return NextResponse.json({projectId:project.id, project, saved:true});

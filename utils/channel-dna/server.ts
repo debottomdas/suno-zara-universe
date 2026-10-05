@@ -51,3 +51,10 @@ export async function validateAssets(db: SupabaseClient, userId: string, channel
   if (error) databaseError(error);
   if (data?.length !== ids.length) throw new DnaError('Asset not available in this channel.', 404);
 }
+
+// Resolve the owned active channel/revision once per request; consumers share this snapshot.
+export async function resolveActiveChannelDNA(db:SupabaseClient,userId:string,channelId:string){
+ const channel=await ownedChannel(db,userId,channelId);
+ const version=await loadVersion(db,channelId,channel.active_dna_revision);
+ return {channelId:channel.id,channelName:channel.name,dnaRevision:channel.active_dna_revision,dna:version?.document??null};
+}

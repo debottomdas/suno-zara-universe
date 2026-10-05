@@ -31,7 +31,7 @@ export function validatePlan(plan:Plan,snapshot:any,now=Date.now()){
  if(plan.revision!==snapshot.revision)throw Error('Assets, copy, connections or receipts changed. Review a new plan.');
  if(!plan.rows.length||plan.rows.length>200)throw Error('Choose at least one publication.');
  const seen=new Set<string>();const youtubeAssets=new Set<string>();
- return plan.rows.map(row=>{
+ const checked=plan.rows.map(row=>{
  const asset=snapshot.assets.find((a:Asset)=>a.key===row.assetKey&&a.ready),destination=snapshot.destinations.find((d:Destination)=>d.id===row.destinationId&&d.channelId===plan.channelId);
  if(!asset||!destination||destination.available===false||(destination.platform!=='youtube'&&asset.slot===0))throw Error('Invalid asset or destination.');
  if(destination.platform==='youtube'){if(youtubeAssets.has(asset.key))throw Error('Choose one YouTube destination per asset.');youtubeAssets.add(asset.key);}
@@ -41,6 +41,19 @@ export function validatePlan(plan:Plan,snapshot:any,now=Date.now()){
  if(destination.platform!=='youtube'&&time>now+29*86400000)throw Error('Buffer posts must be scheduled within 29 days.');
  return {...row,asset,destination,dueAt};
  });
+ let dependentShorts=false;
+ for(const row of checked.filter(r=>r.destination.platform==='youtube'&&r.asset.slot>0)){
+  const item=snapshot.social?.youtube_shorts?.shorts?.find((s:{shortNumber:number})=>s.shortNumber===row.asset.slot),link=item?.relatedVideo;
+  if(link?.dependency!=='publish-long-video-first')continue;
+  dependentShorts=true;
+  if(link.songId!==plan.projectId||link.channelId!==plan.channelId||link.assetKey!=='full')throw Error('Short Related Video belongs to another song or channel.');
+  const full=checked.find(r=>r.destination.id===row.destination.id&&r.asset.slot===0),fullAsset=snapshot.assets.find((a:Asset)=>a.slot===0);
+  const previous=snapshot.canonicalReceipts?.find((r:{itemKey:string;channelId:string;status:string;assetVersion:string;videoId?:string})=>r.itemKey==='youtube-full'&&r.channelId===row.destination.id&&['scheduled','published'].includes(r.status)&&r.assetVersion===fullAsset?.version&&/^[A-Za-z0-9_-]{11}$/.test(r.videoId||''));
+  if(!full&&!previous)throw Error('Publish this song’s corresponding long video first, then prepare its Shorts.');
+  if(full&&Date.parse(full.dueAt)>Date.parse(row.dueAt))throw Error('The long video must be scheduled before its Shorts.');
+ }
+ // The upload obtains the long video ID before any dependent Short upload.
+ return dependentShorts?checked.sort((a,b)=>Number(a.destination.platform==='youtube'&&a.asset.slot>0)-Number(b.destination.platform==='youtube'&&b.asset.slot>0)):checked;
 }
 export function receiptStatus(r:any){if(r.status==='error'||r.status==='failed')return 'Failed';if(r.status==='sent'||r.status==='published')return 'Published';if(r.status==='scheduled')return 'Scheduled';return 'Needs Attention';}
 

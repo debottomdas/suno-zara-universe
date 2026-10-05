@@ -125,7 +125,7 @@ export default function ChannelIdentityEditor({ channelId }: { channelId: string
       <fieldset disabled={busy} className={s.panel}><legend>{LABELS[section]}</legend>
         <p>These notes are editable defaults. Put requirements you want protected into locked rules below.</p>
         {section === 'publishing' && <p>Templates support {'{title}, {channelName}, {language}, {credits}'}. Lists and HTTPS links use one item per line. Templates are stored only.</p>}
-        <div className={s.fields}>{FIELDS[section].map(field => <label key={`${section}-${field}`}>{label(field)}<textarea maxLength={2000} rows={3} value={(document.sections[section].fields as Record<string, string>)[field]} onChange={event => edit({ ...document, sections: { ...document.sections, [section]: { ...document.sections[section], fields: { ...document.sections[section].fields, [field]: event.target.value } } } })} /></label>)}</div>
+        <div className={s.fields}>{FIELDS[section].map(field => <label key={`${section}-${field}`}>{label(field)}<textarea maxLength={2000} rows={3} value={(document.sections[section].fields as Record<string, string>)[field]||''} onChange={event => edit({ ...document, sections: { ...document.sections, [section]: { ...document.sections[section], fields: { ...document.sections[section].fields, [field]: event.target.value } } } })} /></label>)}</div>
         <h2>Creator rules</h2><p>Required = must satisfy. Preferred = a preference. Avoid = must not include. Save an unlock before editing or removing a previously locked rule.</p>
         {document.sections[section].rules.map(rule => {
           const protectedRule = rule.locked || previousRules.some(r => r.id === rule.id && r.locked);

@@ -1,9 +1,10 @@
+import type {ScenePlan} from './scene-plan';
 export type AssetKind = 'scene' | 'short' | 'cover' | 'thumbnail';
-export type Candidate = {id:string; storagePath:string; prompt:string; source:'generated'|'uploaded'|'derived'; createdAt:string; width:number; height:number; url?:string};
+export type Candidate = {visualProduction?:{channelId:string;dnaRevision:number|null;sceneSourceKey?:string;sceneSlotId?:string;branding?:unknown};id:string; storagePath:string; prompt:string; source:'generated'|'uploaded'|'derived'; createdAt:string; width:number; height:number; url?:string};
 export type VisualSlot = {id:string; kind:AssetKind; number:number; label:string; prompt:string; candidates:Candidate[]; approvedId?:string};
 export type Timing = {slotId:string; start:number; end:number; label:string};
 export type AudioAnalysis = {duration:number; energy:Array<{time:number; rms:number}>; sourceKey:string};
-export type CreativeWorkspace = {pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
+export type CreativeWorkspace = {scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
 export const emptyWorkspace = ():CreativeWorkspace=>({revision:0,instructions:'',bible:'',slots:[]});
 export function lyricSections(lyrics:string) {return [...lyrics.matchAll(/^\s*\[([^\]]+)\]/gm)].map(m=>m[1]);}
 export function makeSlots(duration:number,lyrics:string):VisualSlot[] {
@@ -44,7 +45,7 @@ export function visualsComplete(w:CreativeWorkspace){return w.slots.length>0&&w.
 // Stable dependency keys exclude signed URLs, draft prompts and unrelated slots.
 export function outputKey(w:CreativeWorkspace,slot:number,audioKey:string) {
  const timings=slot===0?w.plan?.scenes:w.plan?.shorts.filter(t=>t.slotId===`short-${slot}`);
- return JSON.stringify({audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[]});
+ return JSON.stringify({...(w.channelBranding?{channelBranding:w.channelBranding}:{}),audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[]});
 }
 
 // Keep the existing key format: saved plans and immutable render versions use it.

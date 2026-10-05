@@ -1,3 +1,5 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
@@ -45,6 +47,7 @@ export async function POST(request: Request) {
       .from("songs")
       .select(
         `
+        channel_id,
         id,
         user_id,
         title,
@@ -79,6 +82,8 @@ export async function POST(request: Request) {
       );
     }
 
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'visual');
     const systemPrompt = `
 You are an expert music-video creative director, visual storyteller,
 cinematographer and album-art director.
@@ -108,8 +113,8 @@ IMPORTANT RULES:
 9. Avoid repetitive AI-poster clichés.
 10. Avoid making everything dark, gloomy or blue unless the song
     genuinely requires it.
-11. Do not embed the song title, lyrics, subtitles, logos, branding,
-    watermark or other text inside the generated artwork.
+11. Apply required Channel DNA branding and channel text. Otherwise omit
+    song title, lyrics, subtitles, logos, watermark and other text.
 12. Do not use celebrity likenesses or copyrighted characters.
 13. Do not create collages or split-screen compositions.
 14. Leave typography to a later application layer.
@@ -180,6 +185,8 @@ Return ONLY valid JSON in this exact structure:
 `.trim();
 
     const userPrompt = `
+${dnaInstructions}
+
 Analyse this complete song and create exactly THREE strong,
 meaningfully different visual concepts.
 

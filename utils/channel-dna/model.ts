@@ -8,8 +8,9 @@ export const FIELDS = {
   core: ['purpose', 'tone', 'audience', 'languagePhilosophy', 'culturalDirection'],
   musical: ['genres', 'vocals', 'instrumentation', 'arrangement', 'production', 'pronunciation', 'experimentation'],
   visual: ['brandText', 'typography', 'colours', 'direction', 'thumbnail', 'watermark', 'subtitles', 'intro', 'outro'],
-  publishing: ['titleTemplate', 'descriptionTemplate', 'credits', 'fixedHashtags', 'userFixedHashtags', 'tags', 'category', 'links'],
+  publishing: ['titleTemplate', 'descriptionTemplate', 'credits', 'fixedHashtags', 'userFixedHashtags', 'tags', 'category', 'links', 'shortTitleTemplate', 'shortDescriptionTemplate', 'footer', 'defaultPlaylistIds', 'shortPlaylistIds', 'privacyStatus', 'defaultLanguage', 'destinationIds', 'relatedVideoPolicy'],
 } as const;
+export const OPTIONAL_PUBLISHING_FIELDS = ['shortTitleTemplate','shortDescriptionTemplate','footer','defaultPlaylistIds','shortPlaylistIds','privacyStatus','defaultLanguage','destinationIds','relatedVideoPolicy'] as const;
 export const LABELS: Record<Section, string> = { core: 'Core Identity', musical: 'Musical Identity', visual: 'Visual Identity / Brand Kit', publishing: 'Publishing Identity' };
 export type IdentitySection<S extends Section> = { fields: Record<typeof FIELDS[S][number], string>; rules: Rule[] };
 // References only: never URLs, filesystem paths or signed tokens. Future consumers must

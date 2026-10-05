@@ -1,3 +1,6 @@
+import {applyChannelPublishing} from '@/utils/channel-dna/social';
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
@@ -542,6 +545,7 @@ export async function POST(request: Request) {
       .from("songs")
       .select(
         `
+        channel_id,
         id,
         title,
         idea,
@@ -575,6 +579,10 @@ export async function POST(request: Request) {
       );
     }
 
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'social');
+    releaseDetails.artistBrand=channelContext.channelName;
+    if(channelContext.dna?.sections.publishing.fields.links)releaseDetails.descriptionLinks=channelContext.dna.sections.publishing.fields.links;
     const systemPrompt = `
 You are a senior YouTube music release strategist, metadata writer,
 copywriter and audience-development specialist.
@@ -659,6 +667,8 @@ Return ONLY valid JSON in exactly this structure:
 `.trim();
 
     const userPrompt = `
+${dnaInstructions}
+
 Create the complete YouTube Full Song release package for this song.
 
 TITLE:
@@ -813,7 +823,7 @@ Do not use generic filler.
     }
 
     const deterministicCredits =
-      buildYouTubeCredits(releaseDetails);
+      channelContext.dna?.sections.publishing.fields.credits || buildYouTubeCredits(releaseDetails);
 
     const deterministicAiDisclosure =
       releaseDetails.includeAiDisclosure
@@ -960,13 +970,15 @@ Do not use generic filler.
           user_id: user.id,
           youtube_full: youtubeFull,
           updated_at: new Date().toISOString(),
-        });
+        },false,{context:channelContext,song});
 
     if (saveError) {
       throw new Error(
         `Could not save YouTube pack: ${saveError.message}`
       );
     }
+
+    Object.assign(youtubeFull,applyChannelPublishing(channelContext,song,'youtube_full',youtubeFull));
 
     return NextResponse.json({
       projectId: song.id,

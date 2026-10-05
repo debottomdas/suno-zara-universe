@@ -1,4 +1,4 @@
-import { FIELDS, SECTIONS, STAGES, type ChannelDna, type LockChange, type Rule } from './model';
+import { FIELDS, OPTIONAL_PUBLISHING_FIELDS, SECTIONS, STAGES, type ChannelDna, type LockChange, type Rule } from './model';
 export class DnaError extends Error {
   constructor(message: string, public status = 400) { super(message); }
 }
@@ -43,7 +43,9 @@ export function validateDna(value: unknown): ChannelDna {
   const ids = new Set<string>();
   for (const section of SECTIONS) {
     const s = object(sections[section]); exact(s, ['fields', 'rules']);
-    const fields = object(s.fields); exact(fields, FIELDS[section]);
+    const fields = object(s.fields);
+    if(section==='publishing'){const required=FIELDS.publishing.filter(k=>!(OPTIONAL_PUBLISHING_FIELDS as readonly string[]).includes(k));if(required.some(k=>!Object.hasOwn(fields,k))||Object.keys(fields).some(k=>!(FIELDS.publishing as readonly string[]).includes(k)))throw new DnaError('Invalid publishing fields.');}
+    else exact(fields, FIELDS[section]);
     for (const value of Object.values(fields)) text(value);
     if (!Array.isArray(s.rules) || s.rules.length > 40) throw new DnaError('Each section supports up to 40 rules.');
     for (const raw of s.rules) {
@@ -65,10 +67,13 @@ export function validateDna(value: unknown): ChannelDna {
     if ((typeof a.role !== 'string' || !['logo', 'font', 'watermark', 'intro', 'outro', 'reference'].includes(a.role))) throw new DnaError('Invalid asset role.');
   }
   const pub = object(object(sections.publishing).fields);
-  for (const key of ['titleTemplate', 'descriptionTemplate']) {
-    const template = pub[key] as string;
-    if (template.replace(/\{(?:title|channelName|language|credits)\}/g, '').match(/[{}]/)) throw new DnaError('Template tokens: {title}, {channelName}, {language}, {credits}.');
+  for (const key of ['titleTemplate', 'descriptionTemplate', 'shortTitleTemplate', 'shortDescriptionTemplate']) {
+    const template = (pub[key]||'') as string;
+    if (template.replace(/\{(?:title|englishTitle|channelName|language|credits|songDescription|lyrics|hook|shortNumber)\}/g, '').match(/[{}]/)) throw new DnaError('Template tokens: {title}, {englishTitle}, {channelName}, {language}, {credits}, {songDescription}, {lyrics}, {hook}, {shortNumber}.');
   }
+  if(pub.privacyStatus&&!['private','unlisted','public'].includes(String(pub.privacyStatus)))throw new DnaError('Choose private, unlisted or public visibility.');
+  if(pub.relatedVideoPolicy&&!['required-studio','optional-studio','none'].includes(String(pub.relatedVideoPolicy)))throw new DnaError('Related Video policy: required-studio, optional-studio or none.');
+  for(const key of ['defaultPlaylistIds','shortPlaylistIds'])for(const id of String(pub[key]||'').split(/[\s,]+/u).filter(Boolean))if(!/^[A-Za-z0-9_-]{10,100}$/.test(id))throw new DnaError('Playlist rules must contain YouTube playlist IDs.');
   for (const link of (pub.links as string).split('\n').filter(Boolean)) {
     let url: URL; try { url = new URL(link); } catch { throw new DnaError('Publishing links must be HTTPS URLs, one per line.'); }
     if (url.protocol !== 'https:' || url.username || url.password) throw new DnaError('Publishing links must be HTTPS without credentials.');

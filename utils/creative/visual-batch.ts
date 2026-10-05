@@ -23,6 +23,7 @@ export async function runVisualBatch(initial:CreativeWorkspace,slots:VisualSlot[
   const slot=next.slots.find(s=>s.id===selected.id);
   if(!slot)throw Error('The visual plan changed. Reload before continuing.');
   if(action==='generate'){
+   if(!next.scenePlan?.reviewed)throw Error('Prepare and approve a distinct scene plan before generating visuals.');
    if(!next.bible.trim()||next.bible!==next.approvedBible||next.pending)throw Error('Approve the current Visual Direction before generating visuals.');
    if(!slot.candidates.length)next=await request('generate',{slotId:slot.id,confirmPaid:true,missingOnly:true},next.revision);
   }else{

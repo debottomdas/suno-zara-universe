@@ -1,3 +1,6 @@
+import {applyChannelPublishing} from '@/utils/channel-dna/social';
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import {loadReleaseShortSlots} from '@/utils/social/release-slots';
 import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
@@ -623,7 +626,8 @@ export async function POST(request: Request) {
         .from("songs")
         .select(
           `
-          id,
+          channel_id,
+        id,
           title,
           idea,
           language,
@@ -713,6 +717,8 @@ export async function POST(request: Request) {
     }
 
     const shortCount=(await loadReleaseShortSlots(supabase,user.id,projectId))?.length||6;
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'social');
     const systemPrompt = `
 You are a senior social-media strategist for original music releases.
 
@@ -857,6 +863,8 @@ Return ONLY valid JSON using exactly this structure:
         : "No saved YouTube Shorts concepts are available.";
 
     const userPrompt = `
+${dnaInstructions}
+
 Build the Facebook, Instagram and TikTok release campaign
 for this finished song.
 
@@ -996,13 +1004,19 @@ TikTok must contain exactly ${shortCount} posts.
             tiktok,
             updated_at:
               new Date().toISOString(),
-          });
+          },false,{context:channelContext,song});
 
     if (saveError) {
       throw new Error(
         `Could not save platform packs: ${saveError.message}`
       );
     }
+
+    Object.assign(facebook,applyChannelPublishing(channelContext,song,'facebook',facebook));
+
+    Object.assign(instagram,applyChannelPublishing(channelContext,song,'instagram',instagram));
+
+    Object.assign(tiktok,applyChannelPublishing(channelContext,song,'tiktok',tiktok));
 
     return NextResponse.json({
       projectId: song.id,

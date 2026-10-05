@@ -15,7 +15,7 @@ const jsx=(type,props)=>({type,props});
 function nodes(tree){if(!tree||typeof tree!=='object')return [];if(Array.isArray(tree))return tree.flatMap(nodes);return [tree,...nodes(tree.props?.children)];}
 function words(tree){if(tree==null||typeof tree==='boolean')return '';if(typeof tree!=='object')return String(tree);if(Array.isArray(tree))return tree.map(words).join('');return words(tree.props?.children);}
 function harness({hybrid=false,finished=false,failAt=0,approved=true,empty=false}={}){
- let w={...model.emptyWorkspace(),revision:1,bible:empty?'':'World',approvedBible:approved&&!empty?'World':undefined,slots:model.makeSlots(empty?300:60,'')};
+ let w={...model.emptyWorkspace(),revision:1,scenePlan:{reviewed:true,scenes:[]},bible:empty?'':'World',approvedBible:approved&&!empty?'World':undefined,slots:model.makeSlots(empty?300:60,'')};
  const candidate=id=>({id,source:'uploaded',url:'https://fixture.test/'+id,storagePath:id,prompt:'Existing',width:1080,height:1920});
  const assets={images:[],artwork:[],fullVideos:[],shorts:[]};
  if(hybrid){assets.artwork=[{mediaKind:'cover-art',id:'supplied-cover'}];for(const id of ['short-1','short-2']){const slot=w.slots.find(s=>s.id===id);slot.candidates=[candidate(id)];slot.approvedId=id;}}

@@ -1,3 +1,6 @@
+import {applyChannelPublishing} from '@/utils/channel-dna/social';
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import {loadReleaseShortSlots} from '@/utils/social/release-slots';
 import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
@@ -384,7 +387,8 @@ export async function POST(request: Request) {
         .from("songs")
         .select(
           `
-          id,
+          channel_id,
+        id,
           title,
           idea,
           language,
@@ -417,6 +421,8 @@ export async function POST(request: Request) {
     }
 
     const shortCount=(await loadReleaseShortSlots(supabase,user.id,projectId))?.length||6;
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'social');
     const systemPrompt = `
 You are a senior YouTube Shorts strategist for original music.
 
@@ -497,6 +503,8 @@ There must be exactly ${shortCount} objects in shorts.
 `.trim();
 
     const userPrompt = `
+${dnaInstructions}
+
 Create ${shortCount} high-quality YouTube Shorts packages for this song.
 
 SONG TITLE:
@@ -631,13 +639,15 @@ Do not repeat the same approach six times.
             youtube_shorts: youtubeShorts,
             updated_at:
               new Date().toISOString(),
-          });
+          },false,{context:channelContext,song});
 
     if (saveError) {
       throw new Error(
         `Could not save YouTube Shorts: ${saveError.message}`
       );
     }
+
+    Object.assign(youtubeShorts,applyChannelPublishing(channelContext,song,'youtube_shorts',youtubeShorts));
 
     return NextResponse.json({
       projectId: song.id,

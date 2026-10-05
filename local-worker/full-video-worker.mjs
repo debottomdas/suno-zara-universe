@@ -1,4 +1,6 @@
 import http from "node:http";
+import {validateFinishing,assDocument,fadeFilter,brandingRenderSpec} from "./music-finishing.mjs";
+import {productScope,saveProduct} from "./music-product.mjs";
 import {addCandidate,approveCandidate,syncDependencies,outputName} from "./creative-versions.mjs";
 import { recordBufferReceipt } from "./buffer-receipts.mjs";
 import os from "node:os";
@@ -6,7 +8,7 @@ import path from "node:path";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, writeFile, rm, stat, unlink, rename, copyFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import ffmpegPath from "ffmpeg-static";
 
@@ -61,6 +63,7 @@ async function saveManifest(manifest) {
 }
 function extensionFor(contentType, fallback = ".bin") {
   const type = String(contentType || "").toLowerCase();
+  if (type.includes("font") || type.includes("truetype")) return ".ttf";
   if (type.includes("png")) return ".png";
   if (type.includes("webp")) return ".webp";
   if (type.includes("jpeg") || type.includes("jpg")) return ".jpg";
@@ -100,6 +103,24 @@ async function run(command, args) {
   });
 }
 
+async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir,slot=0,offset=0,masterDuration=duration) {
+ if(finishing)validateFinishing(finishing,masterDuration);
+ let codec='';await new Promise(resolve=>{const child=spawn(ffmpegPath,['-hide_banner','-i',audioFile],{stdio:['ignore','ignore','pipe']});let text='';child.stderr.on('data',c=>text+=c);child.on('error',resolve);child.on('close',()=>{codec=/Audio: aac\b/.test(text)?'aac':'';resolve();});});
+ const assets=[];
+ for(const ref of finishing?.renderAssets||[]){
+  if(!/^[a-f0-9]{64}$/iu.test(ref.expectedSha256)||!['logo','watermark','font','intro','outro'].includes(ref.role))throw Error('Invalid channel branding reference.');
+  const file=await download(ref.url,`brand-asset-${slot}-${assets.length}`,tempDir);
+  if(createHash('sha256').update(await readFile(file)).digest('hex')!==ref.expectedSha256.toLowerCase())throw Error('Channel branding asset changed; review Channel DNA before rendering.');
+  assets.push({...ref,file});
+ }
+ const args=['-y','-i',silentVideo,...(offset?['-ss',offset.toFixed(3)]:[]),'-i',audioFile,'-map','0:v:0','-map','1:a:0'];
+ if(finishing){const assFile=path.join(tempDir,`finishing-${slot}.ass`);await writeFile(assFile,assDocument(finishing,duration,slot,offset),'utf8');const spec=brandingRenderSpec(finishing,duration,slot,assets,assFile,assets.some(a=>a.role==='font')?tempDir:null);args.splice(args.indexOf('-map'),4);args.push(...spec.inputs,'-filter_complex',spec.filter,'-map',spec.output,'-map','1:a:0','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p');}
+ else args.push('-c:v','copy');
+ args.push('-c:a',codec==='aac'?'copy':'aac',...(codec==='aac'?[]:['-b:a','192k']),'-t',String(duration),'-shortest','-movflags','+faststart',output);await run(ffmpegPath,args);
+ return {masterSha256:createHash('sha256').update(await readFile(audioFile)).digest('hex'),audioMode:codec==='aac'?'original-aac-copy':'single-aac-encode',finishing:finishing?{subtitles:finishing.subtitles,lyrics:finishing.lyrics,reviewed:finishing.reviewed,cueCount:finishing.cues.filter(c=>c.end>offset&&c.start<offset+duration).length,lyricsSha256:createHash('sha256').update(finishing.lyrics).digest('hex'),channelId:finishing.channelId,dnaRevision:finishing.dnaRevision,brandAlignment:finishing.brandAlignment,brandText:finishing.brandText,transition:finishing.transition}:null};
+}
+function withTransition(filter,duration,scene,complex=false){if(scene.transition!=='fade')return filter;const fade=fadeFilter(duration);return complex?filter.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${filter},${fade}`;}
+
 function normalizeVisuals(body) {
   const supplied = Array.isArray(body.visuals)
     ? body.visuals
@@ -119,6 +140,9 @@ function normalizeVisuals(body) {
       .filter((item) => item.url);
   }
 
+  // Explicit scene timelines may deliberately reuse one approved image.
+  // Keep every planned position; legacy asset discovery still deduplicates.
+  if(body.creativeCandidate)return supplied.slice(0,40);
   const seen = new Set();
   return supplied.filter((item) => {
     const key = `${item.mediaType}:${item.url}`;
@@ -184,7 +208,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
     if (scene.format === "vertical") {
       await run(ffmpegPath, [
         ...base,
-        "-filter_complex", verticalVideoFilter(sceneDuration),
+        "-filter_complex", withTransition(verticalVideoFilter(sceneDuration),sceneDuration,scene,true),
         "-map", "[v]",
         "-an",
         "-c:v", "libx264",
@@ -198,7 +222,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
     } else {
       await run(ffmpegPath, [
         ...base,
-        "-vf", landscapeVideoFilter(sceneDuration),
+        "-vf", withTransition(landscapeVideoFilter(sceneDuration),sceneDuration,scene,false),
         "-an",
         "-c:v", "libx264",
         "-preset", "veryfast",
@@ -216,7 +240,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   if (scene.format === "vertical") {
     await run(ffmpegPath, [
       ...base,
-      "-filter_complex", verticalImageFilter(sceneDuration),
+      "-filter_complex", withTransition(verticalImageFilter(sceneDuration),sceneDuration,scene,true),
       "-map", "[v]",
       "-an",
       "-c:v", "libx264",
@@ -230,7 +254,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   } else {
     await run(ffmpegPath, [
       ...base,
-      "-vf", landscapeImageFilter(sceneDuration, index),
+      "-vf", withTransition(landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
       "-an",
       "-c:v", "libx264",
       "-preset", "veryfast",
@@ -248,7 +272,7 @@ async function renderFullVideo(body) {
   if (!ffmpegPath) throw new Error("FFmpeg is unavailable. Run npm install ffmpeg-static first.");
 
   const projectId = String(body.projectId || "").trim();
-  const title = String(body.title || "Suno Zara Song").trim();
+  const title = String(body.title || "Untitled song").trim();
   const audioUrl = String(body.audioUrl || "").trim();
   const durationSeconds = Number(body.durationSeconds);
   const visuals = normalizeVisuals(body);
@@ -257,6 +281,7 @@ async function renderFullVideo(body) {
     throw new Error("projectId, audioUrl, durationSeconds and at least one visual are required.");
   }
 
+  if(body.finishing)validateFinishing(body.finishing,durationSeconds);
   const jobId = randomUUID();
   const tempDir = path.join(os.tmpdir(), "szu-video-worker", jobId);
   await mkdir(tempDir, { recursive: true });
@@ -267,6 +292,7 @@ async function renderFullVideo(body) {
     for (let i = 0; i < visuals.length; i += 1) {
       downloadedVisuals.push({
         ...visuals[i],
+        transition:body.finishing?.transition,
         file: await download(visuals[i].url, `visual-${i + 1}`, tempDir),
       });
     }
@@ -299,14 +325,10 @@ async function renderFullVideo(body) {
     const filename = `${safeName(title)}-Full-Video${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
     const output = path.join(songFolder, filename);
 
-    await run(ffmpegPath, [
-      "-y", "-i", silentVideo, "-i", audioFile,
-      "-map", "0:v:0", "-map", "1:a:0",
-      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-      "-t", String(durationSeconds), "-shortest", "-movflags", "+faststart", output,
-    ]);
+    const finish=await finishMux(silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
 
     const generatedFullVideo = {
+      ...finish,
       projectId,
       title,
       filename,
@@ -650,17 +672,17 @@ async function renderShortScene(scene, index, sceneDuration, tempDir, prefix) {
   if (scene.mediaType === "video") {
     const base = ["-y", "-stream_loop", "-1", "-i", scene.file, "-t", sceneDuration.toFixed(4)];
     if (scene.format === "vertical") {
-      await run(ffmpegPath, [...base, "-vf", shortVerticalVideoFilter(sceneDuration), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+      await run(ffmpegPath, [...base, "-vf", withTransition(shortVerticalVideoFilter(sceneDuration),sceneDuration,scene,false), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
     } else {
-      await run(ffmpegPath, [...base, "-filter_complex", shortLandscapeVideoFilter(sceneDuration), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+      await run(ffmpegPath, [...base, "-filter_complex", withTransition(shortLandscapeVideoFilter(sceneDuration),sceneDuration,scene,true), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
     }
     return output;
   }
   const base = ["-y", "-loop", "1", "-framerate", "30", "-t", sceneDuration.toFixed(4), "-i", scene.file];
   if (scene.format === "vertical") {
-    await run(ffmpegPath, [...base, "-vf", shortVerticalImageFilter(sceneDuration, index), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+    await run(ffmpegPath, [...base, "-vf", withTransition(shortVerticalImageFilter(sceneDuration, index),sceneDuration,scene,false), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
   } else {
-    await run(ffmpegPath, [...base, "-filter_complex", shortLandscapeImageFilter(sceneDuration), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+    await run(ffmpegPath, [...base, "-filter_complex", withTransition(shortLandscapeImageFilter(sceneDuration),sceneDuration,scene,true), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
   }
   return output;
 }
@@ -685,7 +707,7 @@ function normalizeHighlights(raw, durationSeconds) {
 async function renderShorts(body) {
   if (!ffmpegPath) throw new Error("FFmpeg is unavailable. Run npm install ffmpeg-static first.");
   const projectId = String(body.projectId || "").trim();
-  const title = String(body.title || "Suno Zara Song").trim();
+  const title = String(body.title || "Untitled song").trim();
   const audioUrl = String(body.audioUrl || "").trim();
   const durationSeconds = Number(body.durationSeconds);
   const visuals = normalizeVisuals(body);
@@ -693,6 +715,7 @@ async function renderShorts(body) {
     throw new Error("projectId, audioUrl, durationSeconds and at least one visual are required.");
   }
   const highlights = normalizeHighlights(body.highlights, durationSeconds);
+  if(body.finishing)validateFinishing(body.finishing,durationSeconds);
   const jobId = randomUUID();
   const tempDir = path.join(os.tmpdir(), "szu-video-worker", `shorts-${jobId}`);
   await mkdir(tempDir, { recursive: true });
@@ -700,7 +723,7 @@ async function renderShorts(body) {
     const audioFile = await download(audioUrl, "audio", tempDir);
     const downloadedVisuals = [];
     for (let i = 0; i < visuals.length; i += 1) {
-      downloadedVisuals.push({ ...visuals[i], file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
+      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
     }
     const shortsFolder = path.join(ROOT, "Music", safeName(title), "Shorts");
     await mkdir(shortsFolder, { recursive: true });
@@ -723,12 +746,9 @@ async function renderShorts(body) {
       await run(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", concatFile, "-c", "copy", silentVideo]);
       const filename = `${safeName(title)}-Short-${String(slot).padStart(2, "0")}${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
       const output = path.join(shortsFolder, filename);
-      await run(ffmpegPath, [
-        "-y", "-i", silentVideo, "-ss", highlight.startSeconds.toFixed(3), "-i", audioFile,
-        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-t", clipDuration.toFixed(3), "-shortest", "-movflags", "+faststart", output,
-      ]);
+      const finish=await finishMux(silentVideo,audioFile,output,clipDuration,body.finishing,tempDir,slot,highlight.startSeconds,durationSeconds);
       generatedShorts.push({
+        ...finish,
         projectId, title, slot, filename, filePath: output, source: "generated", generatedAt: new Date().toISOString(),
         startSeconds: highlight.startSeconds, endSeconds: highlight.startSeconds + clipDuration, durationSeconds: clipDuration,
         width: 1080, height: 1920, visualCount: sequence.length,
@@ -985,6 +1005,7 @@ async function creativeRequest(req,res,url){
  const projectId=String(url.searchParams.get("projectId")||"");
  if(req.method==="GET"){
   const m=await loadManifest(),p=m.projects?.[projectId]||{};
+  if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
   if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
   if(url.pathname==="/creative/file"){
    const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id"));if(!v)return json(res,404,{error:"Version not found."});
@@ -1001,6 +1022,9 @@ async function creativeRequest(req,res,url){
   const upload=url.pathname==="/creative/upload",body=upload?Object.fromEntries(url.searchParams):await readJsonBody(req),id=String(body.projectId||""),slot=Number(body.slot||0);outputName(slot);
   if(!id)throw Error("Project required.");
   const name=outputName(slot);
+  if(url.pathname==="/creative/product"){
+   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const result=saveProduct(p,body,body.record,body.workspace,body.snapshot);await saveManifest(m);return json(res,200,result);
+  }
   if(url.pathname==="/creative/render"){
    if(!body.dependencyKey)throw Error("Review the video plan first.");
    const item=slot===0?await renderFullVideo({...body,creativeCandidate:true}):(await renderShorts({...body,creativeCandidate:true}))[0];
