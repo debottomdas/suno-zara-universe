@@ -1,6 +1,8 @@
 import {buildMediaAssetResponse,type StoredMediaAsset} from '@/utils/media-source';
 import {createClient} from '@/utils/supabase/server';
 import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {currentLyricCueContext} from '@/utils/creative/lyric-cues';
+import {finalAudioKey,emptyWorkspace,structuredSubtitleFinishing,type CreativeWorkspace} from '@/utils/creative/model';
 import {brandingFinishing} from '@/utils/channel-dna/context';
 export async function GET(request:Request){
  try{
@@ -8,10 +10,19 @@ export async function GET(request:Request){
   const params=new URL(request.url).searchParams,layout=params.get('layout')??'landscape';
   if(layout!=='landscape'&&layout!=='portrait')throw Error('Choose landscape or portrait layout.');
   const projectId=params.get('projectId');
-  const {data:song,error}=await db.from('songs').select('channel_id,title,english_title,language').eq('id',projectId).eq('user_id',user.id).single();if(error||!song)throw Error('Song not found.');
+  const {data:song,error}=await db.from('songs').select('id,channel_id,title,english_title,language,lyrics').eq('id',projectId).eq('user_id',user.id).single();if(error||!song)throw Error('Song not found.');
   const context=await resolveActiveChannelDNA(db,user.id,song.channel_id);
   const finishing=brandingFinishing({...context,...(context.dna?.sections.visual.identity?{language:song.language||''}:{})},layout);
   if(finishing.openingTitle)Object.assign(finishing,{openingTitle:{...finishing.openingTitle,nativeTitle:song.title||'',secondaryTitle:song.english_title||''},language:song.language||''});
+  let subtitleSource;
+  if(context.dna?.sections.visual.identity){
+   const {data:row,error:workspaceError}=await db.from('song_creative_workspaces').select('workspace').eq('song_id',song.id).eq('user_id',user.id).maybeSingle();
+   if(workspaceError)throw Error('Subtitle preference could not be verified.');
+   const w:CreativeWorkspace=structuredClone(row?.workspace||emptyWorkspace());
+   w.subtitleContext={identity:context.dna.sections.visual.identity,cueContext:await currentLyricCueContext(db,user.id,song,w,finalAudioKey)};
+   Object.assign(finishing,structuredSubtitleFinishing(w,layout==='landscape'?0:1));
+   if(finishing.subtitles)subtitleSource=w.subtitleContext.cueContext.source;
+  }
   const refs=finishing.assets.filter(a=>['watermark','logo','intro','outro','font'].includes(a.role)&&!(finishing.structuredBranding&&finishing.watermarkEnabled===false&&['logo','watermark'].includes(a.role)));
   const renderAssets=[];
   if(refs.length){
@@ -19,6 +30,6 @@ export async function GET(request:Request){
    if(assetError||assets?.length!==new Set(refs.map(a=>a.mediaAssetId)).size)throw Error('Branding asset unavailable in this channel.');
    for(const ref of refs){const asset=assets!.find(a=>a.id===ref.mediaAssetId)!;const publicAsset=await buildMediaAssetResponse(db,asset as StoredMediaAsset);renderAssets.push({...ref,url:publicAsset.url,mimeType:asset.mime_type});}
   }
-  return Response.json({finishing:{...finishing,renderAssets}},{headers:{'Cache-Control':'no-store'}});
+  return Response.json({finishing:{...finishing,renderAssets},subtitleSource},{headers:{'Cache-Control':'no-store'}});
  }catch(e){return Response.json({error:e instanceof Error?e.message:'Channel branding unavailable.'},{status:400});}
 }

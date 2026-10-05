@@ -11,7 +11,7 @@ export default function LyricTimingReview({context,review,audioUrl,audioKey,busy
  const ready=rows.length>0&&rows.every(r=>r.start.trim()!==''&&r.end.trim()!=='');
  async function save(reviewed:boolean){if(!source)return;await onSave({cues:rows.map(r=>({...r,start:Number(r.start),end:Number(r.end)})),source,reviewed,listened});}
  return <section aria-label="Lyric timing review"><h3>Optional lyric timing review</h3>
-  <p>Time phrases by listening to your final audio. No automatic synchronization is supplied. These timings do not add subtitles to your videos.</p>
+  <p>Time phrases by listening to your final audio. No automatic synchronization is supplied. Choose whether to burn in these timings using Add subtitles to video.</p>
   <p role="status">{state==='none'?'No saved lyric timings':state==='stale'?'Timings are stale: saved lyrics or final audio changed. Keep them for reference, then retime the current phrases.':edited?'Unsaved edits — review required':state==='current'?'Reviewed timings match the saved lyrics and final audio':'Draft timings — listen and review before use'}</p>
   {!source&&<p>Load or analyse the selected final audio to save timings.</p>}
   {audioUrl&&<audio aria-label="Final audio for lyric timing review" controls preload="metadata" src={audioUrl}/>}

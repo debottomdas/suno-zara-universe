@@ -2,7 +2,7 @@
 import LyricTimingReview from './LyricTimingReview';
 import type {LyricCueContext} from '@/utils/creative/lyric-cues';
 import {useEffect,useRef,useState} from 'react';
-import {approvedCandidate,emptyWorkspace,outputKey,finalAudioKey,requiredVisualSlots,videoReadiness,renderPrerequisite,type CreativeWorkspace,type VisualSlot,type Timing} from '@/utils/creative/model';
+import {structuredSubtitleFinishing,subtitleSettings,subtitleBlocker,approvedCandidate,emptyWorkspace,outputKey,finalAudioKey,requiredVisualSlots,videoReadiness,renderPrerequisite,type CreativeWorkspace,type VisualSlot,type Timing} from '@/utils/creative/model';
 import {visualBatchState,runVisualBatch} from '@/utils/creative/visual-batch';
 import styles from './CreativeStudio.module.css';
 import {createClient} from '@/utils/supabase/client';
@@ -49,12 +49,18 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   await command('register-upload',{slotId:slot.id,storagePath:upload.storagePath});
  }
  async function render(slot:number){
-  const prerequisite=renderPrerequisite(w,assets.audio,slot,dirtyPlan);if(prerequisite)throw Error(prerequisite.message);
+  const fresh=await json(`/api/creative-workspace?projectId=${encodeURIComponent(projectId)}`);
+   const current=fresh.workspace as CreativeWorkspace;
+   if(current.revision!==w.revision||outputKey(current,slot,audioKey)!==outputKey(w,slot,audioKey)){accept(current);setCueContext(fresh.lyricCueContext||null);throw Error('Video inputs changed. Review the refreshed workspace before rendering.');}
+   const prerequisite=renderPrerequisite(current,assets.audio,slot,dirtyPlan);if(prerequisite)throw Error(prerequisite.message);
   const timings=slot===0?w.plan!.scenes:w.plan!.shorts.filter(t=>t.slotId===`short-${slot}`);
   const selected=timings.map(t=>({t,s:w.slots.find(s=>s.id===t.slotId)!}));if(selected.some(({s})=>!approvedCandidate(s)))throw Error('Approve the required visual first.');
-  const {finishing}=await json(`/api/channel-context?projectId=${encodeURIComponent(projectId)}&layout=${slot===0?'landscape':'portrait'}`);
-  if(finishing.channelId!==(w.channelBranding as any)?.channelId||finishing.dnaRevision!==(w.channelBranding as any)?.dnaRevision)throw Error('Channel DNA changed. Reload before rendering.');
-  await sync(w);
+  const {finishing,subtitleSource}=await json(`/api/channel-context?projectId=${encodeURIComponent(projectId)}&layout=${slot===0?'landscape':'portrait'}`);
+  const expectedSubtitles=structuredSubtitleFinishing(current,slot);
+   if(finishing.structuredSubtitles&&finishing.subtitles&&JSON.stringify(subtitleSource)!==JSON.stringify(current.subtitleContext?.cueContext.source))throw Error('Lyric or audio source changed. Reload before rendering.');
+   for(const [key,value] of Object.entries(expectedSubtitles))if(JSON.stringify(finishing[key])!==JSON.stringify(value))throw Error('Subtitle inputs changed. Reload before rendering.');
+   if(finishing.channelId!==(w.channelBranding as any)?.channelId||finishing.dnaRevision!==(w.channelBranding as any)?.dnaRevision)throw Error('Channel DNA changed. Reload before rendering.');
+  await sync(current);
   await post(`${WORKER}/creative/render`,{finishing,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});
   await loadVideos();setMessage('New video ready for review. Your previous approved version is preserved.');
  }
@@ -133,14 +139,14 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   {blocker&&<p role="status">{blocker.message}</p>}
   {videoProgress&&<p role="status">Creating your videos… {videoProgress.complete} of {videoProgress.total} complete</p>}
   {videoNeedsReload?<><p>Creation stopped. Saved videos are preserved. Reload before continuing; completed outputs will be skipped.</p><button disabled={!!busy} onClick={()=>void run('Reloading saved videos',async()=>{await reloadWorkspace();setVideoNeedsReload(false);})}>Reload saved videos</button></>:
-   <button className={styles.primary} disabled={!!busy||!!workerError||!videosReady||(!complete&&!!w.pending)||blocker?.kind==='timing'} onClick={()=>{
+   <button className={styles.primary} disabled={!!busy||!!workerError||!videosReady||(!complete&&!!w.pending)||blocker?.kind==='timing'||blocker?.kind==='subtitles'} onClick={()=>{
     if(complete){onContinue();return;}
     if(blocker?.kind==='audio'){onNavigate('Final Audio');return;}
     if(blocker?.kind==='visual'){onNavigate('Visuals');return;}
     if(blocker?.kind==='analysis'){void run(!w.slots.length?'Preparing creative workspace':'Analysing audio',!w.slots.length?setup:analyse);return;}
     if(blocker?.kind==='plan'){void run('Approving Video Plan',()=>change('plan',{...planDraft,approve:true}));return;}
     void (videoState.missing.length?createMissingVideos():approveReviewedVideos());
-   }}>{complete?'Continue to Social →':blocker?.kind==='audio'?'Add final audio':blocker?.kind==='visual'?'Review required visual':blocker?.kind==='analysis'?(!w.slots.length?'Prepare Video Plan':'Analyse audio & propose timings'):blocker?.kind==='plan'?'Approve Video Plan':blocker?.kind==='timing'?'Correct plan timings below':videoState.missing.length?(videoState.missing.length===7?'Create Videos':`Create ${videoState.missing.length} Missing Videos`):'Approve reviewed videos'}</button>}
+   }}>{complete?'Continue to Social →':blocker?.kind==='audio'?'Add final audio':blocker?.kind==='visual'?'Review required visual':blocker?.kind==='analysis'?(!w.slots.length?'Prepare Video Plan':'Analyse audio & propose timings'):blocker?.kind==='plan'?'Approve Video Plan':blocker?.kind==='timing'?'Correct plan timings below':blocker?.kind==='subtitles'?'Review lyric timings or choose Off':videoState.missing.length?(videoState.missing.length===7?'Create Videos':`Create ${videoState.missing.length} Missing Videos`):'Approve reviewed videos'}</button>}
   {!complete&&!blocker&&<p>Play the videos below before approving. Use Change for an individual replacement.</p>}
  </section>;
  const primaryVisualAction=<section className={styles.panel} aria-label="Visuals next step">
@@ -183,6 +189,14 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     {assets.audio?.url&&<audio controls src={assets.audio.url} preload="metadata"/>}<button disabled={!!busy||!assets.audio?.url} onClick={()=>void run('Analysing audio',analyse)}>Analyse audio & propose timings</button>
     {planDraft&&<><p>{w.plan?.approved?'✓ Plan approved':'Plan awaiting review'} · {w.analysis?.duration.toFixed(1)} seconds</p>{(['scenes','shorts'] as const).map(kind=><fieldset key={kind}><legend>{kind==='scenes'?'Full video scene sequence':'Six Short audio segments'}</legend>{planDraft[kind].map((t,i)=><div key={t.slotId} className={styles.timing}><label>{t.slotId}<input aria-label={`${t.slotId} section label`} value={t.label} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,label:e.target.value}:r)})}/></label><label>Start (seconds)<input type="number" step="0.1" value={t.start} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,start:Number(e.target.value)}:r)})}/></label><label>End (seconds)<input type="number" step="0.1" value={t.end} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,end:Number(e.target.value)}:r)})}/></label></div>)}</fieldset>)}<div className={styles.actions}><button disabled={!!busy} onClick={()=>void run('Saving timings',()=>change('plan',{...planDraft,approve:false}))}>Save plan</button><button disabled={!!busy} onClick={()=>void run('Approving plan',()=>change('plan',{...planDraft,approve:true}))}>Approve Video Plan</button></div></>}
     </details><p>Finished video uploads can be reviewed and approved independently of this render plan.</p></section>
+    <section aria-label="Subtitle choice"><h3>Add subtitles to video</h3>
+     <label>Add subtitles to video <select aria-label="Add subtitles to video" disabled={!!busy||!w.subtitleContext} value={w.subtitlesEnabled===undefined?'default':w.subtitlesEnabled?'on':'off'} onChange={e=>void run('Saving subtitle choice',()=>change('subtitle-preference',{subtitlesEnabled:e.target.value==='default'?null:e.target.value==='on'}))}>
+      <option value="default">Use channel default</option><option value="on">On</option><option value="off">Off</option>
+     </select></label>
+     <p role="status">{w.subtitleContext?`Effective subtitles: ${subtitleSettings(w)?.enabled?'On':'Off'} · Channel default: ${w.subtitleContext.identity.subtitles.enabled?'On':'Off'}`:'Structured subtitle identity is not configured for this channel.'}</p>
+     {subtitleBlocker(w,audioKey)&&<p role="status">{subtitleBlocker(w,audioKey)} Review timings below, or choose Off for a clean render.</p>}
+     {!subtitleSettings(w)?.enabled&&<p>No lyric subtitles will be burned in. Saved lyrics and timings remain available for editing in CapCut, Premiere or DaVinci.</p>}
+    </section>
     <LyricTimingReview context={cueContext} review={w.lyricCueReview} audioUrl={assets.audio?.url} audioKey={audioKey} busy={!!busy} onSave={body=>run('Saving lyric timings',()=>change('lyric-cues',body))}/>
     <h3>{workerError||!videosReady?'Video review unavailable — reconnect to read saved approvals':complete?'✓ Videos ready — continue to Social':'Review the videos that need your attention'}</h3>
     <fieldset disabled={!!workerError||!videosReady} style={{border:0,padding:0,margin:0}}>

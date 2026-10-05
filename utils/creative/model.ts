@@ -1,11 +1,12 @@
-import type {LyricCueReview} from './lyric-cues';
+import {lyricCueState,lyricSubtitleDependency,type LyricCueReview,type LyricCueContext} from './lyric-cues';
+import type {VisualIdentity} from '../channel-dna/model';
 import type {ScenePlan} from './scene-plan';
 export type AssetKind = 'scene' | 'short' | 'cover' | 'thumbnail';
 export type Candidate = {visualProduction?:{channelId:string;dnaRevision:number|null;sceneSourceKey?:string;sceneSlotId?:string;branding?:unknown};id:string; storagePath:string; prompt:string; source:'generated'|'uploaded'|'derived'; createdAt:string; width:number; height:number; url?:string};
 export type VisualSlot = {id:string; kind:AssetKind; number:number; label:string; prompt:string; candidates:Candidate[]; approvedId?:string};
 export type Timing = {slotId:string; start:number; end:number; label:string};
 export type AudioAnalysis = {duration:number; energy:Array<{time:number; rms:number}>; sourceKey:string};
-export type CreativeWorkspace = {lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
+export type CreativeWorkspace = {subtitleContext?:{identity:VisualIdentity;cueContext:LyricCueContext};lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
 export const emptyWorkspace = ():CreativeWorkspace=>({revision:0,instructions:'',bible:'',slots:[]});
 export function lyricSections(lyrics:string) {return [...lyrics.matchAll(/^\s*\[([^\]]+)\]/gm)].map(m=>m[1]);}
 export function makeSlots(duration:number,lyrics:string):VisualSlot[] {
@@ -46,7 +47,7 @@ export function visualsComplete(w:CreativeWorkspace){return w.slots.length>0&&w.
 // Stable dependency keys exclude signed URLs, draft prompts and unrelated slots.
 export function outputKey(w:CreativeWorkspace,slot:number,audioKey:string) {
  const timings=slot===0?w.plan?.scenes:w.plan?.shorts.filter(t=>t.slotId===`short-${slot}`);
- return JSON.stringify({...(w.channelBranding?{channelBranding:w.channelBranding}:{}),audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[]});
+ return JSON.stringify({...(subtitleOutputDependency(w,slot)?{lyricSubtitles:subtitleOutputDependency(w,slot)}:{}),...(w.channelBranding?{channelBranding:w.channelBranding}:{}),audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[]});
 }
 
 // Keep the existing key format: saved plans and immutable render versions use it.
@@ -68,6 +69,7 @@ export function requiredVisualSlots(w:CreativeWorkspace,assets:any,videos?:Video
 }
 export function renderPrerequisite(w:CreativeWorkspace,audio:any,slot:number,dirtyPlan=false){
  if(!audio?.url)return {kind:'audio',message:'Add final audio to create this video.'};
+ const subtitleError=subtitleBlocker(w,finalAudioKey(audio));if(subtitleError)return {kind:'subtitles',message:subtitleError};
  if(!w.analysis||w.analysis.sourceKey!==finalAudioKey(audio))return {kind:'analysis',message:'Analyse the current final audio to prepare its Video Plan.'};
  if(dirtyPlan)return {kind:'plan',message:'Save and approve your edited Video Plan.'};
  if(!w.plan)return {kind:'analysis',message:'Analyse the final audio to prepare its Video Plan.'};
@@ -93,4 +95,28 @@ export function dependencySyncKeys(w:CreativeWorkspace|undefined,audioResponse:a
  if(!audioResponse||!w?.slots.length||!videos)return null;
  const keys=Object.fromEntries(outputNames.map((name,slot)=>[name,outputKey(w,slot,finalAudioKey(audioResponse.asset))]));
  return Object.entries(keys).some(([name,key])=>videos.keys?.[name]!==key)?keys:null;
+}
+
+export const SUBTITLE_REVIEW_REQUIRED='Subtitles are enabled, but reviewed lyric timings are required.';
+export function subtitleSettings(w:CreativeWorkspace,slot=0){
+ const identity=w.subtitleContext?.identity;if(!identity)return undefined;
+ const layout=slot===0?'landscape':'portrait';
+ return {...identity.subtitles,...identity[layout]?.subtitles,enabled:w.subtitlesEnabled??identity.subtitles.enabled};
+}
+export function subtitleBlocker(w:CreativeWorkspace,audioKey?:string){
+ if(!subtitleSettings(w)?.enabled)return null;
+ const context=w.subtitleContext!.cueContext;
+ return (!context.source||audioKey!==undefined&&context.source.audioKey!==audioKey||lyricCueState(w.lyricCueReview,context.source,context.phrases)!=='current')?SUBTITLE_REVIEW_REQUIRED:null;
+}
+function subtitleOutputDependency(w:CreativeWorkspace,slot:number){
+ const settings=subtitleSettings(w,slot);if(!settings?.enabled)return undefined;
+ const context=w.subtitleContext!.cueContext;
+ // Unavailable data has a non-renderable key: it cannot revive an old subtitled approval.
+ const blocked=subtitleBlocker(w);
+ return {settings,language:context.language,...(blocked?{unavailable:true,source:context.source}:{review:JSON.parse(lyricSubtitleDependency(w,context,true)!)})};
+}
+export function structuredSubtitleFinishing(w:CreativeWorkspace,slot:number){
+ const settings=subtitleSettings(w,slot);if(!settings)return {};
+ const blocked=subtitleBlocker(w);if(blocked)throw Error(blocked);
+ return {structuredSubtitles:settings,subtitles:settings.enabled,cues:settings.enabled?w.lyricCueReview!.cues:[],reviewed:settings.enabled,language:w.subtitleContext!.cueContext.language,lyrics:''};
 }

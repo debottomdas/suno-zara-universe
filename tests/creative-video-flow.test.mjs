@@ -5,23 +5,25 @@ import vm from 'node:vm';
 import ts from 'typescript';
 import {validateFinishing} from '../local-worker/music-finishing.mjs';
 function load(file,modules={},globals={}){const c={exports:{},require:n=>modules[n],console,Error,...globals};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,c);return c.exports;}
-const model=load('utils/creative/model.ts');const batch=load('utils/creative/visual-batch.ts',{'./model':model});const {releaseGaps}=load('utils/release-gaps.ts',{'./creative/model':model});
+const lyricHelpers=load('utils/creative/lyric-cues.ts',{}, {crypto,TextEncoder});const model=load('utils/creative/model.ts',{'./lyric-cues':lyricHelpers});const batch=load('utils/creative/visual-batch.ts',{'./model':model});const {releaseGaps}=load('utils/release-gaps.ts',{'./creative/model':model});
 const jsx=(type,props)=>({type,props});
 function nodes(t){return !t||typeof t!=='object'?[]:Array.isArray(t)?t.flatMap(nodes):[t,...nodes(t.props?.children)];}
 function words(t){return t==null||typeof t==='boolean'?'':typeof t!=='object'?String(t):Array.isArray(t)?t.map(words).join(''):words(t.props?.children);}
 function fixture(){const audio={id:'master',storagePath:'owned/audio.wav',updatedAt:'stable',url:'http://fixture/audio'};const w={...model.emptyWorkspace(),channelBranding:{channelId:'fixture-channel',dnaRevision:3,channelName:'Fixture Channel',brandText:'Fixture Channel'},bible:'Approved world',approvedBible:'Approved world',slots:model.makeSlots(203.08,'[Verse]\n[Chorus]'),analysis:{duration:203.08,energy:[],sourceKey:model.finalAudioKey(audio)}};for(const s of w.slots){s.candidates=[{id:s.id+'-v1',url:'http://fixture/'+s.id}];s.approvedId=s.candidates[0].id;}w.plan=model.proposePlan(w.slots,w.analysis,'');return {w,assets:{audio,styles:[],images:[],artwork:[{mediaKind:'cover-art'},{mediaKind:'thumbnail'}],fullVideos:[],shorts:[],creative:w},videos:{versions:[],approved:{},keys:{}}};}
-function harness({hybrid=false,failAt=0}={}){
+function harness({hybrid=false,failAt=0,structured=false}={}){
  const {w,assets,videos}=fixture();if(hybrid)for(const slot of [0,1,2]){const v={id:'supplied-'+slot,slot,source:'uploaded',dependencyKey:'supplied',fileUrl:'http://fixture/video'};videos.versions.push(v);videos.approved[model.outputNames[slot]]=v.id;}
+ if(structured){w.subtitleContext={identity:{subtitles:{enabled:true,position:'lower-middle',style:'clean',size:'medium',highlight:'none'}},cueContext:{phrases:['Synthetic lyric'],language:'Bengali',source:{lyricsHash:'a'.repeat(64),audioKey:model.finalAudioKey(assets.audio),duration:203.08}}};}
  let values=[],deps=[],effects=[],cursor=0,tree,continued=0,renders=0,calls=[],progress=[];
  const hooks={useState:init=>{const i=cursor++;if(!(i in values))values[i]=typeof init==='function'?init():init;return [values[i],n=>{values[i]=typeof n==='function'?n(values[i]):n;}];},useRef:init=>{const i=cursor++;return values[i]??={current:init};},useEffect:(fn,next)=>{const i=cursor++;if(!deps[i]||next.some((d,j)=>d!==deps[i][j])){deps[i]=next;effects.push(fn);}}};
  const fetch=async(url,options)=>{
-  if(url.includes('/api/channel-context')){calls.push({url,layout:new URL(url,'http://local').searchParams.get('layout')});return Response.json({finishing:{...w.channelBranding,subtitles:false,cues:[],lyrics:'',font:'Arial',colour:'#FFFFFF',accent:'#FFFFFF',intro:0,outro:0,transition:'fade'}});}
+  if(url.includes('/api/channel-context')){calls.push({url,layout:new URL(url,'http://local').searchParams.get('layout')});return Response.json({subtitleSource:w.subtitleContext?.cueContext.source,finishing:{...w.channelBranding,subtitles:false,cues:[],lyrics:'',...model.structuredSubtitleFinishing(w,new URL(url,'http://local').searchParams.get('layout')==='portrait'?1:0),font:'Arial',colour:'#FFFFFF',accent:'#FFFFFF',intro:0,outro:0,transition:'fade'}});}
   if(!options)return Response.json(url.includes('/creative/status')?videos:{workspace:w});
   if(url.includes('/creative/upload?')){const params=new URL(url).searchParams;const slot=Number(params.get('slot'));calls.push({url,slot});videos.versions.push({id:'edited-'+slot,slot,source:'uploaded',dependencyKey:'supplied',fileUrl:'http://fixture/edited.mp4'});return Response.json({});}
   const b=JSON.parse(options.body);calls.push({url,...b});
   if(url.endsWith('/creative/render')){renders++;if(renders===failAt)return Response.json({error:'Interrupted fixture render'},{status:500});videos.versions.push({id:'render-'+b.slot,slot:b.slot,source:'generated',dependencyKey:b.dependencyKey,fileUrl:'http://fixture/video'});}
   else if(url.endsWith('/creative/approve'))videos.approved[model.outputNames[b.slot]]=b.id;
   else if(url.endsWith('/creative/sync'))videos.keys=b.keys;
+  else if(b.action==='subtitle-preference'){if(b.subtitlesEnabled===null)delete w.subtitlesEnabled;else w.subtitlesEnabled=b.subtitlesEnabled;w.revision++;}
   else if(b.action==='plan'){w.plan={scenes:b.scenes,shorts:b.shorts,approved:b.approve};w.revision++;}
   else throw Error('Unexpected mutation');
   progress.push(words(render()));return Response.json({workspace:w});
@@ -67,4 +69,14 @@ test('file input uploads full video candidate without approval or regeneration; 
  input().props.onChange({target:{files:[{type:'image/png',size:12,name:'wrong.png'}],value:'wrong.png'}});await h.flush();assert.match(h.text,/Choose a non-empty MP4 or MOV/);assert.equal(h.calls.length,count);
  input().props.onChange({target:{files:[{type:'video/mp4',size:12,name:'edit.mp4'}],value:'edit.mp4'}});await h.flush();assert.equal(h.calls.length,count+1);assert.deepEqual(h.videos.approved,before);assert.equal(h.videos.versions.at(-1).id,'edited-0');assert.match(h.text,/Full video uploaded as a new version/);
  await h.reopen();assert.match(h.text,/Uploaded edit · Current review candidate/);
+});
+
+test('three-state control shows effective choice, persists false and default, and gates rendering on current reviewed cues',async()=>{
+ const h=harness({structured:true});h.w.plan.approved=true;await h.flush();
+ const choice=()=>nodes(h.tree).find(n=>n.type==='select'&&n.props['aria-label']==='Add subtitles to video');
+ assert.equal(choice().props.value,'default');assert.match(h.text,/Effective subtitles: On/);assert.match(h.text,/Subtitles are enabled, but reviewed lyric timings are required/);assert.equal(h.primary()[0].props.disabled,true);
+ choice().props.onChange({target:{value:'off'}});await h.flush();assert.equal(h.w.subtitlesEnabled,false);assert.match(h.text,/Effective subtitles: Off/);assert.equal(h.primary()[0].props.disabled,false);await h.click();assert.equal(h.calls.filter(c=>c.url.endsWith('/creative/render')).length,7);assert.ok(h.calls.filter(c=>c.url.endsWith('/creative/render')).every(c=>c.finishing.subtitles===false));
+ choice().props.onChange({target:{value:'on'}});await h.flush();assert.equal(h.w.subtitlesEnabled,true);assert.equal(h.primary()[0].props.disabled,true);
+ choice().props.onChange({target:{value:'default'}});await h.flush();assert.equal(h.w.subtitlesEnabled,undefined);assert.match(h.text,/Effective subtitles: On/);
+ const source=h.w.subtitleContext.cueContext.source;h.w.lyricCueReview={version:1,source,reviewed:true,cues:[{lineIndex:0,text:'Synthetic lyric',start:3,end:8}]};await h.reopen();assert.equal(h.primary()[0].props.disabled,false,h.text);await h.click();const rendered=h.calls.filter(c=>c.url.endsWith('/creative/render')&&c.finishing.subtitles);assert.equal(rendered.length,7);assert.ok(rendered.every(c=>c.finishing.cues[0].text==='Synthetic lyric'));assert.equal(h.w.lyricCueReview.reviewed,true);
 });

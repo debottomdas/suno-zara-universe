@@ -4,7 +4,16 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
 import {addCandidate,approveCandidate,syncDependencies} from '../local-worker/creative-versions.mjs';
-const ctx={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../utils/creative/model.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,ctx);
+const ctx={
+  exports:{},
+  require:(id)=>{
+    if(id==='./lyric-cues') return {
+      lyricCueState:()=>{throw new Error('lyricCueState should not be called by legacy creative-workflow tests');},
+      lyricSubtitleDependency:()=>{throw new Error('lyricSubtitleDependency should not be called by legacy creative-workflow tests');}
+    };
+    throw new Error(`Unexpected require in creative-workflow test: ${id}`);
+  }
+};vm.runInNewContext(ts.transpileModule(fs.readFileSync(new URL('../utils/creative/model.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,ctx);
 const {makeSlots,proposePlan,validatePlan,outputKey,visualsComplete}=ctx.exports;
 function workspace(){const slots=makeSlots(240,'[Intro]\n[Verse]\n[Chorus]\n[Bridge]\n[Outro]');slots.forEach(s=>{s.candidates=[{id:s.id+'-v1'}];s.approvedId=s.candidates[0].id;});const w={slots,analysis:{duration:240,sourceKey:'audio1',energy:[{time:1,rms:.1},{time:50,rms:.8}]}};w.plan=proposePlan(slots,w.analysis,'[Intro]\n[Verse]\n[Chorus]');return w;}
 function keys(w){return Object.fromEntries(Array.from({length:7},(_,slot)=>[slot?'short-'+slot:'full',outputKey(w,slot,'audio1')]));}

@@ -111,10 +111,14 @@ async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir
   if(!/^[a-f0-9]{64}$/iu.test(ref.expectedSha256)||!['logo','watermark','font','intro','outro'].includes(ref.role))throw Error('Invalid channel branding reference.');
   const file=await download(ref.url,`brand-asset-${slot}-${assets.length}`,tempDir);
   if(createHash('sha256').update(await readFile(file)).digest('hex')!==ref.expectedSha256.toLowerCase())throw Error('Channel branding asset changed; review Channel DNA before rendering.');
-  assets.push({...ref,file});
+  let dimensions={};
+  if(finishing.structuredSubtitles&&['logo','watermark'].includes(ref.role)){
+   dimensions=await new Promise(resolve=>{const child=spawn(ffmpegPath,['-hide_banner','-i',file],{stdio:['ignore','ignore','pipe']});let info='';child.stderr.on('data',c=>info+=c);child.on('error',()=>resolve({}));child.on('close',()=>{const match=info.match(/Video:.*?\b(\d{2,5})x(\d{2,5})\b/);resolve(match?{width:Number(match[1]),height:Number(match[2])}:{});});});
+  }
+  assets.push({...ref,file,...dimensions});
  }
  const args=['-y','-i',silentVideo,...(offset?['-ss',offset.toFixed(3)]:[]),'-i',audioFile,'-map','0:v:0','-map','1:a:0'];
- if(finishing){const assFile=path.join(tempDir,`finishing-${slot}.ass`);await writeFile(assFile,assDocument(finishing,duration,slot,offset),'utf8');const spec=brandingRenderSpec(finishing,duration,slot,assets,assFile,assets.some(a=>a.role==='font')?tempDir:null);args.splice(args.indexOf('-map'),4);args.push(...spec.inputs,'-filter_complex',spec.filter,'-map',spec.output,'-map','1:a:0','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p');}
+ if(finishing){const assFile=path.join(tempDir,`finishing-${slot}.ass`);await writeFile(assFile,assDocument(finishing,duration,slot,offset,assets),'utf8');const spec=brandingRenderSpec(finishing,duration,slot,assets,assFile,assets.some(a=>a.role==='font')?tempDir:null);args.splice(args.indexOf('-map'),4);args.push(...spec.inputs,'-filter_complex',spec.filter,'-map',spec.output,'-map','1:a:0','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p');}
  else args.push('-c:v','copy');
  args.push('-c:a',codec==='aac'?'copy':'aac',...(codec==='aac'?[]:['-b:a','192k']),'-t',String(duration),'-shortest','-movflags','+faststart',output);await run(ffmpegPath,args);
  return {masterSha256:createHash('sha256').update(await readFile(audioFile)).digest('hex'),audioMode:codec==='aac'?'original-aac-copy':'single-aac-encode',finishing:finishing?{subtitles:finishing.subtitles,lyrics:finishing.lyrics,reviewed:finishing.reviewed,cueCount:finishing.cues.filter(c=>c.end>offset&&c.start<offset+duration).length,lyricsSha256:createHash('sha256').update(finishing.lyrics).digest('hex'),channelId:finishing.channelId,dnaRevision:finishing.dnaRevision,brandAlignment:finishing.brandAlignment,brandText:finishing.brandText,transition:finishing.transition}:null};

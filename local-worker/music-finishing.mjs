@@ -27,7 +27,19 @@ export function validateFinishing(f,duration) {
     for(const key of ['nativeTitle','secondaryTitle'])if(typeof t[key]!=='string'||t[key].length>1000)throw Error('Invalid opening title content.');
     if(typeof f.channelName!=='string'||f.channelName.length>200||typeof f.language!=='string'||f.language.length>100)throw Error('Invalid opening channel or language.');
   }
-  if(f.subtitles){
+  if(f.structuredSubtitles!==undefined){
+    const t=f.structuredSubtitles;
+    if(!t||typeof t.enabled!=='boolean'||t.enabled!==f.subtitles||!['centre','lower-middle','lower'].includes(t.position)||!['small','medium','large'].includes(t.size)||!['clean','backed','cinematic'].includes(t.style)||!['none','current-phrase'].includes(t.highlight)||typeof f.language!=='string'||f.language.length>100)throw Error('Invalid structured subtitle settings.');
+    if(f.subtitles){
+      if(f.reviewed!==true||!f.cues.length)throw Error('Subtitles are enabled, but reviewed lyric timings are required.');
+      let previousLine=-1,previousEnd=0;
+      for(const c of f.cues){
+        if(!c||typeof c.text!=='string'||!c.text.trim()||c.text.length>100000||/^\s*\[[^\]]+\]\s*$/u.test(c.text)||!Number.isInteger(c.lineIndex)||c.lineIndex<=previousLine||!Number.isFinite(c.start)||!Number.isFinite(c.end)||c.start<previousEnd||c.start<0||c.end<=c.start||c.end>duration)throw Error('Invalid reviewed subtitle cue.');
+        previousLine=c.lineIndex;previousEnd=c.end;
+      }
+    }
+  }
+  if(f.subtitles&&!f.structuredSubtitles){
     if(f.reviewed!==true)throw Error('Listen and approve subtitle timings before rendering.');
     if(!f.cues.length||f.cues.map(c=>c.text).join('\n')!==cleanPhrases(f.lyrics).join('\n'))throw Error('Subtitles must use exact saved lyric phrases.');
     f.cues.forEach((c,i)=>{if(typeof c.text!=='string'||!Number.isFinite(c.start)||!Number.isFinite(c.end)||c.start<0||c.end<=c.start||c.end>duration+.01||(i&&c.start<f.cues[i-1].end-.01))throw Error('Invalid subtitle timing.');});
@@ -53,6 +65,44 @@ function persistentLockup(f,slot,assets){
  const logoWidth=Math.round((slot?1080:1920)*f.brandLogoWidth);
  return {gap,logoWidth,count,assetWidth:count*logoWidth+(count-1)*gap,textHeight:Math.ceil(f.brandFontSize*1.5)};
 }
+// Display-only wrapping. Cue text and source times are never rewritten.
+const graphemes=text=>Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text),s=>s.segment);
+const clusterUnits=g=>/\s/u.test(g)?.35:/[\p{Script=Bengali}\p{Script=Devanagari}\p{Script=Han}]/u.test(g)?1:.65;
+export function subtitleWrap(text,fontSize,maxWidth){
+  // Conservative font-independent bounds. Explicit q2 prevents extra libass lines.
+  const clusters=graphemes(text),prefix=new Map([[0,0]]);let index=0,total=0;
+  for(const g of clusters){index+=g.length;total+=clusterUnits(g);prefix.set(index,total);}
+  if(total*fontSize<=maxWidth)return {lines:[text],fontSize,fallback:false};
+  let best=null;
+  for(const match of text.matchAll(/\s+/gu)){
+    const a=match.index,b=a+match[0].length;
+    // Whitespace joined to a combining cluster is not a legal cut.
+    if(!a||b===text.length||!prefix.has(a)||!prefix.has(b))continue;
+    const units=Math.max(prefix.get(a),total-prefix.get(b));
+    if(!best||units<best.units)best={a,b,units};
+  }
+  let lines,units;
+  if(best){lines=[text.slice(0,best.a),text.slice(best.b)];units=best.units;}
+  else {const middle=Math.ceil(clusters.length/2);lines=[clusters.slice(0,middle).join(''),clusters.slice(middle).join('')];const left=clusters.slice(0,middle).reduce((n,g)=>n+clusterUnits(g),0);units=Math.max(left,total-left);}
+  const fitted=Math.max(1,Math.min(fontSize,Math.floor(maxWidth/Math.max(1,units))));
+  return {lines,fontSize:fitted,fallback:fitted<fontSize};
+}
+export function structuredSubtitleSpec(f,slot,assets=[]){
+ const t=f.structuredSubtitles,portrait=slot>0,width=portrait?1080:1920,height=portrait?1920:1080;
+ const fontSize=(portrait?{small:48,medium:62,large:76}:{small:36,medium:46,large:56})[t.size];
+ const maxWidth=Math.round(width*(portrait?.8:.82));
+ let y=Math.round(height*(portrait?{centre:.5,'lower-middle':.7,lower:.78}:{centre:.5,'lower-middle':.72,lower:.82})[t.position]);
+ // Reserve the bottom branding row using actual downloaded asset aspect ratios.
+ if(f.structuredBranding&&f.watermarkEnabled!==false&&[1,2,3].includes(f.brandAlignment)){
+  const logos=assets.filter(a=>['logo','watermark'].includes(a.role));
+  const logoWidth=Math.round(width*f.brandLogoWidth),logoHeight=Math.max(0,...logos.map(a=>a.width>0&&a.height>0?logoWidth*a.height/a.width:logoWidth));
+  const textHeight=f.brandText?Math.ceil(f.brandFontSize*1.5):0;
+  const gap={26:12,32:16,42:20}[f.brandFontSize]||16;
+  const footprint=f.brandAlignment===2&&logos.length&&textHeight?logoHeight+textHeight+gap:Math.max(logoHeight,textHeight);
+  if(footprint)y=Math.max(Math.ceil(fontSize*1.3),Math.min(y,Math.floor(height-f.brandVerticalMargin-footprint-gap-fontSize*1.3)));
+ }
+ return {width,height,fontSize,maxWidth,y,outline:t.style==='cinematic'?3:2,shadow:1,bold:t.style==='cinematic'?1:0,borderStyle:t.style==='backed'?3:1};
+}
 export function assDocument(f,duration,slot=0,offset=0,assets=f.renderAssets||[]) {
   const vertical=slot>0,width=vertical?1080:1920,height=vertical?1920:1080;
   let header=`[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Lyrics,${f.font},${vertical?62:46},${colour(f.colour)},${colour(f.accent)},&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,3,1,2,${vertical?100:160},${vertical?200:160},${vertical?410:110},1\nStyle: Brand,${f.font},${f.brandFontSize||(vertical?30:32)},${colour(f.accent)},&H00FFFFFF&,&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,2,0,${f.brandAlignment||8},${f.structuredBranding?f.brandHorizontalMargin:100},${f.structuredBranding?f.brandHorizontalMargin:vertical?200:100},${f.structuredBranding?f.brandVerticalMargin:vertical?180:60},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
@@ -74,8 +124,22 @@ export function assDocument(f,duration,slot=0,offset=0,assets=f.renderAssets||[]
     style[[1,7].includes(f.brandAlignment)?19:20]=String(f.brandHorizontalMargin+lockup.assetWidth+lockup.gap);
     header=header.replace(/^Style: Brand,.*$/m,style.join(','));
   }
+  let subtitleSpec;
+  if(f.structuredSubtitles){
+    subtitleSpec=structuredSubtitleSpec(f,slot,assets);
+    const p=subtitleSpec,t=f.structuredSubtitles,margin=Math.round((width-p.maxWidth)/2);
+    const style=`Style: StructuredLyrics,${f.font},${p.fontSize},${colour(t.highlight==='current-phrase'?f.accent:f.colour)},${colour(f.accent)},${t.style==='backed'?'&H88000000&':'&H00101010&'},&H88000000&,${p.bold},0,0,0,100,100,0,0,${p.borderStyle},${p.outline},${p.shadow},5,${margin},${margin},0,1`;
+    header=header.replace('[Events]',style+'\n\n[Events]');
+  }
   const events=opening?[openingEvent(f,duration,width,height)]:[];
-  if(f.subtitles)for(const cue of f.cues){
+  if(f.subtitles&&f.structuredSubtitles)for(const cue of f.cues){
+    const titleEnd=opening?Math.max(.01,Math.min(f.openingTitle.durationSeconds,duration)):0;
+    const start=Math.max(0,cue.start-offset,titleEnd),end=Math.min(duration,cue.end-offset);if(end<=start||Math.round(end*100)<=Math.round(start*100))continue;
+    const p=subtitleSpec,wrapped=subtitleWrap(cue.text,p.fontSize,p.maxWidth);
+    const text=wrapped.lines.map(escape).join('\\N');
+    events.push(`Dialogue: 0,${stamp(start)},${stamp(end)},StructuredLyrics,,0,0,0,,{\\an5\\pos(${width/2},${p.y})\\q2\\fsp0\\fs${wrapped.fontSize}}${text}`);
+  }
+  if(f.subtitles&&!f.structuredSubtitles)for(const cue of f.cues){
     const start=Math.max(0,cue.start-offset),end=Math.min(duration,cue.end-offset);if(end<=start)continue;
     let text=escape(cue.text);
     if(vertical){const words=cue.text.split(/\s+/u),total=words.reduce((n,w)=>n+Array.from(w).length,0),cs=Math.round((cue.end-cue.start)*100);let consumed=0;

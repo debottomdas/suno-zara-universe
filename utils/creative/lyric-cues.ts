@@ -38,3 +38,12 @@ export function lyricSubtitleDependency(w:CreativeWorkspace,context:LyricCueCont
  if(lyricCueState(w.lyricCueReview,context.source,context.phrases)!=='current')throw Error('Reviewed current lyric timings are required.');
  return JSON.stringify({source:w.lyricCueReview!.source,cues:w.lyricCueReview!.cues,subtitlesEnabled:w.subtitlesEnabled});
 }
+
+// Called only inside authenticated project routes. The caller has already verified song ownership.
+export async function currentLyricCueContext(db:any,userId:string,song:{id:string;lyrics?:string;language?:string},w:CreativeWorkspace,audioKeyFor:(audio:{id:string;storagePath:string;updatedAt:string})=>string):Promise<LyricCueContext>{
+ const {data:audio,error}=await db.from('song_media_assets').select('id,storage_path,updated_at,metadata').eq('song_id',song.id).eq('user_id',userId).eq('media_kind','final-audio').eq('slot',1).maybeSingle();
+ if(error)throw Error('Final audio could not be verified for lyric review.');
+ const audioKey=audio?audioKeyFor({id:audio.id,storagePath:audio.storage_path,updatedAt:audio.updated_at}):'';
+ const duration=audio?.metadata?.durationSeconds||(w.analysis?.sourceKey===audioKey?w.analysis.duration:0);
+ return {phrases:authoringPhrases(song.lyrics||''),language:song.language||'',source:audio&&Number.isFinite(duration)&&duration>0?await lyricCueSource(song.lyrics||'',audioKey,duration):null};
+}

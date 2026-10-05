@@ -1,4 +1,4 @@
-import {authoringPhrases,lyricCueSource,saveLyricCueReview} from '@/utils/creative/lyric-cues';
+import {currentLyricCueContext,saveLyricCueReview} from '@/utils/creative/lyric-cues';
 import {finishVisual,visualBrandAssets,visualBranding} from '@/utils/creative/branding';
 import {makeScenePlan,requireScenePlan,sceneImagePrompt,scenePlanInstructions,sceneSourceKey,type SceneInput} from '@/utils/creative/scene-plan';
 import {channelBranding} from '@/utils/channel-dna/context';
@@ -23,19 +23,16 @@ async function context(projectId:string){
  return {db,user,song,row,dna,w:(row?{...row.workspace,revision:row.revision,channelBranding:channelBranding(dna)}:{...emptyWorkspace(),channelBranding:channelBranding(dna)}) as CreativeWorkspace};
 }
 function sceneInput(c:Awaited<ReturnType<typeof context>>,bible=c.w.approvedBible||c.w.bible):SceneInput{return {title:c.song.title||'',lyrics:c.song.lyrics||'',context:c.song.idea||'',instructions:c.w.instructions,bible,channel:{...c.dna,language:c.song.language}};}
-async function cueContext(c:Awaited<ReturnType<typeof context>>){
- const {data:audio,error}=await c.db.from('song_media_assets').select('id,storage_path,updated_at,metadata').eq('song_id',c.song.id).eq('user_id',c.user.id).eq('media_kind','final-audio').eq('slot',1).maybeSingle();
- if(error)throw Error('Final audio could not be verified for lyric review.');
- const audioKey=audio?finalAudioKey({id:audio.id,storagePath:audio.storage_path,updatedAt:audio.updated_at}):'';
- const duration=audio?.metadata?.durationSeconds||(c.w.analysis?.sourceKey===audioKey?c.w.analysis.duration:0);
- return {phrases:authoringPhrases(c.song.lyrics||''),language:c.song.language||'',source:audio&&duration>0?await lyricCueSource(c.song.lyrics||'',audioKey,duration):null};
-}
+async function cueContext(c:Awaited<ReturnType<typeof context>>){return currentLyricCueContext(c.db,c.user.id,c.song,c.w,finalAudioKey);}
 async function response(c:Awaited<ReturnType<typeof context>>){
  const w=structuredClone(c.w);
  if(w.scenePlan&&w.scenePlan.sourceKey!==sceneSourceKey(sceneInput(c)))w.scenePlan.reviewed=false;
  const candidates=w.slots.flatMap(s=>s.candidates);
  if(candidates.length){const {data,error}=await c.db.storage.from(bucket).createSignedUrls(candidates.map(a=>a.storagePath),3600);if(error)throw Error(error.message);for(const a of candidates){const signed=data?.find(x=>x.path===a.storagePath);if(!signed?.signedUrl||signed.error)throw Error(signed?.error||'Image preview unavailable.');a.url=signed.signedUrl;}}
- return NextResponse.json({workspace:w,lyricCueContext:await cueContext(c)});
+ const lyricCueContext=await cueContext(c);
+ const identity=c.dna.dna?.sections.visual.identity;
+ if(identity)w.subtitleContext={identity,cueContext:lyricCueContext};else delete w.subtitleContext;
+ return NextResponse.json({workspace:w,lyricCueContext});
 }
 export async function GET(req:Request){try{return await response(await context(new URL(req.url).searchParams.get('projectId')||''));}catch(e){return failure(e);}}
 function failure(e:unknown){return NextResponse.json({error:e instanceof Error?e.message:'Creative workspace request failed.'},{status:400});}
@@ -47,7 +44,7 @@ export async function POST(req:Request){
   const slot=w.slots.find(s=>s.id===body.slotId);const action=text(body.action);
   if(w.pending&&action!=='clear-interrupted')throw Error('An image or direction request is still reserved. Wait, or explicitly clear an interrupted request; never retry a paid call automatically.');
   async function save(){
-   const clean=structuredClone(w);clean.slots.forEach(s=>s.candidates.forEach(a=>delete a.url));
+   const clean=structuredClone(w);delete clean.subtitleContext;clean.slots.forEach(s=>s.candidates.forEach(a=>delete a.url));
    const revision=w.revision+1; const values={workspace:clean,revision,updated_at:new Date().toISOString()};
    const q=c.row?db.from('song_creative_workspaces').update(values).eq('song_id',song.id).eq('user_id',user.id).eq('revision',w.revision):db.from('song_creative_workspaces').insert({...values,song_id:song.id,user_id:user.id});
    const {data,error}=await q.select('revision').single();if(error||!data)throw Error('Workspace changed or could not be saved. Reload before continuing.');w.revision=revision;
