@@ -14,15 +14,41 @@ export function validateFinishing(f,duration) {
   if(f.brandOpacity!==undefined&&(!Number.isFinite(f.brandOpacity)||f.brandOpacity<0||f.brandOpacity>1))throw Error('Invalid channel watermark opacity.');
   if(f.brandFontSize!==undefined&&(!Number.isFinite(f.brandFontSize)||f.brandFontSize<12||f.brandFontSize>120))throw Error('Invalid channel watermark size.');
   if(f.brandAlignment!==undefined&&![1,2,3,7,8,9].includes(f.brandAlignment))throw Error('Invalid channel watermark position.');
+  if(f.structuredBranding!==undefined&&typeof f.structuredBranding!=='boolean')throw Error('Invalid structured branding flag.');
+  if(f.structuredBranding){
+    if(typeof f.watermarkEnabled!=='boolean')throw Error('Invalid persistent branding flag.');
+    for(const key of ['brandHorizontalMargin','brandVerticalMargin'])if(!Number.isFinite(f[key])||f[key]<0||f[key]>500)throw Error('Invalid branding margin.');
+    if(![.08,.12,.16].includes(f.brandLogoWidth))throw Error('Invalid branding size preset.');
+    if(!Number.isFinite(f.introBrandOpacity)||f.introBrandOpacity<0||f.introBrandOpacity>1||!Number.isFinite(f.introBrandFontSize)||f.introBrandFontSize<12||f.introBrandFontSize>120||![1,2,3,7,8,9].includes(f.introBrandAlignment))throw Error('Invalid preserved intro/outro branding.');
+  }
   if(f.subtitles){
     if(f.reviewed!==true)throw Error('Listen and approve subtitle timings before rendering.');
     if(!f.cues.length||f.cues.map(c=>c.text).join('\n')!==cleanPhrases(f.lyrics).join('\n'))throw Error('Subtitles must use exact saved lyric phrases.');
     f.cues.forEach((c,i)=>{if(typeof c.text!=='string'||!Number.isFinite(c.start)||!Number.isFinite(c.end)||c.start<0||c.end<=c.start||c.end>duration+.01||(i&&c.start<f.cues[i-1].end-.01))throw Error('Invalid subtitle timing.');});
   }
 }
-export function assDocument(f,duration,slot=0,offset=0) {
+function persistentLockup(f,slot,assets){
+ const count=assets.filter(a=>['logo','watermark'].includes(a.role)).length;
+ if(!f.structuredBranding||f.watermarkEnabled===false||!f.brandText||!count)return null;
+ const gap={26:12,32:16,42:20}[f.brandFontSize];
+ const logoWidth=Math.round((slot?1080:1920)*f.brandLogoWidth);
+ return {gap,logoWidth,count,assetWidth:count*logoWidth+(count-1)*gap,textHeight:Math.ceil(f.brandFontSize*1.5)};
+}
+export function assDocument(f,duration,slot=0,offset=0,assets=f.renderAssets||[]) {
   const vertical=slot>0,width=vertical?1080:1920,height=vertical?1920:1080;
-  const header=`[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Lyrics,${f.font},${vertical?62:46},${colour(f.colour)},${colour(f.accent)},&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,3,1,2,${vertical?100:160},${vertical?200:160},${vertical?410:110},1\nStyle: Brand,${f.font},${f.brandFontSize||(vertical?30:32)},${colour(f.accent)},&H00FFFFFF&,&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,2,0,${f.brandAlignment||8},100,${vertical?200:100},${vertical?180:60},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  let header=`[Script Info]\nScriptType: v4.00+\nPlayResX: ${width}\nPlayResY: ${height}\nWrapStyle: 0\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Lyrics,${f.font},${vertical?62:46},${colour(f.colour)},${colour(f.accent)},&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,3,1,2,${vertical?100:160},${vertical?200:160},${vertical?410:110},1\nStyle: Brand,${f.font},${f.brandFontSize||(vertical?30:32)},${colour(f.accent)},&H00FFFFFF&,&H00101010&,&H88000000&,0,0,0,0,100,100,0,0,1,2,0,${f.brandAlignment||8},${f.structuredBranding?f.brandHorizontalMargin:100},${f.structuredBranding?f.brandHorizontalMargin:vertical?200:100},${f.structuredBranding?f.brandVerticalMargin:vertical?180:60},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
+  if(f.structuredBranding){
+    const style=header.match(/^Style: Brand,.*$/m)[0].split(',');
+    style[0]='Style: IntroBrand';style[2]=String(f.introBrandFontSize);style[18]=String(f.introBrandAlignment);style[19]='100';style[20]=String(vertical?200:100);style[21]=String(vertical?180:60);
+    header=header.replace('[Events]',style.join(',')+'\n\n[Events]');
+  }
+  const lockup=persistentLockup(f,slot,assets);
+  if(lockup&&[1,3,7,9].includes(f.brandAlignment)){
+    const style=header.match(/^Style: Brand,.*$/m)[0].split(',');
+    // IntroBrand was copied before changing persistent text margins.
+    style[[1,7].includes(f.brandAlignment)?19:20]=String(f.brandHorizontalMargin+lockup.assetWidth+lockup.gap);
+    header=header.replace(/^Style: Brand,.*$/m,style.join(','));
+  }
   const events=[];
   if(f.subtitles)for(const cue of f.cues){
     const start=Math.max(0,cue.start-offset),end=Math.min(duration,cue.end-offset);if(end<=start)continue;
@@ -35,9 +61,11 @@ export function assDocument(f,duration,slot=0,offset=0) {
     }
     events.push(`Dialogue: 0,${stamp(start)},${stamp(end)},Lyrics,,0,0,0,,${text}`);
   }
-  if(f.brandText){const text=`{\\alpha&H${Math.round((1-(f.brandOpacity??1))*255).toString(16).padStart(2,'0')}&}`+escape(f.brandText);if(f.watermarkEnabled!==false)events.push(`Dialogue: 1,${stamp(0)},${stamp(duration)},Brand,,0,0,0,,${text}`);
-    if(!vertical&&f.intro)events.push(`Dialogue: 2,${stamp(0)},${stamp(f.intro)},Brand,,0,0,0,,{\\an5\\fs52\\fad(250,250)}${text}`);
-    if(!vertical&&f.outro)events.push(`Dialogue: 2,${stamp(Math.max(0,duration-f.outro))},${stamp(duration)},Brand,,0,0,0,,{\\an5\\fs52\\fad(250,250)}${text}`);
+  if(f.brandText){const text=`{\\alpha&H${Math.round((1-(f.brandOpacity??1))*255).toString(16).padStart(2,'0')}&}`+escape(f.brandText);if(f.watermarkEnabled!==false)events.push(`Dialogue: 1,${stamp(0)},${stamp(duration)},Brand,,0,0,0,,${lockup?'{\\q2}':''}${text}`);
+    const introText=f.structuredBranding?`{\\alpha&H${Math.round((1-f.introBrandOpacity)*255).toString(16).padStart(2,'0')}&}`+escape(f.brandText):text;
+    const introStyle=f.structuredBranding?'IntroBrand':'Brand';
+    if(!vertical&&f.intro)events.push(`Dialogue: 2,${stamp(0)},${stamp(f.intro)},${introStyle},,0,0,0,,{\\an5\\fs52\\fad(250,250)}${introText}`);
+    if(!vertical&&f.outro)events.push(`Dialogue: 2,${stamp(Math.max(0,duration-f.outro))},${stamp(duration)},${introStyle},,0,0,0,,{\\an5\\fs52\\fad(250,250)}${introText}`);
   }
   return header+events.join('\n')+'\n';
 }
@@ -46,7 +74,8 @@ export function fadeFilter(duration){const fade=Math.min(.3,duration/4);return `
 // All inputs are downloaded and SHA-256 checked before this specification is used.
 export function brandingRenderSpec(f,duration,slot,assets,assFile,fontDirectory){
  const width=slot?1080:1920,height=slot?1920:1080,inputs=[],filters=[`[0:v]ass=${assFile}${fontDirectory?`:fontsdir=${fontDirectory}`:''}[brand0]`];
- let previous='brand0',index=2,n=0;
+ const lockup=persistentLockup(f,slot,assets);
+ let previous='brand0',index=2,n=0,persistentIndex=0;
  for(const asset of assets.filter(a=>a.role!=='font')){
   if(['logo','watermark'].includes(asset.role)&&f.watermarkEnabled===false)continue;
   const image=asset.mimeType.startsWith('image/');if(!image&&!asset.mimeType.startsWith('video/'))throw Error('Unsupported channel branding asset type.');
@@ -54,10 +83,17 @@ export function brandingRenderSpec(f,duration,slot,assets,assFile,fontDirectory)
   inputs.push(...(image?['-loop','1']:['-stream_loop','-1']),'-i',asset.file);
   const start=outro?Math.max(0,duration-f.outro):0,end=intro?f.intro:duration;
   const full=intro||outro,alignment=f.brandAlignment||8;
-  const x=full?'(W-w)/2':[1,7].includes(alignment)?'60':[3,9].includes(alignment)?'W-w-60':'(W-w)/2';
-  const y=full?'(H-h)/2':[1,2,3].includes(alignment)?'H-h-60':'60';
+  const horizontal=f.structuredBranding?f.brandHorizontalMargin:60,vertical=f.structuredBranding?f.brandVerticalMargin:60;
+  let x=full?'(W-w)/2':[1,7].includes(alignment)?String(horizontal):[3,9].includes(alignment)?`W-w-${horizontal}`:'(W-w)/2';
+  let y=full?'(H-h)/2':[1,2,3].includes(alignment)?`H-h-${vertical}`:String(vertical);
+  if(lockup&&!full){
+    const inward=persistentIndex++*(lockup.logoWidth+lockup.gap);
+    if([1,7].includes(alignment))x=String(horizontal+inward);
+    else if([3,9].includes(alignment))x=`W-w-${horizontal+inward}`;
+    else {x=`(W-${lockup.assetWidth})/2+${inward}`;y=`H-h-${vertical+lockup.textHeight+lockup.gap}`;}
+  }
   const overlay=`overlay${++n}`,next=`brand${n}`;
-  filters.push(`[${index++}:v]scale=${full?width:Math.round(width*.12)}:${full?height:-1}:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=aa=${f.brandOpacity??1},setpts=PTS-STARTPTS+${start}/TB[${overlay}]`);
+  filters.push(`[${index++}:v]scale=${full?width:Math.round(width*(f.structuredBranding?f.brandLogoWidth:.12))}:${full?height:-1}:force_original_aspect_ratio=decrease,format=rgba,colorchannelmixer=aa=${full&&f.structuredBranding?f.introBrandOpacity:f.brandOpacity??1},setpts=PTS-STARTPTS+${start}/TB[${overlay}]`);
   filters.push(`[${previous}][${overlay}]overlay=x=${x}:y=${y}:enable='between(t,${start},${end})':eof_action=pass[${next}]`);previous=next;
  }
  return {inputs,filter:filters.join(';'),output:`[${previous}]`};

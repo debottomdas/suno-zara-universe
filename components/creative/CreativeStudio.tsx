@@ -49,7 +49,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   const prerequisite=renderPrerequisite(w,assets.audio,slot,dirtyPlan);if(prerequisite)throw Error(prerequisite.message);
   const timings=slot===0?w.plan!.scenes:w.plan!.shorts.filter(t=>t.slotId===`short-${slot}`);
   const selected=timings.map(t=>({t,s:w.slots.find(s=>s.id===t.slotId)!}));if(selected.some(({s})=>!approvedCandidate(s)))throw Error('Approve the required visual first.');
-  const {finishing}=await json(`/api/channel-context?projectId=${encodeURIComponent(projectId)}`);
+  const {finishing}=await json(`/api/channel-context?projectId=${encodeURIComponent(projectId)}&layout=${slot===0?'landscape':'portrait'}`);
   if(finishing.channelId!==(w.channelBranding as any)?.channelId||finishing.dnaRevision!==(w.channelBranding as any)?.dnaRevision)throw Error('Channel DNA changed. Reload before rendering.');
   await sync(w);
   await post(`${WORKER}/creative/render`,{finishing,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});

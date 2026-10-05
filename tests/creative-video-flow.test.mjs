@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {validateFinishing} from '../local-worker/music-finishing.mjs';
 function load(file,modules={},globals={}){const c={exports:{},require:n=>modules[n],console,Error,...globals};vm.runInNewContext(ts.transpileModule(fs.readFileSync(file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,c);return c.exports;}
 const model=load('utils/creative/model.ts');const batch=load('utils/creative/visual-batch.ts',{'./model':model});const {releaseGaps}=load('utils/release-gaps.ts',{'./creative/model':model});
 const jsx=(type,props)=>({type,props});
@@ -14,7 +15,7 @@ function harness({hybrid=false,failAt=0}={}){
  let values=[],deps=[],effects=[],cursor=0,tree,continued=0,renders=0,calls=[],progress=[];
  const hooks={useState:init=>{const i=cursor++;if(!(i in values))values[i]=typeof init==='function'?init():init;return [values[i],n=>{values[i]=typeof n==='function'?n(values[i]):n;}];},useRef:init=>{const i=cursor++;return values[i]??={current:init};},useEffect:(fn,next)=>{const i=cursor++;if(!deps[i]||next.some((d,j)=>d!==deps[i][j])){deps[i]=next;effects.push(fn);}}};
  const fetch=async(url,options)=>{
-  if(url.includes('/api/channel-context'))return Response.json({finishing:{...w.channelBranding,subtitles:false,cues:[],lyrics:'',font:'Arial',colour:'#FFFFFF',accent:'#FFFFFF',intro:0,outro:0,transition:'fade'}});
+  if(url.includes('/api/channel-context')){calls.push({url,layout:new URL(url,'http://local').searchParams.get('layout')});return Response.json({finishing:{...w.channelBranding,subtitles:false,cues:[],lyrics:'',font:'Arial',colour:'#FFFFFF',accent:'#FFFFFF',intro:0,outro:0,transition:'fade'}});}
   if(!options)return Response.json(url.includes('/creative/status')?videos:{workspace:w});
   if(url.includes('/creative/upload?')){const params=new URL(url).searchParams;const slot=Number(params.get('slot'));calls.push({url,slot});videos.versions.push({id:'edited-'+slot,slot,source:'uploaded',dependencyKey:'supplied',fileUrl:'http://fixture/edited.mp4'});return Response.json({});}
   const b=JSON.parse(options.body);calls.push({url,...b});
@@ -36,7 +37,7 @@ function harness({hybrid=false,failAt=0}={}){
 test('exact lyrics + finished audio + no Style journey: approved visuals → plan approval → create → review → Social, including reopen',async()=>{
  const h=harness();await h.flush();assert.equal(releaseGaps({lyrics:'Words'},h.assets,false).next,'Video & Shorts');assert.match(h.text,/Review and approve the Video Plan/);assert.equal(words(h.primary()[0]),'Approve Video Plan');assert.equal(h.calls.length,0);
  await h.reopen();assert.equal(words(h.primary()[0]),'Approve Video Plan');await h.click();assert.equal(words(h.primary()[0]),'Create Videos');assert.equal(h.w.plan.approved,true);
- await h.click(true);assert.equal(h.calls.filter(c=>c.url.endsWith('/creative/render')).length,7);for(const c of h.calls.filter(c=>c.url.endsWith('/creative/render'))){assert.equal(c.finishing.brandText,'Fixture Channel');assert.equal(c.finishing.channelId,'fixture-channel');assert.equal(c.finishing.dnaRevision,3);}assert.equal(words(h.primary()[0]),'Approve reviewed videos');assert.equal(Object.keys(h.videos.approved).length,0);assert.ok(h.progress.some(s=>s.includes('Creating your videos… 1 of 7 complete')));
+ await h.click(true);assert.equal(h.calls.filter(c=>c.url.endsWith('/creative/render')).length,7);for(const c of h.calls.filter(c=>c.url.endsWith('/creative/render'))){validateFinishing(c.finishing,c.durationSeconds);assert.equal(c.finishing.brandText,'Fixture Channel');assert.equal(c.finishing.channelId,'fixture-channel');assert.equal(c.finishing.dnaRevision,3);}assert.deepEqual(h.calls.filter(c=>c.url.includes('/api/channel-context')).map(c=>c.layout),['landscape',...Array(6).fill('portrait')]);assert.equal(words(h.primary()[0]),'Approve reviewed videos');assert.equal(Object.keys(h.videos.approved).length,0);assert.ok(h.progress.some(s=>s.includes('Creating your videos… 1 of 7 complete')));
  await h.reopen();assert.equal(words(h.primary()[0]),'Approve reviewed videos');await h.click();assert.equal(words(h.primary()[0]),'Continue to Social →');await h.click();assert.equal(h.continued,1);
 });
 test('hybrid supplied full and Shorts 1–2 create only four missing outputs, without their visuals',async()=>{const h=harness({hybrid:true});h.w.slots=h.w.slots.map(s=>s.kind==='scene'||s.kind==='short'&&s.number<=2?{...s,approvedId:undefined,candidates:[]}:s);await h.flush();await h.click();assert.equal(words(h.primary()[0]),'Create 4 Missing Videos');await h.click();assert.deepEqual(h.calls.filter(c=>c.url.endsWith('/creative/render')).map(c=>c.slot),[3,4,5,6]);await h.click();assert.equal(words(h.primary()[0]),'Continue to Social →');for(const slot of [0,1,2])assert.equal(h.videos.approved[model.outputNames[slot]],'supplied-'+slot);});
