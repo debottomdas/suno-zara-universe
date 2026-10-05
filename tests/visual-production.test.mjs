@@ -40,3 +40,31 @@ test('branding assets are owner/channel scoped and fail closed before provider s
  await assert.rejects(()=>brand.visualBrandAssets({from:()=>q},'owner',c),/active channel/);
  assert.ok(filters.some(([k,v])=>k==='songs.channel_id'&&v===c.channelId));assert.ok(filters.some(([k,v])=>k==='songs.user_id'&&v==='owner'));assert.ok(filters.some(([k,v])=>k==='user_id'&&v==='owner'));
 });
+
+test('scene and short clean finishing retains normalization and never composites branding assets',async()=>{
+ const bytes=await sharp({create:{width:80,height:40,channels:3,background:'#315370'}}).png().toBuffer();
+ const c=structuredClone(f.input.channel);c.dna.sections.visual.rules.push({id:'mandatory',text:'Channel Name on every visual',strength:'required',locked:true,stages:['visual']});c.dna.sections.visual.fields.watermark='off';
+ for(const [width,height] of [[160,90],[90,160]]){
+  const expected=await sharp(bytes).rotate().resize(width,height,{fit:'cover'}).png().toBuffer();
+  const result=await brand.finishVisual(bytes,width,height,c,[{role:'logo',bytes:Buffer.from('invalid logo'),expectedSha256:'0'.repeat(64)}],'clean-source');
+  assert.deepEqual(result.image,expected);assert.equal(result.branding.applied,false);
+  const meta=await sharp(result.image).metadata();assert.equal(meta.width,width);assert.equal(meta.height,height);assert.equal(meta.format,'png');
+ }
+});
+test('explicit artwork finishing preserves prior cover and thumbnail composition',async()=>{
+ const bytes=await sharp({create:{width:80,height:40,channels:3,background:'#315370'}}).png().toBuffer();
+ for(const [width,height] of [[480,480],[640,360]]){
+  const old=await brand.finishVisual(bytes,width,height,f.input.channel);
+  const artwork=await brand.finishVisual(bytes,width,height,f.input.channel,[],'branded-artwork');
+  assert.deepEqual(artwork.image,old.image);assert.equal(artwork.branding.applied,true);
+ }
+});
+test('clean prompt policy overrides conflicting branding requests without dropping visual DNA',()=>{
+ const input=structuredClone(f.input);input.channel.dna.sections.visual.fields.brandText='Render written channel name';input.channel.dna.sections.visual.fields.direction='Soft blue cinematic light';
+ for(const kind of ['scene','short']){
+  const prompt=scene.sceneImagePrompt(input,f.scenes[0],{...f.slots[0],kind});
+  assert.match(prompt,/CLEAN VIDEO SOURCE — overrides/);assert.match(prompt,/Do not render any written words, song title, channel name, lettering, logo or watermark text/);assert.match(prompt,/Soft blue cinematic light/);
+  assert.ok(!prompt.includes('composited deterministically onto the final image'));
+ }
+ for(const kind of ['cover','thumbnail'])assert.match(scene.sceneImagePrompt(input,f.scenes[0],{...f.slots[0],kind}),/composited deterministically onto the final image/);
+});

@@ -46,8 +46,11 @@ function ensureVisualFontConfig(){
   process.env.FONTCONFIG_FILE=config;
  }
 }
-export async function finishVisual(bytes:Buffer,width:number,height:number,c:ChannelContext,assets:VisualBrandAsset[]=[]){
- const brand=visualBranding(c),base=await sharp(bytes,{limitInputPixels:80_000_000}).rotate().resize(width,height,{fit:'cover'}).png().toBuffer();
+export type VisualFinishingMode = 'clean-source' | 'branded-artwork';
+export async function finishVisual(bytes:Buffer,width:number,height:number,c:ChannelContext,assets:VisualBrandAsset[]=[],mode:VisualFinishingMode='branded-artwork'){
+ const base=await sharp(bytes,{limitInputPixels:80_000_000}).rotate().resize(width,height,{fit:'cover'}).png().toBuffer();
+ if(mode==='clean-source')return {image:base,branding:{channelId:c.channelId,dnaRevision:c.dnaRevision,applied:false,required:false,text:'',fieldsUsed:[]}};
+ const brand=visualBranding(c);
  if(!brand.enabled)return {image:base,branding:{channelId:c.channelId,dnaRevision:c.dnaRevision,applied:false,required:brand.required,text:'',fieldsUsed:brand.fieldsUsed}};
  const margin=Math.round(Math.min(width,height)*.035),fontSize=Math.round(brand.brandFontSize*Math.min(width,height)/1080);
  let fontDirectory:string|undefined,fontfile:string|undefined;

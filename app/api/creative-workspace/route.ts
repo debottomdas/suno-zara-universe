@@ -47,8 +47,9 @@ export async function POST(req:Request){
   let brandAssets:Awaited<ReturnType<typeof visualBrandAssets>>|undefined;
   async function addImage(bytes:Buffer,target:VisualSlot,source:'generated'|'uploaded'|'derived',prompt:string){
    const dims=target.kind==='cover'?[3000,3000]:target.kind==='short'?[1080,1920]:[1920,1080];
-   brandAssets??=await visualBrandAssets(db,user.id,c.dna);
-   const {image,branding}=await finishVisual(bytes,dims[0],dims[1],{...c.dna,language:song.language},brandAssets);
+   const mode=target.kind==='scene'||target.kind==='short'?'clean-source':'branded-artwork';
+   if(mode==='branded-artwork')brandAssets??=await visualBrandAssets(db,user.id,c.dna);
+   const {image,branding}=await finishVisual(bytes,dims[0],dims[1],{...c.dna,language:song.language},brandAssets,mode);
    const id=crypto.randomUUID(),storagePath=`${user.id}/${song.id}/creative/${target.id}/${id}.png`;
    const {error}=await db.storage.from(bucket).upload(storagePath,image,{contentType:'image/png',upsert:false});if(error)throw Error(error.message);
    target.candidates.push({visualProduction:{channelId:c.dna.channelId,dnaRevision:c.dna.dnaRevision,sceneSourceKey:source==='generated'?w.scenePlan?.sourceKey:undefined,sceneSlotId:source==='generated'?target.id:undefined,branding},id,storagePath,source,prompt,createdAt:new Date().toISOString(),width:dims[0],height:dims[1]});
@@ -121,7 +122,7 @@ export async function POST(req:Request){
     }
    }
    const input=sceneInput(c),scene=requireScenePlan(input,w,slot.id);
-   visualBranding(input.channel);brandAssets??=await visualBrandAssets(db,user.id,c.dna);
+   if(slot.kind==='cover'||slot.kind==='thumbnail'){visualBranding(input.channel);brandAssets??=await visualBrandAssets(db,user.id,c.dna);}
    w.pending={id:crypto.randomUUID(),startedAt:new Date().toISOString(),action};await save();c.row={revision:w.revision};
    const started=Date.now();
    const prompt=sceneImagePrompt(input,scene,slot);
@@ -130,8 +131,8 @@ export async function POST(req:Request){
    if(!out.data?.[0]?.b64_json)throw Error('Image provider returned no image.');await addImage(Buffer.from(out.data[0].b64_json,'base64'),slot,'generated',prompt);delete w.pending;
   }else if(action==='approve-image'){
    if(!slot)throw Error('Image candidate not found.');const candidate=slot.candidates.find(a=>a.id===body.candidateId);if(!candidate)throw Error('Image candidate not found.');
-   const brand=visualBranding({...c.dna,language:song.language}),audit=candidate.visualProduction?.branding as {applied?:boolean;channelId?:string;dnaRevision?:number;text?:string}|undefined;
-   if(brand.enabled&&(!audit?.applied||audit.channelId!==c.dna.channelId||audit.dnaRevision!==c.dna.dnaRevision||audit.text!==brand.text)){
+   const brand=slot.kind==='cover'||slot.kind==='thumbnail'?visualBranding({...c.dna,language:song.language}):null,audit=candidate.visualProduction?.branding as {applied?:boolean;channelId?:string;dnaRevision?:number;text?:string}|undefined;
+   if(brand?.enabled&&(!audit?.applied||audit.channelId!==c.dna.channelId||audit.dnaRevision!==c.dna.dnaRevision||audit.text!==brand.text)){
     // Older/imported candidates cannot bypass final-image branding. Keep the original immutable.
     const {data,error}=await db.storage.from(bucket).download(candidate.storagePath);if(error||!data)throw Error('Image unavailable for channel branding.');
     await addImage(Buffer.from(await data.arrayBuffer()),slot,'derived',candidate.prompt);slot.approvedId=slot.candidates.at(-1)!.id;

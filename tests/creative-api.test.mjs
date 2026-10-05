@@ -114,10 +114,31 @@ test('image provider receives zero calls for missing/unreviewed/repeated/stale s
  assert.equal((await h.act('approve-scene-plan')).ok,true);h.tables.songs[0].lyrics+=' Changed source';
  assert.equal((await h.act('generate',{slotId:'scene-1',confirmPaid:true})).ok,false);assert.equal(h.paid,0);
 });
-test('approving a legacy image applies active branding to a new immutable version without generation',async()=>{
- const h=harness({planOnApproval:false,activeChannel:sceneFixture.input.channel});await h.act('setup',{duration:240});
- const w=h.tables.song_creative_workspaces[0].workspace,slot=w.slots.find(s=>s.id==='scene-1'),original='owner/song/old-image.png';h.blobs.set(original,image);slot.candidates.push({id:'legacy',storagePath:original,prompt:'Existing scene',source:'uploaded',width:32,height:32});
- const approved=await h.act('approve-image',{slotId:'scene-1',candidateId:'legacy'});assert.equal(approved.ok,true,approved.error);const result=approved.workspace.slots.find(s=>s.id==='scene-1');assert.equal(result.candidates.length,2);assert.notEqual(result.approvedId,'legacy');assert.deepEqual(h.blobs.get(original),image);assert.equal(h.paid,0);
- const branded=result.candidates.at(-1);assert.equal(branded.visualProduction.branding.applied,true);assert.equal(branded.visualProduction.branding.text,sceneFixture.input.channel.channelName+'\n'+sceneFixture.input.channel.dna.sections.visual.fields.brandText);
- assert.equal((await h.act('approve-image',{slotId:'scene-1',candidateId:branded.id})).workspace.slots.find(s=>s.id==='scene-1').candidates.length,2,'approval retry does not duplicate branded images');
+test('legacy scene and short approvals preserve original candidates while artwork retains branding enforcement',async()=>{
+ for(const slotId of ['scene-1','short-1','cover','thumbnail']){
+  const h=harness({planOnApproval:false,activeChannel:sceneFixture.input.channel});await h.act('setup',{duration:30});
+  const slot=h.tables.song_creative_workspaces[0].workspace.slots.find(s=>s.id===slotId),original=`owner/song/old-${slotId}.png`;h.blobs.set(original,image);slot.candidates.push({id:'legacy',storagePath:original,prompt:'Existing image',source:'uploaded',width:32,height:32});
+  const approved=await h.act('approve-image',{slotId,candidateId:'legacy'});assert.equal(approved.ok,true,approved.error);const result=approved.workspace.slots.find(s=>s.id===slotId);
+  const artwork=['cover','thumbnail'].includes(slotId);
+  assert.equal(result.candidates.length,artwork?2:1);assert.equal(result.approvedId==='legacy',!artwork);assert.deepEqual(h.blobs.get(original),image);assert.equal(h.paid,0);
+  if(artwork){const branded=result.candidates.at(-1);assert.equal(branded.visualProduction.branding.applied,true);assert.equal((await h.act('approve-image',{slotId,candidateId:branded.id})).workspace.slots.find(s=>s.id===slotId).candidates.length,2);assert.equal(h.tables.song_media_assets.length,1);}
+ }
+});
+test('new scene and short candidates share clean storage across generated uploaded imported and derived inputs',async()=>{
+ const channel=structuredClone(sceneFixture.input.channel);channel.dna.assets=[{id:'missing-logo',role:'logo',mediaAssetId:'33333333-3333-4333-8333-333333333333',expectedSha256:'0'.repeat(64)}];
+ for(const slotId of ['scene-1','short-1']){
+  const h=harness({activeChannel:channel});await h.act('setup',{duration:30});await h.act('direction',{bible:'World',approve:true});
+  let r=await h.act('generate',{slotId,confirmPaid:true});assert.equal(r.ok,true,r.error);
+  const incoming='owner/song/creative-incoming/test';h.blobs.set(incoming,image);r=await h.act('register-upload',{slotId,storagePath:incoming});assert.equal(r.ok,true,r.error);
+  const original=r.workspace.slots.find(s=>s.id===slotId).candidates[0];r=await h.act('derive',{slotId,candidateId:original.id});assert.equal(r.ok,true,r.error);
+  h.tables.song_images=[{id:'imported',song_id:'song',user_id:'owner',storage_path:'imported.png',generation_prompt:'Original prompt'}];h.blobs.set('imported.png',image);
+  r=await h.act('import-image',{slotId,imageId:'imported'});assert.equal(r.ok,true,r.error);
+  h.tables.song_media_assets.push({id:'art',song_id:'song',user_id:'owner',media_kind:'thumbnail',storage_provider:'supabase',storage_path:'art.png'});h.blobs.set('art.png',image);
+  r=await h.act('import-artwork',{slotId,assetId:'art'});assert.equal(r.ok,true,r.error);
+  const slot=r.workspace.slots.find(s=>s.id===slotId);assert.equal(slot.candidates.length,5);
+  assert.deepEqual(slot.candidates.map(c=>c.source),['generated','uploaded','derived','derived','derived']);
+  for(const c of slot.candidates){assert.ok(c.storagePath.startsWith(`owner/song/creative/${slotId}/`));assert.ok(c.url.startsWith('https://preview.test/'));assert.equal(c.visualProduction.branding.applied,false);const expected=await sharp(image).rotate().resize(c.width,c.height,{fit:'cover'}).png().toBuffer();assert.deepEqual(h.blobs.get(c.storagePath),expected);}
+  assert.equal(original.visualProduction.sceneSlotId,slotId);assert.ok(original.visualProduction.sceneSourceKey);
+  const saved=await h.act('approve-image',{slotId,candidateId:original.id});assert.equal(saved.ok,true,saved.error);assert.equal(saved.workspace.slots.find(s=>s.id===slotId).approvedId,original.id);assert.equal(saved.workspace.slots.find(s=>s.id===slotId).candidates.length,5);
+ }
 });
