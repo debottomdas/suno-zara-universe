@@ -26,7 +26,7 @@ function harness({hybrid=false,failAt=0}={}){
   else throw Error('Unexpected mutation');
   progress.push(words(render()));return Response.json({workspace:w});
  };
- const C=load('components/creative/CreativeStudio.tsx',{'react':hooks,'react/jsx-runtime':{jsx,jsxs:jsx},'@/utils/creative/model':model,'@/utils/creative/visual-batch':batch,'./CreativeStudio.module.css':{default:{}},'@/utils/supabase/client':{}},{fetch,Response,URLSearchParams,URL:{createObjectURL:()=> 'blob:fixture',revokeObjectURL:()=>{}},setTimeout,clearTimeout,document:{createElement:()=>({duration:12,videoWidth:1920,videoHeight:1080,set src(value){this.onloadedmetadata();}})}}).default;
+ const C=load('components/creative/CreativeStudio.tsx',{'react':hooks,'react/jsx-runtime':{jsx,jsxs:jsx},'@/utils/creative/model':model,'@/utils/creative/visual-batch':batch,'./LyricTimingReview':{default:'LyricTimingReview'},'./CreativeStudio.module.css':{default:{}},'@/utils/supabase/client':{}},{fetch,Response,URLSearchParams,URL:{createObjectURL:()=> 'blob:fixture',revokeObjectURL:()=>{}},setTimeout,clearTimeout,document:{createElement:()=>({duration:12,videoWidth:1920,videoHeight:1080,set src(value){this.onloadedmetadata();}})}}).default;
  const props={projectId:'fixture',title:'Fixture',lyrics:'Words',stage:'Video & Shorts',assets,onRefresh:()=>{},onContinue:()=>continued++,onNavigate:s=>{throw Error('Unexpected backward navigation: '+s);}};
  function render(){cursor=0;tree=C(props);return tree;}
  async function flush(){for(let i=0;i<100;i++){render();const q=effects;effects=[];q.forEach(f=>f());await new Promise(r=>setImmediate(r));}render();}

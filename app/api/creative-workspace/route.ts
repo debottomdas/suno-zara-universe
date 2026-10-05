@@ -1,3 +1,4 @@
+import {authoringPhrases,lyricCueSource,saveLyricCueReview} from '@/utils/creative/lyric-cues';
 import {finishVisual,visualBrandAssets,visualBranding} from '@/utils/creative/branding';
 import {makeScenePlan,requireScenePlan,sceneImagePrompt,scenePlanInstructions,sceneSourceKey,type SceneInput} from '@/utils/creative/scene-plan';
 import {channelBranding} from '@/utils/channel-dna/context';
@@ -9,7 +10,7 @@ import {generateCreativeImage} from '@/utils/creative/image-generation';
 import {readFile} from 'node:fs/promises';
 import {resolveLocalPath} from '@/utils/media-source';
 import {createClient} from '@/utils/supabase/server';
-import {emptyWorkspace,makeSlots,proposePlan,validatePlan,approvedCandidate,type CreativeWorkspace,type VisualSlot} from '@/utils/creative/model';
+import {finalAudioKey,emptyWorkspace,makeSlots,proposePlan,validatePlan,approvedCandidate,type CreativeWorkspace,type VisualSlot} from '@/utils/creative/model';
 export const runtime='nodejs';
 export const maxDuration=300;
 const bucket='song-media';
@@ -22,12 +23,19 @@ async function context(projectId:string){
  return {db,user,song,row,dna,w:(row?{...row.workspace,revision:row.revision,channelBranding:channelBranding(dna)}:{...emptyWorkspace(),channelBranding:channelBranding(dna)}) as CreativeWorkspace};
 }
 function sceneInput(c:Awaited<ReturnType<typeof context>>,bible=c.w.approvedBible||c.w.bible):SceneInput{return {title:c.song.title||'',lyrics:c.song.lyrics||'',context:c.song.idea||'',instructions:c.w.instructions,bible,channel:{...c.dna,language:c.song.language}};}
+async function cueContext(c:Awaited<ReturnType<typeof context>>){
+ const {data:audio,error}=await c.db.from('song_media_assets').select('id,storage_path,updated_at,metadata').eq('song_id',c.song.id).eq('user_id',c.user.id).eq('media_kind','final-audio').eq('slot',1).maybeSingle();
+ if(error)throw Error('Final audio could not be verified for lyric review.');
+ const audioKey=audio?finalAudioKey({id:audio.id,storagePath:audio.storage_path,updatedAt:audio.updated_at}):'';
+ const duration=audio?.metadata?.durationSeconds||(c.w.analysis?.sourceKey===audioKey?c.w.analysis.duration:0);
+ return {phrases:authoringPhrases(c.song.lyrics||''),language:c.song.language||'',source:audio&&duration>0?await lyricCueSource(c.song.lyrics||'',audioKey,duration):null};
+}
 async function response(c:Awaited<ReturnType<typeof context>>){
  const w=structuredClone(c.w);
  if(w.scenePlan&&w.scenePlan.sourceKey!==sceneSourceKey(sceneInput(c)))w.scenePlan.reviewed=false;
  const candidates=w.slots.flatMap(s=>s.candidates);
  if(candidates.length){const {data,error}=await c.db.storage.from(bucket).createSignedUrls(candidates.map(a=>a.storagePath),3600);if(error)throw Error(error.message);for(const a of candidates){const signed=data?.find(x=>x.path===a.storagePath);if(!signed?.signedUrl||signed.error)throw Error(signed?.error||'Image preview unavailable.');a.url=signed.signedUrl;}}
- return NextResponse.json({workspace:w});
+ return NextResponse.json({workspace:w,lyricCueContext:await cueContext(c)});
 }
 export async function GET(req:Request){try{return await response(await context(new URL(req.url).searchParams.get('projectId')||''));}catch(e){return failure(e);}}
 function failure(e:unknown){return NextResponse.json({error:e instanceof Error?e.message:'Creative workspace request failed.'},{status:400});}
@@ -54,7 +62,14 @@ export async function POST(req:Request){
    const {error}=await db.storage.from(bucket).upload(storagePath,image,{contentType:'image/png',upsert:false});if(error)throw Error(error.message);
    target.candidates.push({visualProduction:{channelId:c.dna.channelId,dnaRevision:c.dna.dnaRevision,sceneSourceKey:source==='generated'?w.scenePlan?.sourceKey:undefined,sceneSlotId:source==='generated'?target.id:undefined,branding},id,storagePath,source,prompt,createdAt:new Date().toISOString(),width:dims[0],height:dims[1]});
   }
-  if(action==='clear-interrupted'){
+  if(action==='lyric-cues'){
+   const current=await cueContext(c);if(!current.source)throw Error('Load or analyse the selected final audio before reviewing lyric timings.');
+   w.lyricCueReview=saveLyricCueReview(body.cues,current.phrases,current.source,body.source,body.reviewed,body.listened);
+  }else if(action==='subtitle-preference'){
+   if(body.subtitlesEnabled===null)delete w.subtitlesEnabled;
+   else if(typeof body.subtitlesEnabled==='boolean')w.subtitlesEnabled=body.subtitlesEnabled;
+   else throw Error('Choose channel default, ON or OFF.');
+  }else if(action==='clear-interrupted'){
    if(!w.pending||Date.now()-new Date(w.pending.startedAt).getTime()<10*60*1000)throw Error('Wait at least ten minutes before clearing an interrupted request.');delete w.pending;
   }else if(action==='setup'){
    const duration=Number(body.duration);if(!Number.isFinite(duration)||duration<8||duration>3600)throw Error('Choose final audio between 8 seconds and 60 minutes.');

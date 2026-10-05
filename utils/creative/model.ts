@@ -1,10 +1,11 @@
+import type {LyricCueReview} from './lyric-cues';
 import type {ScenePlan} from './scene-plan';
 export type AssetKind = 'scene' | 'short' | 'cover' | 'thumbnail';
 export type Candidate = {visualProduction?:{channelId:string;dnaRevision:number|null;sceneSourceKey?:string;sceneSlotId?:string;branding?:unknown};id:string; storagePath:string; prompt:string; source:'generated'|'uploaded'|'derived'; createdAt:string; width:number; height:number; url?:string};
 export type VisualSlot = {id:string; kind:AssetKind; number:number; label:string; prompt:string; candidates:Candidate[]; approvedId?:string};
 export type Timing = {slotId:string; start:number; end:number; label:string};
 export type AudioAnalysis = {duration:number; energy:Array<{time:number; rms:number}>; sourceKey:string};
-export type CreativeWorkspace = {scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
+export type CreativeWorkspace = {lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
 export const emptyWorkspace = ():CreativeWorkspace=>({revision:0,instructions:'',bible:'',slots:[]});
 export function lyricSections(lyrics:string) {return [...lyrics.matchAll(/^\s*\[([^\]]+)\]/gm)].map(m=>m[1]);}
 export function makeSlots(duration:number,lyrics:string):VisualSlot[] {
