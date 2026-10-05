@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { createAdminClient } from "@/utils/supabase/admin";
+import { verifyOAuthHandoff } from "@/utils/publishing/oauth-handoff";
 
 export const runtime = "nodejs";
 
@@ -9,6 +10,7 @@ const STATE_COOKIE = "sz_youtube_oauth_state";
 const VERIFIER_COOKIE = "sz_youtube_oauth_verifier";
 const CHANNEL_COOKIE = "sz_youtube_oauth_channel";
 const RETURN_TO_COOKIE = "sz_youtube_oauth_return_to";
+const CONTEXT_COOKIE = "sz_youtube_oauth_context";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -58,16 +60,36 @@ function appUrl() {
 function redirectResult(
   status: "connected" | "error",
   reason?: string,
-  returnTo?: string
+  returnTo?: string,
+  returnOrigin?: string
 ) {
   const safeReturnTo =
     returnTo?.startsWith("/") && !returnTo.startsWith("//")
       ? returnTo
       : "";
 
+  let safeOrigin = appUrl().origin;
+
+  if (returnOrigin) {
+    try {
+      const parsedOrigin = new URL(returnOrigin);
+      const allowed =
+        parsedOrigin.protocol === "https:" ||
+        ((parsedOrigin.hostname === "localhost" ||
+          parsedOrigin.hostname === "127.0.0.1") &&
+          parsedOrigin.protocol === "http:");
+
+      if (allowed && parsedOrigin.origin === returnOrigin) {
+        safeOrigin = parsedOrigin.origin;
+      }
+    } catch {
+      // Fall back to the hosted application origin.
+    }
+  }
+
   const url = safeReturnTo
-    ? new URL(safeReturnTo, appUrl().origin)
-    : appUrl();
+    ? new URL(safeReturnTo, safeOrigin)
+    : new URL(appUrl().pathname, safeOrigin);
 
   if (!safeReturnTo) url.searchParams.set("workspace", "publish");
   url.searchParams.set("youtube", status);
@@ -90,6 +112,7 @@ function redirectResult(
   });
   response.cookies.set(CHANNEL_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 0 });
   response.cookies.set(RETURN_TO_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 0 });
+  response.cookies.set(CONTEXT_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: 0 });
   return response;
 }
 
@@ -107,37 +130,51 @@ export async function GET(request: Request) {
     const cookieStore = await cookies();
     const expectedState = cookieStore.get(STATE_COOKIE)?.value;
     const codeVerifier = cookieStore.get(VERIFIER_COOKIE)?.value;
-    const universeChannelId = cookieStore.get(CHANNEL_COOKIE)?.value || "";
-    const returnTo = cookieStore.get(RETURN_TO_COOKIE)?.value || "";
+    const cookieChannelId = cookieStore.get(CHANNEL_COOKIE)?.value || "";
+    const cookieReturnTo = cookieStore.get(RETURN_TO_COOKIE)?.value || "";
+    const contextToken = cookieStore.get(CONTEXT_COOKIE)?.value || "";
+    const context = verifyOAuthHandoff(contextToken);
+
+    const returnTo = context?.returnTo || cookieReturnTo;
+    const returnOrigin = context?.returnOrigin;
 
     if (!code || !returnedState || !expectedState || returnedState !== expectedState) {
-      return redirectResult("error", "state", returnTo);
+      return redirectResult("error", "state", returnTo, returnOrigin);
     }
 
     if (!codeVerifier) {
-      return redirectResult("error", "pkce", returnTo);
-    }
-    if (!universeChannelId) {
-      return redirectResult("error", "channel", returnTo);
+      return redirectResult("error", "pkce", returnTo, returnOrigin);
     }
 
-    const supabase = await createClient();
-    const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
-
-    if (authError || !user) {
-      return redirectResult("error", "session", returnTo);
+    if (!context) {
+      return redirectResult("error", "context", returnTo);
     }
 
-    const { data: universeChannel } = await supabase
+    const userId = context.userId;
+    const universeChannelId = context.channelId;
+
+    if (!universeChannelId || universeChannelId !== cookieChannelId) {
+      return redirectResult("error", "channel", returnTo, returnOrigin);
+    }
+
+    /*
+     * The OAuth callback runs on the Vercel authority. It must not depend on
+     * the initiating localhost Supabase cookie. The signed context identifies
+     * the initiating user/channel, then the admin client independently checks
+     * that ownership before credentials are written.
+     */
+    const admin = createAdminClient();
+
+    const { data: universeChannel, error: universeChannelError } = await admin
       .from("channels")
       .select("id, workspace_id, workspaces!inner(owner_user_id)")
       .eq("id", universeChannelId)
-      .eq("workspaces.owner_user_id", user.id)
+      .eq("workspaces.owner_user_id", userId)
       .maybeSingle();
-    if (!universeChannel) return redirectResult("error", "channel", returnTo);
+
+    if (universeChannelError || !universeChannel) {
+      return redirectResult("error", "channel", returnTo, returnOrigin);
+    }
 
     const clientId = process.env.GOOGLE_YOUTUBE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_YOUTUBE_CLIENT_SECRET;
@@ -193,24 +230,23 @@ export async function GET(request: Request) {
         status: channelResponse.status,
         message: channelData.error?.message,
       });
-      return redirectResult("error", "channel_lookup", returnTo);
+      return redirectResult("error", "channel_lookup", returnTo, returnOrigin);
     }
 
     const channels = Array.isArray(channelData.items) ? channelData.items : [];
 
     if (channels.length === 0) {
-      return redirectResult("error", "no_channel", returnTo);
+      return redirectResult("error", "no_channel", returnTo, returnOrigin);
     }
 
     if (channels.length > 1) {
       console.warn("Multiple YouTube channels returned for OAuth user; refusing to guess.", {
         count: channels.length,
       });
-      return redirectResult("error", "multiple_channels", returnTo);
+      return redirectResult("error", "multiple_channels", returnTo, returnOrigin);
     }
 
     const channel = channels[0];
-    const admin = createAdminClient();
     const now = new Date().toISOString();
     const scopes = (tokenData.scope || "")
       .split(/\s+/)
@@ -221,7 +257,7 @@ export async function GET(request: Request) {
       await admin
         .from("publishing_connections")
         .select("id")
-        .eq("user_id", user.id)
+        .eq("user_id", userId)
         .eq("platform", "youtube")
         .eq("external_account_id", channel.id)
         .eq("channel_id", universeChannelId)
@@ -236,12 +272,12 @@ export async function GET(request: Request) {
     await admin
       .from("publishing_connections")
       .update({ is_primary: false, updated_at: now })
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .eq("platform", "youtube")
       .eq("channel_id", universeChannelId);
 
     const connectionPayload = {
-      user_id: user.id,
+      user_id: userId,
       channel_id: universeChannelId,
       platform: "youtube",
       external_account_id: channel.id,
@@ -277,7 +313,7 @@ export async function GET(request: Request) {
         .from("publishing_connections")
         .update(connectionPayload)
         .eq("id", existingConnection.id)
-        .eq("user_id", user.id)
+        .eq("user_id", userId)
         .select("id")
         .single();
 
@@ -329,7 +365,7 @@ export async function GET(request: Request) {
         .update({ status: "needs_reauth", updated_at: now })
         .eq("id", connectionId);
 
-      return redirectResult("error", "refresh_token", returnTo);
+      return redirectResult("error", "refresh_token", returnTo, returnOrigin);
     }
 
     const expiresAt = Number.isFinite(tokenData.expires_in)
@@ -341,7 +377,7 @@ export async function GET(request: Request) {
       .upsert(
         {
           connection_id: connectionId,
-          user_id: user.id,
+          user_id: userId,
           channel_id: universeChannelId,
           platform: "youtube",
           access_token: tokenData.access_token,
@@ -365,7 +401,7 @@ export async function GET(request: Request) {
       throw new Error(`Could not save YouTube OAuth credentials: ${credentialError.message}`);
     }
 
-    return redirectResult("connected", undefined, returnTo);
+    return redirectResult("connected", undefined, returnTo, returnOrigin);
   } catch (error) {
     console.error("YouTube OAuth callback error:", error);
     return redirectResult("error", "unexpected");
