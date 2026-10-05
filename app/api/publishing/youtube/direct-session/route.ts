@@ -97,6 +97,8 @@ export async function POST(request: Request) {
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return NextResponse.json({ error: "You must be signed in." }, { status: 401 });
 
+  let providerSessionAttempted = false;
+  let retrySafe = true;
   try {
     const body = await request.json();
     const projectId = clean(body.projectId);
@@ -194,6 +196,8 @@ export async function POST(request: Request) {
     const url = new URL("https://www.googleapis.com/upload/youtube/v3/videos");
     url.searchParams.set("uploadType", "resumable");
     url.searchParams.set("part", "snippet,status");
+    providerSessionAttempted = true;
+    retrySafe = false;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -216,7 +220,10 @@ export async function POST(request: Request) {
       }),
       cache: "no-store",
     });
-    if (!response.ok) throw new Error(await googleMessage(response, "YouTube rejected the upload metadata"));
+    if (!response.ok) {
+      retrySafe = true;
+      throw new Error(await googleMessage(response, "YouTube rejected the upload metadata"));
+    }
     const uploadUrl = response.headers.get("location");
     if (!uploadUrl) throw new Error("YouTube did not return a resumable upload session URL.");
 
@@ -232,6 +239,9 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.error("YouTube direct session error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not prepare direct YouTube upload." }, { status: 500 });
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : "Could not prepare direct YouTube upload.",
+      retrySafe: !providerSessionAttempted || retrySafe,
+    }, { status: 500 });
   }
 }

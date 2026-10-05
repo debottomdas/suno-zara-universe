@@ -17,7 +17,7 @@ import {POST as bufferSchedule} from '@/app/api/publishing/buffer/schedule-posts
 export const runtime='nodejs';
 export const maxDuration=300;
 const lockRoot=join(tmpdir(),'sunozara-publishing-locks');
-async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok)throw Error(d.error||'Delivery stopped.');return d;}
+async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok){const e=Object.assign(new Error(d.error||'Delivery stopped.'),{retrySafe:d.retrySafe===true});throw e;}return d;}
 export async function POST(req:Request){let lock='',acquired=false;try{
  const {plan,approved,madeForKids,containsSyntheticMedia}=await req.json();
  if(approved!==true)throw Error('Explicit creator approval is required.');
@@ -54,7 +54,15 @@ export async function POST(req:Request){let lock='',acquired=false;try{
  if(row.destination.platform==='youtube'){
   if(old?.videoId){const result=await call(youtubeSchedule,{projectId,videoId:old.videoId,publishAt:row.dueAt});if(Date.parse(result.publishAt)!==Date.parse(row.dueAt))throw Error('YouTube did not confirm the requested time. Check provider status before retrying.');await worker(receiptPath,{projectId,receipt:{...base,status:'scheduled',scheduledAt:row.dueAt}});return;}
   const info=await worker(`/publishing/file-info?projectId=${encodeURIComponent(projectId)}&kind=${kind}&slot=${slot||1}`);
-  const session=await call(youtubeSession,{projectId,kind,slot:slot||1,...info,connectionId:row.destination.id,privacyStatus:'private',publishAt:row.dueAt,selfDeclaredMadeForKids:madeForKids===true,containsSyntheticMedia:containsSyntheticMedia!==false});
+  let session;
+ try{
+  session=await call(youtubeSession,{projectId,kind,slot:slot||1,...info,connectionId:row.destination.id,privacyStatus:'private',publishAt:row.dueAt,selfDeclaredMadeForKids:madeForKids===true,containsSyntheticMedia:containsSyntheticMedia!==false});
+ }catch(e){
+  if((e as Error & {retrySafe?:boolean}).retrySafe===true){
+   await worker(receiptPath,{projectId,receipt:{...base,status:'draft'}});
+  }
+  throw e;
+ }
   const upload=await worker('/publish/youtube',{projectId,kind,slot:slot||1,uploadUrl:session.uploadUrl,accessToken:session.transientAccessToken,publishAt:row.dueAt,timezone});
   await worker(receiptPath,{projectId,receipt:{...base,...upload,assetVersion:row.asset.version,status:'scheduled',scheduledAt:row.dueAt,timezone}});
   await call(youtubeComplete,{projectId,kind,slot:slot||1,videoId:upload.videoId,title:session.title,description:session.description,tags:session.tags,privacyStatus:'private',publishAt:row.dueAt,timezone});
