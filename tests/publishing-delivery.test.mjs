@@ -137,3 +137,11 @@ test('publishing assets retain approved filename separately from immutable versi
  assert.match(source,/approvedFilename\?:string/);
  assert.match(source,/approvedFilename:item\?\.approvedVideo\?\.filename\|\|undefined/);
 });
+
+
+test('legacy YouTube recovery cannot become current until provider verification succeeds',()=>{
+ const source=fs.readFileSync(path.join(root,'utils/publishing/snapshot.ts'),'utf8');
+ assert.match(source,/legacyIdentityRecovered&&!r\.providerCheckedAt/);
+ assert.match(source,/verifiedCurrentReceipts=currentReceipts\.filter/);
+ assert.match(source,/canonicalReceipts:verifiedCurrentReceipts/);
+});
