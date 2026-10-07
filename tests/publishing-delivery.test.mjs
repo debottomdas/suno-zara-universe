@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 import vm from 'node:vm';
 import ts from 'typescript';
 function load(file,modules={},globals={}){const code=ts.transpileModule(fs.readFileSync(new URL('../'+file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const ctx={exports:{},require:n=>{if(!(n in modules))throw Error('Unexpected import '+n);return modules[n]},Date,Intl,Set,Map,Request,Response,URL,AbortSignal,process,console,Buffer,...globals};vm.runInNewContext(code,ctx);return ctx.exports;}
