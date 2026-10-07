@@ -93,3 +93,20 @@ test('provider monitoring keeps the canonical instant and local display synchron
 test('failed YouTube pre-session scheduling rolls back safely and never starts sibling uploads',async()=>{const h=harness({youtubeFailure:'safe'});assert.equal((await h.run(true)).status,409);assert.equal(h.receipts.length,2);assert.equal(h.receipts[0].status,'submitting');assert.equal(h.receipts.at(-1).status,'draft');assert.equal(m.receiptStatus(h.receipts.at(-1)),'Needs Attention');assert.equal(h.calls.filter(c=>c.name==='/publish/youtube'||c.name==='create-posts-batch').length,0)});
 
 test('dependent Shorts store the obtained own-song long-video ID without pretending Studio linking occurred',async()=>{const social={youtube_shorts:{shorts:Array.from({length:6},(_,i)=>({shortNumber:i+1,relatedVideo:{songId:'p',channelId:'bangla',assetKey:'full',dependency:'publish-long-video-first',method:'youtube-studio',youtubeVideoId:null}}))}};const h=harness({social});h.plan.rows.reverse();const response=await h.run(true);assert.equal(response.status,200);assert.equal(h.calls.find(c=>c.name==='direct-session').body.kind,'full');const shorts=h.receipts.filter(r=>r.platform==='youtube'&&r.kind==='short'&&r.status==='scheduled');assert.equal(shorts.length,6);assert.ok(shorts.every(r=>r.relatedVideo.youtubeVideoId==='abcdefghijk'&&r.relatedVideo.status==='needs-studio-link-after-long-is-public-or-unlisted'));});
+
+
+test('uncertain delivery stays blocked until that exact receipt is explicitly reconciled for retry',()=>{
+ const row={asset:{slot:0,label:'Full video',version:'v0'},destination:{id:'youtube',platform:'youtube'}};
+ const state={canonicalReceipts:[{itemKey:'youtube-full',assetVersion:'v0',status:'submitting'}]};
+ assert.throws(()=>executor.assertDeliveryHistory([row],state),/needs reconciliation/);
+ state.canonicalReceipts[0].reconciliation={state:'retry_allowed',resolvedAt:'2026-10-07T12:00:00.000Z'};
+ assert.doesNotThrow(()=>executor.assertDeliveryHistory([row],state));
+});
+
+test('retry reconciliation never clears another asset version or a delivered resolution',()=>{
+ const row={asset:{slot:0,label:'Full video',version:'v2'},destination:{id:'youtube',platform:'youtube'}};
+ for(const receipt of [
+  {itemKey:'youtube-full',assetVersion:'v1',status:'submitting',reconciliation:{state:'retry_allowed',resolvedAt:'2026-10-07T12:00:00.000Z'}},
+  {itemKey:'youtube-full',assetVersion:'v2',status:'submitting',reconciliation:{state:'delivered',resolvedAt:'2026-10-07T12:00:00.000Z'}},
+ ]) assert.throws(()=>executor.assertDeliveryHistory([row],{canonicalReceipts:[receipt]}),/needs reconciliation/);
+});
