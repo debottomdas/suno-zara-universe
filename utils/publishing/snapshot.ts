@@ -64,7 +64,7 @@ export async function snapshot(projectId:string,channelId:string){
   // exactly matches the currently approved asset. The provider videoId/status
   // remains the source of delivery truth; we only restore missing scope fields.
   const legacyIdentityMissing=!r.assetVersion&&!r.channelId&&r.videoId&&['scheduled','published'].includes(r.status);
-  const exactFileMatch=Boolean(asset?.ready&&asset.version&&r.filename&&asset.version===r.filename);
+  const exactFileMatch=Boolean(asset?.ready&&asset?.version&&r.filename&&asset?.version===r.filename);
   return {...r,...(legacyIdentityMissing&&exactFileMatch&&youtubeDestination?{assetVersion:asset.version,channelId:youtubeDestination.id,channelName:youtubeDestination.name,legacyIdentityRecovered:true}:{}) ,platform:'youtube'};
  });
  const currentReceipts=[...normalizedYoutube,...(receipts.buffer||[]).filter((r:any)=>r.slot>=1&&r.slot<=6&&r.itemKey===`buffer-${r.channelId}-short-${String(r.slot).padStart(2,'0')}`).map((r:any)=>({...r,platform:r.service}))];
