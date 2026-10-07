@@ -17,7 +17,7 @@ function harness(options={}){
  const mods={'next/server':{NextResponse:Response},'node:fs/promises':{mkdir:async()=>{},rmdir:async()=>{}},'node:os':{tmpdir:()=>'/fixture'},'node:path':{join:(...x)=>x.join('/')},'node:crypto':{createHash:()=>({update:()=>({digest:()=> 'lock'})})},'@/utils/publishing/plan':m,'@/utils/publishing/execute':executor,'@/utils/publishing/snapshot':{snapshot:async()=>{snapshots++;return {...structuredClone(state),...(options.changedAfterLock&&snapshots>1?{revision:'new'}:{})}},worker:async(path,body)=>{calls.push({name:path,body});if(path.includes('/receipt')){receipts.push(body.receipt);if(options.social){const i=state.canonicalReceipts.findIndex(r=>r.itemKey===body.receipt.itemKey);if(i<0)state.canonicalReceipts.push(body.receipt);else state.canonicalReceipts[i]=body.receipt;}return {ok:true}}if(path.includes('file-info'))return {sizeBytes:100,mimeType:'video/mp4',filename:'fixture.mp4'};if(path==='/publish/youtube')return {videoId:options.social?'abcdefghijk':'fixture',itemKey:body.kind==='full'?'youtube-full':`youtube-short-0${body.slot}`};return {ok:true}}}};
  for(const name of ['direct-session','direct-complete','schedule'])mods[`@/app/api/publishing/youtube/${name}/route`]=handler(name);
  for(const name of ['stage-session','stage-complete','create-posts-batch','schedule-posts-batch','post-status'])mods[`@/app/api/publishing/buffer/${name}/route`]=handler(name);
- const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:approved=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved})}))};
+ const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:(approved,resumeCampaign=false)=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved,resumeCampaign})}))};
 }
 test('approval endpoint makes zero provider or receipt writes without explicit approval',async()=>{const h=harness();assert.equal((await h.run(false)).status,409);assert.equal(h.calls.length,0)});
 test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)}});
@@ -144,4 +144,37 @@ test('legacy YouTube recovery cannot become current until provider verification 
  assert.match(source,/legacyIdentityRecovered&&!r\.providerCheckedAt/);
  assert.match(source,/verifiedCurrentReceipts=currentReceipts\.filter/);
  assert.match(source,/canonicalReceipts:verifiedCurrentReceipts/);
+});
+
+
+test('campaign resume skips confirmed deliveries, leaves uncertain receipts untouched, and sends only remaining work',async()=>{
+ const prior=[
+  ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
+  {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
+  {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
+  {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
+ ];
+ const h=harness({receipts:prior});
+ const response=await h.run(true,true);
+ assert.equal(response.status,200);
+ const body=await response.json();
+ assert.equal(body.scheduled,15);
+ assert.equal(body.skipped,8);
+ assert.equal(body.unresolved,2);
+ assert.equal(h.calls.filter(c=>c.name==='direct-session'||c.name==='schedule').length,0);
+ assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,5);
+ assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').flatMap(c=>c.body.items).length,15);
+ assert.equal(h.receipts.some(r=>r.itemKey==='buffer-instagram-short-01'||r.itemKey==='buffer-tiktok-short-01'),false);
+});
+
+test('resume classifier never treats an uncertain same-asset receipt as retry permission',()=>{
+ const rows=[
+  {asset:{slot:1,label:'Short 1',version:'v1'},destination:{id:'instagram',platform:'instagram'}},
+  {asset:{slot:2,label:'Short 2',version:'v2'},destination:{id:'instagram',platform:'instagram'}},
+ ];
+ const state={canonicalReceipts:[{itemKey:'buffer-instagram-short-01',assetVersion:'v1',status:'submitting',postId:'ig1'}]};
+ const resume=executor.resumeDeliveryRows(rows,state);
+ assert.equal(resume.unresolved.length,1);
+ assert.equal(resume.actionable.length,1);
+ assert.equal(resume.actionable[0].asset.slot,2);
 });
