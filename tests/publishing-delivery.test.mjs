@@ -127,6 +127,6 @@ test('YouTube worker handoff carries immutable receipt identity before the uploa
 test('legacy YouTube recovery is fail-closed and requires exact current approved filename identity',()=>{
  const source=fs.readFileSync(path.join(root,'utils/publishing/snapshot.ts'),'utf8');
  assert.match(source,/legacyIdentityMissing=!r\.assetVersion&&!r\.channelId&&r\.videoId&&\['scheduled','published'\]\.includes\(r\.status\)/);
- assert.match(source,/exactFileMatch=Boolean\(asset\?\.ready&&asset\.version&&r\.filename&&asset\.version===r\.filename\)/);
+ assert.match(source,/exactFileMatch=Boolean\(asset\?\.ready&&asset\?\.version&&r\.filename&&asset\?\.version===r\.filename\)/);
  assert.match(source,/legacyIdentityMissing&&exactFileMatch&&youtubeDestination/);
 });
