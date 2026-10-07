@@ -1211,6 +1211,13 @@ async function publishApprovedVideoToYouTube(body) {
     itemKey: resolved.itemKey,
     kind,
     slot: kind === "short" ? slot : 1,
+    // Persist the immutable delivery identity here, before returning to Next.js.
+    // If the HTTP response back to Universe is lost after YouTube accepted the
+    // upload, the worker receipt is still sufficient to reconcile/reschedule it
+    // without creating a duplicate.
+    assetVersion: String(body.assetVersion || "").trim() || undefined,
+    channelId: String(body.channelId || "").trim() || undefined,
+    channelName: String(body.channelName || "").trim() || undefined,
     videoId,
     url: `https://www.youtube.com/watch?v=${videoId}`,
     filename: resolved.item.filename || path.basename(resolved.item.filePath),
