@@ -6,7 +6,7 @@ import {loadReleaseShortSlots,alignSocialPlatform} from '@/utils/social/release-
 import {NextResponse} from 'next/server';
 import OpenAI from 'openai';
 import {createClient} from '@/utils/supabase/server';
-import {platforms,target,validateCopy,saveVersion,entry,type CopyValue,type CopyVersion} from '@/utils/social/copy';
+import {platforms,collection,target,validateCopy,saveVersion,entry,type CopyValue,type CopyVersion} from '@/utils/social/copy';
 import {generateYouTubeFullPack,type YouTubeReleaseDetails} from '@/utils/social/youtube-full-generator';
 async function owned(supabase:any,projectId:string,channelId:string){const {data:{user}}=await supabase.auth.getUser();if(!user)return null;const {data:song}=await supabase.from('songs').select('id,title,english_title,lyrics,idea,language,script,mood,genre,freedom,selected_hook,channel_id').eq('id',projectId).eq('user_id',user.id).eq('channel_id',channelId).maybeSingle();return song?{user,song}:null;}
 function editablePack(row:any,slots:number[]){return {...row,...Object.fromEntries(platforms.map(p=>[p,alignSocialPlatform(editablePlatform(row?.[p],p,slots.length),p,slots,new Date().toISOString())])),updated_at:row?.updated_at||null};}
