@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {snapshot,worker} from '@/utils/publishing/snapshot';
-import {executeApproved,assertDeliveryHistory} from '@/utils/publishing/execute';
+import {executeApproved,assertDeliveryHistory,resumeDeliveryRows} from '@/utils/publishing/execute';
 import {validatePlan} from '@/utils/publishing/plan';
 import {POST as youtubeSession} from '@/app/api/publishing/youtube/direct-session/route';
 import {POST as youtubeComplete} from '@/app/api/publishing/youtube/direct-complete/route';
@@ -19,7 +19,7 @@ export const maxDuration=300;
 const lockRoot=join(tmpdir(),'sunozara-publishing-locks');
 async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok){const e=Object.assign(new Error(d.error||'Delivery stopped.'),{retrySafe:d.retrySafe===true});throw e;}return d;}
 export async function POST(req:Request){let lock='',acquired=false;try{
- const {plan,approved,madeForKids,containsSyntheticMedia}=await req.json();
+ const {plan,approved,madeForKids,containsSyntheticMedia,resumeCampaign}=await req.json();
  if(approved!==true)throw Error('Explicit creator approval is required.');
  let state=await snapshot(plan.projectId,plan.channelId);let rows=validatePlan(plan,state);
  await mkdir(lockRoot,{recursive:true});lock=join(lockRoot,createHash('sha256').update(state.userId+':'+state.projectId).digest('hex'));
@@ -27,8 +27,10 @@ export async function POST(req:Request){let lock='',acquired=false;try{
  state=await snapshot(plan.projectId,plan.channelId);rows=validatePlan(plan,state);
  const projectId=state.projectId,timezone=plan.timezone;
  const keyFor=(row:any)=>row.destination.platform==='youtube'?(row.asset.slot?`youtube-short-${String(row.asset.slot).padStart(2,'0')}`:'youtube-full'):`buffer-${row.destination.id}-short-${String(row.asset.slot).padStart(2,'0')}`;
- // Preflight the entire campaign before the first external change. Never overwrite
- // an unresolved attempt or infer that an older asset's receipt is current success.
+ // Resume never replays confirmed work. Uncertain receipts stay untouched while
+ // independent not-started publications can continue safely.
+ const resume=resumeCampaign===true?resumeDeliveryRows(rows,state):{actionable:rows,skipped:[],unresolved:[]};
+ rows=resume.actionable;
  assertDeliveryHistory(rows,state);
  for(const row of rows){const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));if(old?.status==='error'){const status=await call(bufferPostStatus,{projectId,postIds:[old.postId]});if(status.posts?.find((p:any)=>p.id===old.postId)?.status!=='error')throw Error('The provider no longer confirms a failed post. Refresh status before retrying.');}}
  const bufferRows:any[]=[];
@@ -67,7 +69,7 @@ export async function POST(req:Request){let lock='',acquired=false;try{
   await worker(receiptPath,{projectId,receipt:{...base,...upload,assetVersion:row.asset.version,status:'scheduled',scheduledAt:row.dueAt,timezone}});
   await call(youtubeComplete,{projectId,kind,slot:slot||1,videoId:upload.videoId,title:session.title,description:session.description,tags:session.tags,privacyStatus:'private',publishAt:row.dueAt,timezone});
  }
- });
+ },rows);
  // Submit every destination that shares a staged Short in ONE batch. The existing
  // media ledger reserves that file once and records all its dependent posts.
  for(const groupKey of [...new Set(bufferRows.map(r=>`${r.asset.slot}:${r.destination.accountId||'legacy'}`))]){
@@ -87,5 +89,5 @@ export async function POST(req:Request){let lock='',acquired=false;try{
    if(failed)throw Error('Some provider outcomes need reconciliation. Successful receipts are saved; no uncertain post will be retried automatically.');
   }
  }
- return NextResponse.json({scheduled:count});
+ return NextResponse.json({scheduled:count,skipped:resume.skipped.length,unresolved:resume.unresolved.length});
  }catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Scheduling stopped. Check delivery status before retrying.'},{status:409});}finally{if(acquired)await rmdir(lock).catch(()=>{});}}
