@@ -13,11 +13,37 @@ function editablePack(row:any,slots:number[]){return {...row,...Object.fromEntri
 export async function GET(request:Request){try{const url=new URL(request.url),projectId=url.searchParams.get('projectId')||'',channelId=url.searchParams.get('channelId')||'';const supabase=await createClient();const owner=await owned(supabase,projectId,channelId);if(!owner)return NextResponse.json({error:'This channel’s song is not available.'},{status:403});const {data,error}=await supabase.from('social_media_packs').select('youtube_full,youtube_shorts,instagram,facebook,tiktok,updated_at').eq('song_id',projectId).eq('user_id',owner.user.id).maybeSingle();if(error)throw error;const slots=(await loadReleaseShortSlots(supabase,owner.user.id,projectId))||[1,2,3,4,5,6];return NextResponse.json({pack:editablePack(data,slots)});}catch{return NextResponse.json({error:'Could not load saved Social copy. Try again.'},{status:500});}}
 export async function POST(request:Request){try{
  const body=await request.json(),{projectId,channelId,platform,key,action,expectedUpdatedAt}=body;
- if(!platforms.includes(platform)||!['save','regenerate'].includes(action))return NextResponse.json({error:'Choose a saved platform post.'},{status:400});
+ if(!['save','regenerate','approve_all'].includes(action))return NextResponse.json({error:'Choose a saved Social copy action.'},{status:400});
+ if(action!=='approve_all'&&!platforms.includes(platform))return NextResponse.json({error:'Choose a saved platform post.'},{status:400});
  const supabase=await createClient(),ownership=await owned(supabase,projectId,channelId);if(!ownership)return NextResponse.json({error:'This channel’s song is not available.'},{status:403});
  const {user,song}=ownership;const {data:row,error}=await supabase.from('social_media_packs').select('*').eq('song_id',projectId).eq('user_id',user.id).maybeSingle();if(error)throw error;
  if((row?.updated_at||null)!==(expectedUpdatedAt||null))return NextResponse.json({error:'Saved copy changed. Reload to review it; your unsaved text is still in the editor.'},{status:409});
- const slots=(await loadReleaseShortSlots(supabase,user.id,projectId))||[1,2,3,4,5,6];const editable=editablePlatform(row?.[platform],platform,slots?.length||6);const pack=slots?alignSocialPlatform(editable,platform,slots,new Date().toISOString()):editable;const original=target(pack,key);let value:CopyValue,source:CopyVersion['source']='edited';
+ const slots=(await loadReleaseShortSlots(supabase,user.id,projectId))||[1,2,3,4,5,6];
+ if(action==='approve_all'){
+  if(!row)return NextResponse.json({error:'Generate the Social pack before approving it.'},{status:400});
+  const now=new Date().toISOString();
+  const aligned=Object.fromEntries(platforms.map(p=>{const editable=editablePlatform(row?.[p],p,slots.length);return [p,alignSocialPlatform(editable,p,slots,now)];})) as Record<(typeof platforms)[number],any>;
+  const missing=missingCopy(aligned,slots.length);
+  if(missing.length)return NextResponse.json({error:`Complete the Social pack before approving all copy. ${missing.length} item${missing.length===1?' is':'s are'} still missing.`},{status:400});
+  const approved:any={};
+  for(const p of platforms){
+   let next=aligned[p];const list=collection(p);
+   const keys=[...(Object.keys(target(next,'root')).length?['root']:[]),...(list&&Array.isArray(next[list])?next[list].map((_:any,i:number)=>`${list}:${i}`):[])];
+   for(const postKey of keys){
+    const review=entry(next,postKey);
+    if(review?.currentVersionId)continue;
+    const value=target(next,postKey),id=crypto.randomUUID();
+    next=saveVersion(next,postKey,value,'existing',true,id,now);
+   }
+   approved[p]=next;
+  }
+  const updated_at=new Date(Math.max(Date.now(),Date.parse(row.updated_at||'')+1||0)).toISOString();
+  let q=supabase.from('social_media_packs').update({...approved,updated_at}).eq('song_id',projectId).eq('user_id',user.id);
+  q=row.updated_at?q.eq('updated_at',row.updated_at):q.is('updated_at',null);
+  const saved=await q.select('updated_at');if(saved.error)throw saved.error;if(!saved.data?.length)return NextResponse.json({error:'Copy changed while approval was running. Nothing was overwritten. Reload and review again.'},{status:409});
+  return NextResponse.json({saved:true,approvedAll:true,pack:editablePack({...row,...approved,updated_at:saved.data[0].updated_at},slots)});
+ }
+ const editable=editablePlatform(row?.[platform],platform,slots?.length||6);const pack=slots?alignSocialPlatform(editable,platform,slots,new Date().toISOString()):editable;const original=target(pack,key);let value:CopyValue,source:CopyVersion['source']='edited';
  if(action==='regenerate'){
   if(body.confirmPaid!==true)return NextResponse.json({error:'Confirm paid generation first.'},{status:400});
   const dna=await resolveActiveChannelDNA(supabase,user.id,channelId);
