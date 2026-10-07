@@ -67,7 +67,11 @@ export async function snapshot(projectId:string,channelId:string){
   const exactFileMatch=Boolean(asset?.ready&&asset?.version&&asset?.approvedFilename&&r.filename&&asset.approvedFilename===r.filename);
   return {...r,...(legacyIdentityMissing&&exactFileMatch&&youtubeDestination?{assetVersion:asset!.version,channelId:youtubeDestination.id,channelName:youtubeDestination.name,legacyIdentityRecovered:true}:{}) ,platform:'youtube'};
  });
+ // A legacy receipt recovered from local identity alone is not provider truth.
+ // Keep it out of Current/Scheduled until the existing read-only YouTube monitor
+ // confirms that the video exists on this channel and writes providerCheckedAt.
  const currentReceipts=[...normalizedYoutube,...(receipts.buffer||[]).filter((r:any)=>r.slot>=1&&r.slot<=6&&r.itemKey===`buffer-${r.channelId}-short-${String(r.slot).padStart(2,'0')}`).map((r:any)=>({...r,platform:r.service}))];
- const revision=createHash('sha256').update(JSON.stringify({channelContext,assets:assets.map(({url,...a})=>a),creative:creative.data,pack:social,audio:a,thumbnail:thumbnail?.id,destinations,receipts:currentReceipts})).digest('hex');
- return {projectId,channelId,title:song.title,assets,reasons,ready:reasons.length===0,destinations,revision,thumbnail:thumbnail?.url||thumbnail?.signedUrl,social,receipts:currentReceipts.filter((r:any)=>currentReceipt(r,assets)),canonicalReceipts:currentReceipts,history:[...(receipts.bufferHistory||[]),...currentReceipts.filter((r:any)=>!currentReceipt(r,assets))],connectionNotes:[...(buf.error?[buf.error]:[]),...(buf.accounts||[]).filter((a:any)=>a.error).map((a:any)=>a.error)],userId:user.id};
+ const verifiedCurrentReceipts=currentReceipts.filter((r:any)=>!(r.legacyIdentityRecovered&&!r.providerCheckedAt));
+ const revision=createHash('sha256').update(JSON.stringify({channelContext,assets:assets.map(({url,...a})=>a),creative:creative.data,pack:social,audio:a,thumbnail:thumbnail?.id,destinations,receipts:verifiedCurrentReceipts})).digest('hex');
+ return {projectId,channelId,title:song.title,assets,reasons,ready:reasons.length===0,destinations,revision,thumbnail:thumbnail?.url||thumbnail?.signedUrl,social,receipts:verifiedCurrentReceipts.filter((r:any)=>currentReceipt(r,assets)),canonicalReceipts:verifiedCurrentReceipts,history:[...(receipts.bufferHistory||[]),...currentReceipts.filter((r:any)=>!verifiedCurrentReceipts.includes(r)||!currentReceipt(r,assets))],connectionNotes:[...(buf.error?[buf.error]:[]),...(buf.accounts||[]).filter((a:any)=>a.error).map((a:any)=>a.error)],userId:user.id};
 }
