@@ -15,6 +15,24 @@ const str = (v: unknown, n = 10000) => typeof v === "string" ? v.trim().slice(0,
 const obj = (v: unknown) => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string,unknown> : {};
 const strings = (v: unknown, n = 50) => arr(v,n).map(x=>str(x,500)).filter(Boolean);
 
+const wordCount = (v:string) => v.trim().split(/\s+/u).filter(Boolean).length;
+const hasNativeTitleScript = (value:string, language:string) => {
+  const first=value.split('|')[0]?.trim()||value.trim(),lang=String(language||'').toLocaleLowerCase();
+  if(lang.includes('hindi')||lang==='hi')return /[\u0900-\u097F]/u.test(first);
+  if(lang.includes('bengali')||lang.includes('bangla')||lang==='bn')return /[\u0980-\u09FF]/u.test(first);
+  return true;
+};
+const cleanCreativeDescription = (value:string, removable:string[]) => {
+  const remove=new Set(removable.map(v=>String(v||'').trim().toLocaleLowerCase()).filter(Boolean));
+  return String(value||'').split('\n').map(line=>line.trim()).filter(line=>{
+    if(!line)return true;
+    const lower=line.toLocaleLowerCase();
+    if(remove.has(lower))return false;
+    if(/^#[\p{L}\p{N}_]+(?:\s+#[\p{L}\p{N}_]+)*$/u.test(line))return false;
+    return true;
+  }).join('\n').replace(/\n{3,}/g,'\n\n').trim();
+};
+
 export async function POST(request: Request) {
   const started = Date.now();
   try {
@@ -37,7 +55,7 @@ export async function POST(request: Request) {
     const shortCount=(await loadReleaseShortSlots(supabase,user.id,projectId))?.length||6;
     const {data:existing,error:loadError}=await supabase.from("social_media_packs").select("youtube_full,youtube_shorts,facebook,instagram,tiktok").eq("song_id",projectId).eq("user_id",user.id).maybeSingle();
     if(loadError)throw Error("Saved Social copy is unavailable. Nothing was generated or replaced.");
-    if(!body.force){
+    if(!body.force && (existing || !song.lyrics?.trim())){
       const missing=missingCopy(existing,shortCount);
       if(!missing.length){
         const dnaExisting:Record<string,any>={};
@@ -64,7 +82,7 @@ export async function POST(request: Request) {
     const complete = existing?.youtube_full && existing?.youtube_shorts && existing?.facebook && existing?.instagram && existing?.tiktok;
     if(complete && !body.force){const {error}=await saveSocialPack(supabase,user.id,projectId,existing);if(error)throw Error(error.message);return NextResponse.json({projectId,cached:true,aiCalls:0});}
 
-    const prompt=`Create ONE coordinated release campaign for this original song. Return JSON only. Understand the lyrics once, then create platform-specific copy from the same campaign strategy. Never invent lyric lines or collaborators.\n\nTITLE: ${song.title||"Untitled"}\nIDEA: ${song.idea||"Not specified"}\nLANGUAGE: ${song.language||"Not specified"}\nSCRIPT: ${song.script||"Not specified"}\nMOOD: ${song.mood||"Not specified"}\nGENRE: ${song.genre||"Not specified"}\nSELECTED HOOK: ${song.selected_hook||"Not specified"}\nCREATOR DIRECTION: ${generatorGuidance||"Natural, emotionally specific, true to the lyrics; avoid generic AI wording."}\n\nFULL LYRICS:\n${song.lyrics}\n\nReturn exactly one object with keys youtubeFull, youtubeShorts, facebook, instagram, tiktok.\n\nyoutubeFull: {recommendedTitle,whyRecommended,alternativeTitles[4],thumbnailTextOptions[3],openingDescription,fullDescription,hashtags[],tags[],seoKeywords[],pinnedComment,alternativePinnedComment,communityPost,informalCommunityPost,releasePost,playlistSuggestion,strongestLyricLines[],ctaOptions[],shortsBridgeCopy,filenameSuggestion,uploadChecklist[]}. Keep fullDescription creative/promotional only.\nyoutubeShorts: {shorts:[EXACTLY ${shortCount} objects {shortNumber,creativeAngle,lyricMoment,openingHook,title,description,hashtags[],tags[],pinnedComment,fullSongCta,visualDirection}]}.\nfacebook: {mainReleasePost,shortReleasePost,emotionalStoryPost,engagementQuestions[],ctaOptions[],hashtags[],reels:[EXACTLY ${shortCount} objects {reelNumber,creativeAngle,openingHook,caption,hashtags[],engagementPrompt,fullSongCta}]}.\ninstagram: {feedCaption,shortCaption,storyTextIdeas[],ctaOptions[],hashtags[],reels:[EXACTLY ${shortCount} objects {reelNumber,creativeAngle,openingHook,caption,hashtags[],fullSongCta,visualDirection}]}.\ntiktok: {posts:[EXACTLY ${shortCount} objects {postNumber,creativeAngle,lyricMoment,openingHook,caption,hashtags[],commentPrompt,fullSongCta,visualDirection}]}.\n\nMake each platform native rather than duplicating identical copy. Use exact lyric moments only when they occur in the supplied lyrics.`;
+    const prompt=`Create ONE coordinated release campaign for this original song. Return JSON only. Understand the lyrics once, then create platform-specific copy from the same campaign strategy. Never invent lyric lines or collaborators.\n\nTITLE: ${song.title||"Untitled"}\nIDEA: ${song.idea||"Not specified"}\nLANGUAGE: ${song.language||"Not specified"}\nSCRIPT: ${song.script||"Not specified"}\nMOOD: ${song.mood||"Not specified"}\nGENRE: ${song.genre||"Not specified"}\nSELECTED HOOK: ${song.selected_hook||"Not specified"}\nCREATOR DIRECTION: ${generatorGuidance||"Natural, emotionally specific, true to the lyrics; avoid generic AI wording."}\n\nFULL LYRICS:\n${song.lyrics}\n\nReturn exactly one object with keys youtubeFull, youtubeShorts, facebook, instagram, tiktok.\n\nyoutubeFull: {recommendedTitle,whyRecommended,alternativeTitles[4],thumbnailTextOptions[3],openingDescription,fullDescription,hashtags[],tags[],seoKeywords[],pinnedComment,alternativePinnedComment,communityPost,informalCommunityPost,releasePost,playlistSuggestion,strongestLyricLines[],ctaOptions[],shortsBridgeCopy,filenameSuggestion,uploadChecklist[]}. For Hindi/Bengali, recommendedTitle MUST begin with the song title in its native script; a Roman/English title may follow after " | ". fullDescription must be creative/promotional copy only, normally 120–220 words when lyrics provide enough material: do not include the title as a standalone line, channel branding, credits, fixed hashtags or CTA. Generate 5–10 song-specific discovery hashtags in addition to permanent Channel DNA hashtags, and approximately 15–25 useful non-repetitive YouTube search tags. Tags must not contain #. Keep fullDescription creative/promotional only.\nyoutubeShorts: {shorts:[EXACTLY ${shortCount} objects {shortNumber,creativeAngle,lyricMoment,openingHook,title,description,hashtags[],tags[],pinnedComment,fullSongCta,visualDirection}]}.\nfacebook: {mainReleasePost,shortReleasePost,emotionalStoryPost,engagementQuestions[],ctaOptions[],hashtags[],reels:[EXACTLY ${shortCount} objects {reelNumber,creativeAngle,openingHook,caption,hashtags[],engagementPrompt,fullSongCta}]}.\ninstagram: {feedCaption,shortCaption,storyTextIdeas[],ctaOptions[],hashtags[],reels:[EXACTLY ${shortCount} objects {reelNumber,creativeAngle,openingHook,caption,hashtags[],fullSongCta,visualDirection}]}.\ntiktok: {posts:[EXACTLY ${shortCount} objects {postNumber,creativeAngle,lyricMoment,openingHook,caption,hashtags[],commentPrompt,fullSongCta,visualDirection}]}.\n\nMake each platform native rather than duplicating identical copy. Use exact lyric moments only when they occur in the supplied lyrics.`;
 
     const response=await openai.responses.create({model:"gpt-5.6-luna",input:[{role:"system",content:socialDnaInstructions+'\nYou are the campaign brain for an independent music release. Produce valid JSON only and follow exact counts. Active Channel DNA is authoritative for branding, publishing style, titles, descriptions, credits, hashtags, tags and platform policy. Never substitute a generic or parent brand for the active channel.'},{role:"user",content:prompt}],text:{format:{type:"json_object"}}});
     const raw=response.output_text?.trim();
@@ -74,8 +92,21 @@ export async function POST(request: Request) {
     const dnaPublishing=channelContext.dna.sections.publishing.fields;
     const releaseDetails={releaseType:"Official Music Video",artistBrand:channelContext.channelName,lyricsCredit:"",compositionCredit:"",producerCredit:"",preferredPlaylist:"",includeAiDisclosure:false,aiDisclosureDetails:"",descriptionLinks:""};
     const credits=dnaPublishing.credits||"";
-    const fullDescription=str(yf.fullDescription);
+    const fullDescription=cleanCreativeDescription(str(yf.fullDescription),[
+      song.title,
+      song.english_title||"",
+      channelContext.channelName,
+      `${channelContext.channelName} Original.`,
+      credits,
+      ...String(credits).split("\n"),
+    ]);
     const youtubeFull={generatorGuidance,releaseDetails,recommendedTitle:str(yf.recommendedTitle,100),whyRecommended:str(yf.whyRecommended),alternativeTitles:strings(yf.alternativeTitles,4),thumbnailTextOptions:strings(yf.thumbnailTextOptions,3),openingDescription:str(yf.openingDescription),fullDescription,finalDescription:[fullDescription,credits].filter(Boolean).join("\n\n"),credits,aiDisclosure:"",hashtags:strings(yf.hashtags,30),tags:strings(yf.tags,40),seoKeywords:strings(yf.seoKeywords,30),pinnedComment:str(yf.pinnedComment),alternativePinnedComment:str(yf.alternativePinnedComment),communityPost:str(yf.communityPost),informalCommunityPost:str(yf.informalCommunityPost),releasePost:str(yf.releasePost),playlistSuggestion:str(yf.playlistSuggestion),strongestLyricLines:strings(yf.strongestLyricLines,10),ctaOptions:strings(yf.ctaOptions,10),shortsBridgeCopy:str(yf.shortsBridgeCopy),filenameSuggestion:str(yf.filenameSuggestion,160),uploadChecklist:strings(yf.uploadChecklist,20)};
+    if(!youtubeFull.recommendedTitle)throw new Error("AI did not return a recommended title.");
+    if(!hasNativeTitleScript(youtubeFull.recommendedTitle,song.language))throw new Error("AI did not return the song title in the native script.");
+    if(wordCount(youtubeFull.fullDescription)<100)throw new Error("AI returned a description that is too short for YouTube Full.");
+    if(youtubeFull.hashtags.length<5)throw new Error("AI did not return enough song-specific discovery hashtags.");
+    if(youtubeFull.tags.length<15)throw new Error("AI did not return enough useful YouTube search tags.");
+    if(youtubeFull.alternativeTitles.length<3)throw new Error("AI did not return enough alternative titles.");
     const youtubeShorts={generatorGuidance,shorts:arr(ys.shorts,shortCount)};
     const facebook={...fb,generatorGuidance,reels:arr(fb.reels,shortCount)};
     const instagram={...ig,generatorGuidance,reels:arr(ig.reels,shortCount)};

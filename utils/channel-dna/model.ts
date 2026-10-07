@@ -8,9 +8,9 @@ export const FIELDS = {
   core: ['purpose', 'tone', 'audience', 'languagePhilosophy', 'culturalDirection'],
   musical: ['genres', 'vocals', 'instrumentation', 'arrangement', 'production', 'pronunciation', 'experimentation'],
   visual: ['brandText', 'typography', 'colours', 'direction', 'thumbnail', 'watermark', 'subtitles', 'intro', 'outro'],
-  publishing: ['titleTemplate', 'descriptionTemplate', 'credits', 'fixedHashtags', 'userFixedHashtags', 'tags', 'category', 'links', 'shortTitleTemplate', 'shortDescriptionTemplate', 'footer', 'defaultPlaylistIds', 'shortPlaylistIds', 'privacyStatus', 'defaultLanguage', 'destinationIds', 'relatedVideoPolicy'],
+  publishing: ['titleTemplate', 'descriptionTemplate', 'credits', 'fixedHashtags', 'userFixedHashtags', 'tags', 'category', 'links', 'shortTitleTemplate', 'shortDescriptionTemplate', 'footer', 'defaultPlaylistIds', 'shortPlaylistIds', 'privacyStatus', 'defaultLanguage', 'destinationIds', 'relatedVideoPolicy', 'instagramFullSongCta', 'tiktokFullSongCta', 'facebookFullSongCta', 'youtubeShortsCta', 'youtubeShortsFallbackCta', 'youtubeFullCta'],
 } as const;
-export const OPTIONAL_PUBLISHING_FIELDS = ['shortTitleTemplate','shortDescriptionTemplate','footer','defaultPlaylistIds','shortPlaylistIds','privacyStatus','defaultLanguage','destinationIds','relatedVideoPolicy'] as const;
+export const OPTIONAL_PUBLISHING_FIELDS = ['shortTitleTemplate','shortDescriptionTemplate','footer','defaultPlaylistIds','shortPlaylistIds','privacyStatus','defaultLanguage','destinationIds','relatedVideoPolicy','instagramFullSongCta','tiktokFullSongCta','facebookFullSongCta','youtubeShortsCta','youtubeShortsFallbackCta','youtubeFullCta'] as const;
 export const LABELS: Record<Section, string> = { core: 'Core Identity', musical: 'Musical Identity', visual: 'Visual Identity / Brand Kit', publishing: 'Publishing Identity' };
 export type BrandingPosition = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-centre' | 'bottom-right';
 export type TitlePosition = 'upper-centre' | 'centre' | 'lower-centre';

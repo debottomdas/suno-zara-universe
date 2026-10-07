@@ -1,111 +1,9 @@
 import {applyChannelPublishing} from '@/utils/channel-dna/social';
 import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
-import {channelInstructions} from '@/utils/channel-dna/instructions';
 import {saveSocialPack} from '@/utils/social/persistence';
+import {buildYouTubeCredits,buildFinalYouTubeDescription,generateYouTubeFullPack} from '@/utils/social/youtube-full-generator';
 import { NextResponse } from "next/server";
-import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
-
-type YouTubeFullPack = {
-  generatorGuidance: string;
-  releaseDetails: {
-    releaseType: string;
-    artistBrand: string;
-    lyricsCredit: string;
-    compositionCredit: string;
-    producerCredit: string;
-    preferredPlaylist: string;
-    includeAiDisclosure: boolean;
-    aiDisclosureDetails: string;
-    descriptionLinks: string;
-  };
-  recommendedTitle: string;
-  whyRecommended: string;
-  alternativeTitles: string[];
-  thumbnailTextOptions: string[];
-  openingDescription: string;
-  fullDescription: string;
-  finalDescription: string;
-  credits: string;
-  aiDisclosure: string;
-  hashtags: string[];
-  tags: string[];
-  seoKeywords: string[];
-  pinnedComment: string;
-  alternativePinnedComment: string;
-  communityPost: string;
-  informalCommunityPost: string;
-  releasePost: string;
-  playlistSuggestion: string;
-  strongestLyricLines: string[];
-  ctaOptions: string[];
-  shortsBridgeCopy: string;
-  filenameSuggestion: string;
-  uploadChecklist: string[];
-};
-
-function buildYouTubeCredits(releaseDetails: {
-  artistBrand: string;
-  lyricsCredit: string;
-  compositionCredit: string;
-  producerCredit: string;
-}) {
-  return [
-    releaseDetails.artistBrand
-      ? `Artist / Brand: ${releaseDetails.artistBrand}`
-      : "",
-    releaseDetails.lyricsCredit,
-    releaseDetails.compositionCredit,
-    releaseDetails.producerCredit,
-  ]
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-function buildFinalYouTubeDescription({
-  creativeDescription,
-  credits,
-  aiDisclosure,
-  descriptionLinks,
-}: {
-  creativeDescription: string;
-  credits: string;
-  aiDisclosure: string;
-  descriptionLinks: string;
-}) {
-  const sections = [
-    creativeDescription.trim(),
-
-    credits.trim()
-      ? `Credits\n${credits.trim()}`
-      : "",
-
-    aiDisclosure.trim()
-      ? `AI / Production Disclosure\n${aiDisclosure.trim()}`
-      : "",
-
-    descriptionLinks.trim()
-      ? `Listen / Follow\n${descriptionLinks.trim()}`
-      : "",
-  ].filter(Boolean);
-
-  return sections.join("\n\n");
-}
-
-function cleanStringArray(value: unknown, maxItems: number) {
-  if (!Array.isArray(value)) return [];
-
-  return value
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean)
-    .slice(0, maxItems);
-}
 
 export async function GET(request: Request) {
   try {
@@ -255,7 +153,7 @@ export async function PATCH(request: Request) {
 
     const { data: song, error: songError } = await supabase
       .from("songs")
-      .select("id")
+      .select("id,channel_id")
       .eq("id", projectId)
       .eq("user_id", user.id)
       .single();
@@ -266,6 +164,12 @@ export async function PATCH(request: Request) {
         { status: 404 }
       );
     }
+
+    const channelContext = await resolveActiveChannelDNA(
+      supabase,
+      user.id,
+      song.channel_id
+    );
 
     const rawReleaseDetails =
       youtubeFull.releaseDetails &&
@@ -326,6 +230,8 @@ export async function PATCH(request: Request) {
         aiDisclosure: savedAiDisclosure,
         descriptionLinks:
           savedReleaseDetails.descriptionLinks,
+        cta: channelContext.dna?.sections.publishing.fields.youtubeFullCta ||
+          "❤️ Enjoyed the song? Subscribe for more Suno Zara originals.",
       });
 
     const cleanedPack = {
@@ -548,6 +454,7 @@ export async function POST(request: Request) {
         channel_id,
         id,
         title,
+        english_title,
         idea,
         language,
         script,
@@ -580,390 +487,12 @@ export async function POST(request: Request) {
     }
 
     const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
-    const dnaInstructions = channelInstructions(channelContext,'social');
-    releaseDetails.artistBrand=channelContext.channelName;
-    if(channelContext.dna?.sections.publishing.fields.links)releaseDetails.descriptionLinks=channelContext.dna.sections.publishing.fields.links;
-    const systemPrompt = `
-You are a senior YouTube music release strategist, metadata writer,
-copywriter and audience-development specialist.
-
-Create a COMPLETE YouTube Full Song release package for one original song.
-
-Everything must be specific to the supplied song.
-
-Analyse:
-- title
-- full lyrics
-- selected hook
-- language
-- mood
-- genre
-- cultural context
-- listener emotion
-- likely search behaviour
-
-RULES:
-
-1. Recommended title must balance emotional appeal,
-   readability, song identity and discoverability.
-
-2. Never keyword-stuff.
-
-3. Every YouTube title must stay below 100 characters.
-
-4. Alternative titles must genuinely differ.
-
-5. Thumbnail text should normally be 2 to 6 words.
-
-6. The opening description must be strong because it appears
-   before "Show more".
-
-7. Full description must sound human, not SEO spam.
-
-8. Hashtags and tags must be relevant.
-
-9. Tags must NOT contain # symbols.
-
-10. Strongest lyric lines must be copied from the supplied lyrics.
-    Never invent lyric lines.
-
-11. Pinned comments should invite genuine conversation.
-
-12. Never invent singers, collaborators or record labels.
-
-13. AI disclosure is optional suggested wording only.
-    Keep it neutral and concise.
-
-14. Filename must be filesystem-friendly.
-
-15. Adapt the writing style to the song language and audience.
-
-Return ONLY valid JSON in exactly this structure:
-
-{
-  "recommendedTitle": "",
-  "whyRecommended": "",
-  "alternativeTitles": ["", "", "", ""],
-  "thumbnailTextOptions": ["", "", ""],
-  "openingDescription": "",
-  "fullDescription": "",
-  "credits": "",
-  "aiDisclosure": "",
-  "hashtags": [],
-  "tags": [],
-  "seoKeywords": [],
-  "pinnedComment": "",
-  "alternativePinnedComment": "",
-  "communityPost": "",
-  "informalCommunityPost": "",
-  "releasePost": "",
-  "playlistSuggestion": "",
-  "strongestLyricLines": [],
-  "ctaOptions": [],
-  "shortsBridgeCopy": "",
-  "filenameSuggestion": "",
-  "uploadChecklist": []
-}
-`.trim();
-
-    const userPrompt = `
-${dnaInstructions}
-
-Create the complete YouTube Full Song release package for this song.
-
-TITLE:
-${song.title || "Untitled"}
-
-IDEA:
-${song.idea || "Not specified"}
-
-LANGUAGE:
-${song.language || "Not specified"}
-
-SCRIPT:
-${song.script || "Not specified"}
-
-MOOD:
-${song.mood || "Not specified"}
-
-GENRE:
-${song.genre || "Not specified"}
-
-CREATIVE FREEDOM:
-${song.freedom ?? "Not specified"}
-
-SELECTED HOOK:
-${song.selected_hook || "Not specified"}
-
-FULL LYRICS:
-${song.lyrics}
-
-OPTIONAL CREATOR DIRECTION FOR THIS YOUTUBE RELEASE:
-
-${
-  generatorGuidance ||
-  "No additional direction supplied. Use your best judgement."
-}
-
-FACTUAL RELEASE DETAILS:
-
-Release type:
-${releaseDetails.releaseType || "Not specified"}
-
-Artist / Brand:
-${releaseDetails.artistBrand || "Not specified"}
-
-Lyrics credit:
-${releaseDetails.lyricsCredit || "Not specified"}
-
-Music / Composition credit:
-${releaseDetails.compositionCredit || "Not specified"}
-
-Producer credit:
-${releaseDetails.producerCredit || "Not specified"}
-
-Preferred playlist:
-${releaseDetails.preferredPlaylist || "Not specified"}
-
-AI / synthetic-media disclosure requested:
-${releaseDetails.includeAiDisclosure ? "Yes" : "No"}
-
-AI usage details supplied by creator:
-${releaseDetails.aiDisclosureDetails || "Not specified"}
-
-Description / streaming / social links:
-${releaseDetails.descriptionLinks || "Not specified"}
-
-IMPORTANT FACTUAL RULES:
-
-- These release details are creator-supplied facts.
-- Never invent or replace credits.
-- Never invent collaborators.
-- Never invent links.
-- Never claim a playlist exists if none was supplied.
-- If a preferred playlist is supplied, use that exact playlist name.
-- If no preferred playlist is supplied, you may suggest a playlist
-  CATEGORY, but clearly describe it as a suggestion.
-- If AI disclosure is set to No, aiDisclosure MUST be an empty string.
-- If AI disclosure is set to Yes, base the disclosure ONLY on the
-  supplied AI usage details.
-- Omit unspecified credit lines rather than writing "Not specified".
-- Do NOT put credits, AI disclosure, playlist information or
-  description links inside fullDescription.
-- fullDescription should contain only the creative/promotional
-  song description.
-- The application will add factual release information separately.
-- Release type may be used in title/description where natural,
-  but do not force it unnecessarily.
-
-Treat creator direction as important release-specific guidance,
-while still keeping all metadata truthful and relevant to the song.
-
-Generate:
-
-- 1 recommended title
-- explanation of why it is recommended
-- 4 alternative titles
-- 3 thumbnail text options
-- strong opening description
-- complete YouTube description
-- clean credits block
-- optional AI / synthetic-production disclosure
-- relevant hashtags
-- searchable YouTube tags
-- SEO keyword ideas
-- primary pinned comment
-- alternative pinned comment
-- Community post
-- informal Community post
-- short release announcement
-- playlist suggestion
-- 5 to 10 strongest exact lyric lines
-- natural CTA options
-- Shorts-to-full-song bridge copy
-- clean MP4 filename suggestion
-- practical upload checklist
-
-Do not invent lyric lines.
-Do not invent collaborators.
-Do not use generic filler.
-`.trim();
-
-    const response = await openai.responses.create({
-      model: "gpt-5.6-luna",
-      input: [
-        {
-          role: "system",
-          content: systemPrompt,
-        },
-        {
-          role: "user",
-          content: userPrompt,
-        },
-      ],
-      text: {
-        format: {
-          type: "json_object",
-        },
-      },
-    });
-
-    const raw = response.output_text?.trim();
-
-    if (!raw) {
-      throw new Error("No response received from AI.");
-    }
-
-    let parsed: Partial<YouTubeFullPack>;
-
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error("AI returned invalid JSON.");
-    }
-
-    const deterministicCredits =
-      channelContext.dna?.sections.publishing.fields.credits || buildYouTubeCredits(releaseDetails);
-
-    const deterministicAiDisclosure =
-      releaseDetails.includeAiDisclosure
-        ? releaseDetails.aiDisclosureDetails
-        : "";
-
-    const creativeDescription =
-      typeof parsed.fullDescription === "string"
-        ? parsed.fullDescription.trim()
-        : "";
-
-    const finalDescription =
-      buildFinalYouTubeDescription({
-        creativeDescription,
-        credits: deterministicCredits,
-        aiDisclosure: deterministicAiDisclosure,
-        descriptionLinks:
-          releaseDetails.descriptionLinks,
-      });
-
-    const youtubeFull: YouTubeFullPack = {
+    const {youtubeFull} = await generateYouTubeFullPack({
+      song,
+      channelContext,
       generatorGuidance,
       releaseDetails,
-
-      recommendedTitle:
-        typeof parsed.recommendedTitle === "string"
-          ? parsed.recommendedTitle.trim().slice(0, 100)
-          : "",
-
-      whyRecommended:
-        typeof parsed.whyRecommended === "string"
-          ? parsed.whyRecommended.trim()
-          : "",
-
-      alternativeTitles: cleanStringArray(
-        parsed.alternativeTitles,
-        4
-      ).map((title) => title.slice(0, 100)),
-
-      thumbnailTextOptions: cleanStringArray(
-        parsed.thumbnailTextOptions,
-        3
-      ),
-
-      openingDescription:
-        typeof parsed.openingDescription === "string"
-          ? parsed.openingDescription.trim()
-          : "",
-
-      fullDescription: creativeDescription,
-
-      finalDescription,
-
-      credits: deterministicCredits,
-
-      aiDisclosure: deterministicAiDisclosure,
-
-      hashtags: cleanStringArray(parsed.hashtags, 15),
-
-      tags: cleanStringArray(parsed.tags, 30),
-
-      seoKeywords: cleanStringArray(
-        parsed.seoKeywords,
-        20
-      ),
-
-      pinnedComment:
-        typeof parsed.pinnedComment === "string"
-          ? parsed.pinnedComment.trim()
-          : "",
-
-      alternativePinnedComment:
-        typeof parsed.alternativePinnedComment === "string"
-          ? parsed.alternativePinnedComment.trim()
-          : "",
-
-      communityPost:
-        typeof parsed.communityPost === "string"
-          ? parsed.communityPost.trim()
-          : "",
-
-      informalCommunityPost:
-        typeof parsed.informalCommunityPost === "string"
-          ? parsed.informalCommunityPost.trim()
-          : "",
-
-      releasePost:
-        typeof parsed.releasePost === "string"
-          ? parsed.releasePost.trim()
-          : "",
-
-      playlistSuggestion:
-        releaseDetails.preferredPlaylist ||
-        (typeof parsed.playlistSuggestion === "string"
-          ? parsed.playlistSuggestion.trim()
-          : ""),
-
-      strongestLyricLines: cleanStringArray(
-        parsed.strongestLyricLines,
-        10
-      ),
-
-      ctaOptions: cleanStringArray(
-        parsed.ctaOptions,
-        6
-      ),
-
-      shortsBridgeCopy:
-        typeof parsed.shortsBridgeCopy === "string"
-          ? parsed.shortsBridgeCopy.trim()
-          : "",
-
-      filenameSuggestion:
-        typeof parsed.filenameSuggestion === "string"
-          ? parsed.filenameSuggestion.trim()
-          : "",
-
-      uploadChecklist: cleanStringArray(
-        parsed.uploadChecklist,
-        20
-      ),
-    };
-
-    if (!youtubeFull.recommendedTitle) {
-      throw new Error(
-        "AI did not return a recommended title."
-      );
-    }
-
-    if (!youtubeFull.fullDescription) {
-      throw new Error(
-        "AI did not return a full description."
-      );
-    }
-
-    if (youtubeFull.alternativeTitles.length < 3) {
-      throw new Error(
-        "AI did not return enough alternative titles."
-      );
-    }
+    });
 
     const { error: saveError } = await saveSocialPack(supabase,user.id,projectId,{
           song_id: song.id,

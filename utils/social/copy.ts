@@ -4,7 +4,7 @@ export type CopyValue=Record<string,any>;
 export type CopyVersion={id:string;createdAt:string;source:'existing'|'edited'|'generated';approved:boolean;value:CopyValue};
 export type CopyEntry={currentVersionId?:string;versions:CopyVersion[]};
 export const collection=(platform:Platform)=>platform==='youtube_shorts'?'shorts':platform==='tiktok'?'posts':['instagram','facebook'].includes(platform)?'reels':null;
-const excluded=new Set(['_copyReview','generatorGuidance','shortNumber','reelNumber','postNumber','shorts','reels','posts']);
+const excluded=new Set(['_copyReview','generatorGuidance','shortNumber','reelNumber','postNumber','shorts','reels','posts','channelId','dnaRevision','categoryId','privacyStatus','defaultLanguage','destinationIds','playlistIds','playlistApplication','relatedVideo','_channelPublishing','_channelPublishingFields','releaseDetails']);
 export function copyFields(value:CopyValue):CopyValue{return Object.fromEntries(Object.entries(value||{}).filter(([k,v])=>!excluded.has(k)&&!k.startsWith('_')&&(typeof v==='string'||Array.isArray(v)||v&&typeof v==='object')));}
 export function target(pack:CopyValue,key:string):CopyValue{
  if(key==='root')return copyFields(pack);

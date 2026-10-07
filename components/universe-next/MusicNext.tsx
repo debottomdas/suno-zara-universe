@@ -217,6 +217,8 @@ function ExistingProjectStage({stage,song,channelId,assets,loading,complete,onBa
  const [selectedConceptId,setSelectedConceptId]=useState('');
  const [visualDirection,setVisualDirection]=useState('');
  const projectId=song?.id||'';
+ const socialCopy={youtube_full:assets.social.youtubeFull?.youtubeFull,youtube_shorts:assets.social.youtubeShorts?.youtubeShorts,...(assets.social.platform||{})};
+ const hasSocialPack=missingCopy(socialCopy).length<missingCopy(null).length;
  const header=<div className={s.pageBackRow}><button className={s.backButton} onClick={onBack}>← Back</button>{complete&&<span className={s.stageComplete}>✓ {stage} complete</span>}</div>;
 
  useEffect(()=>{
@@ -415,7 +417,7 @@ function ExistingProjectStage({stage,song,channelId,assets,loading,complete,onBa
   try{
    setBusy('social');setActionError('');setMessage('Universe is preparing one coordinated campaign across YouTube, Instagram, Facebook and TikTok…');
    const r=await fetch('/api/campaign-plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({projectId,force})});const d=await r.json();if(!r.ok)throw new Error(d.error||'Could not prepare the social pack.');
-   setMessage(d.cached?'✓ Existing social pack loaded':'✓ Missing Social copy generated and saved');setSocialRefresh(v=>v+1);onRefresh();
+   setMessage(d.cached?'✓ Existing social pack loaded':hasSocialPack?'✓ Missing Social copy generated and saved':'✓ Social copy generated and saved');setSocialRefresh(v=>v+1);onRefresh();
   }catch(e){setActionError(e instanceof Error?e.message:'Could not prepare social content.')}finally{setBusy('')}
  }
 
@@ -434,7 +436,7 @@ function ExistingProjectStage({stage,song,channelId,assets,loading,complete,onBa
 
  if(stage==='Visuals'||stage==='Video & Shorts')return <><CreativeStudio key={projectId} projectId={projectId} title={song?.title||song?.idea||'Untitled song'} lyrics={song?.lyrics||''} stage={stage} assets={assets} onNavigate={onContinue} onRefresh={onRefresh} onContinue={()=>onContinue(stage==='Visuals'?'Video & Shorts':'Social')}/></>;
 
- if(stage==='Social')return <section className={`${s.card} ${s.tabPanel}`}>{header}<div className={s.eyebrow}>Social · release copy</div><h2>Prepare your Social copy</h2><p>Write or paste your own copy below, or let Universe prepare what is missing from your title, language, description and optional lyrics. Saved copy and reviewed edits are preserved.</p><button className={s.gradientButton} disabled={busy==='social'} onClick={()=>void prepareSocial(false)}>{busy==='social'?'Preparing missing copy…':'Generate missing copy with Universe'}</button><SocialCopyEditor key={`${projectId}:${channelId}:${socialRefresh}`} projectId={projectId} channelId={channelId} onSaved={onRefresh}/>{feedback}{complete&&continueFooter}</section>;
+ if(stage==='Social')return <section className={`${s.card} ${s.tabPanel}`}>{header}<div className={s.eyebrow}>Social · release copy</div><h2>Prepare your Social copy</h2><p>Write or paste your own copy below, or let Universe prepare what is missing from your title, language, description and optional lyrics. Saved copy and reviewed edits are preserved.</p><button className={s.gradientButton} disabled={busy==='social'} onClick={()=>void prepareSocial(false)}>{busy==='social'?(hasSocialPack?'Preparing missing copy…':'Generating Social Copy…'):(hasSocialPack?'Generate Missing Copy with Universe':'Generate Social Copy with Universe')}</button><SocialCopyEditor key={`${projectId}:${channelId}:${socialRefresh}`} projectId={projectId} channelId={channelId} onSaved={onRefresh}/>{feedback}{complete&&continueFooter}</section>;
 
  if(stage==='Publish'){
   const jobs=Array.isArray(assets.campaign?.jobs)?assets.campaign.jobs:[];
