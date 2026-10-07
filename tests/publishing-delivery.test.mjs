@@ -110,3 +110,12 @@ test('retry reconciliation never clears another asset version or a delivered res
   {itemKey:'youtube-full',assetVersion:'v2',status:'submitting',reconciliation:{state:'delivered',resolvedAt:'2026-10-07T12:00:00.000Z'}},
  ]) assert.throws(()=>executor.assertDeliveryHistory([row],{canonicalReceipts:[receipt]}),/needs reconciliation/);
 });
+
+
+test('YouTube worker handoff carries immutable receipt identity before the upload response returns',()=>{
+ const approve=fs.readFileSync(path.join(root,'app/api/publishing/plan/approve/route.ts'),'utf8');
+ const worker=fs.readFileSync(path.join(root,'local-worker/full-video-worker.mjs'),'utf8');
+ assert.match(approve,/assetVersion:row\.asset\.version,channelId:row\.destination\.id,channelName:row\.destination\.name/);
+ assert.match(worker,/assetVersion: String\(body\.assetVersion \|\| ""\)\.trim\(\) \|\| undefined/);
+ assert.match(worker,/channelId: String\(body\.channelId \|\| ""\)\.trim\(\) \|\| undefined/);
+});
