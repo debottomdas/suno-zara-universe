@@ -47,7 +47,7 @@ export async function POST(req:Request){let lock='',acquired=false;try{
   if(!/^[A-Za-z0-9_-]{11}$/.test(long?.videoId||''))throw Error('The corresponding long video ID is unavailable. Shorts were stopped.');
   relatedVideo={...related,youtubeVideoId:long.videoId,method:'youtube-studio',status:'needs-studio-link-after-long-is-public-or-unlisted'};
  }
- const base={...old,...(relatedVideo?{relatedVideo}:{}),itemKey,slot:slot||1,kind,platform:row.destination.platform,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,status:'submitting'};
+ const base={...old,...(relatedVideo?{relatedVideo}:{}),itemKey,slot:slot||1,kind,platform:row.destination.platform,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,status:'submitting',reconciliation:undefined};
  await worker(receiptPath,{projectId,receipt:base});
  // An interrupted attempt stays submitting. A retry must reconcile provider state,
  // rather than treating an unknown outcome as permission to create a duplicate.
@@ -79,7 +79,7 @@ export async function POST(req:Request){let lock='',acquired=false;try{
    if(!pending.length)continue;
    let media:any;
    if(!reuse){const info=await worker(`/publishing/file-info?projectId=${encodeURIComponent(projectId)}&kind=short&slot=${slot}`);const session=await call(stageSession,{projectId,slot,originalFilename:info.filename,mimeType:info.mimeType,sizeBytes:info.sizeBytes});await worker('/publish/buffer/stage',{projectId,slot,signedUploadUrl:session.upload.signedUploadUrl});const opened=await call(stageComplete,{projectId,storagePath:session.upload.storagePath});media={storagePath:session.upload.storagePath,mediaUrl:opened.mediaUrl};}
-   const prepared=pending.map(row=>{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));return {row,receipt:{...old,...(reuse?{}:{...media,postId:undefined}),itemKey:keyFor(row),slot,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,publishMode:'schedule',status:'submitting'}}});
+   const prepared=pending.map(row=>{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));return {row,receipt:{...old,...(reuse?{}:{...media,postId:undefined}),itemKey:keyFor(row),slot,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,publishMode:'schedule',status:'submitting',reconciliation:undefined}}});
    for(const p of prepared)await worker('/publishing/buffer/receipt',{projectId,receipt:p.receipt});
    const response=await call(reuse?bufferSchedule:bufferCreate,{projectId,items:prepared.map(({receipt:r})=>({slot,channelId:r.channelId,service:r.service,mediaUrl:r.mediaUrl,publishMode:'schedule',dueAt:r.dueAt,...(reuse?{postId:r.postId,itemKey:r.itemKey}:{})}))});
    let failed=false;
