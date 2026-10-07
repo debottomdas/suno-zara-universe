@@ -24,3 +24,14 @@ test('lifecycle mutation is channel and owner isolated',()=>{
  assert.match(lifecycle,/update\(\{project_state:projectState,updated_at:updatedAt\}\)/);
  assert.doesNotMatch(lifecycle,/status\s*:/);
 });
+
+const music=fs.readFileSync('components/universe-next/MusicNext.tsx','utf8');
+
+test('music UI exposes all lifecycle views and moves through isolated API',()=>{
+ assert.match(music,/Current/);
+ assert.match(music,/Future \/ Later/);
+ assert.match(music,/Completed/);
+ assert.match(music,/\/api\/songs\/lifecycle/);
+ assert.match(music,/projectState:next/);
+ assert.match(music,/visibleSongs/);
+});
