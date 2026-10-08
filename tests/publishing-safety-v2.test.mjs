@@ -151,3 +151,10 @@ test('resume reconciles uncertain Buffer receipts by exact post id before retry 
  assert.match(route,/resume\.actionable\.push\(row\)/);
  assert.match(route,/remaining\.push\(row\)/);
 });
+
+test('publishing approval returns structured actionable failure states',()=>{
+ const route=fs.readFileSync('app/api/publishing/plan/approve/route.ts','utf8');
+ for(const code of ['auth_required','provider_unavailable','destination_mismatch','local_service_unavailable','safe_failure','uncertain_outcome','validation_failed'])assert.match(route,new RegExp(code));
+ assert.match(route,/classifyPublishingError/);
+ assert.match(route,/code,retrySafe:/);
+});
