@@ -14,9 +14,11 @@ import {POST as stageComplete} from '@/app/api/publishing/buffer/stage-complete/
 import {POST as bufferCreate} from '@/app/api/publishing/buffer/create-posts-batch/route';
 import {POST as bufferPostStatus} from '@/app/api/publishing/buffer/post-status/route';
 import {POST as bufferSchedule} from '@/app/api/publishing/buffer/schedule-posts-batch/route';
+import {GET as bufferStatus} from '@/app/api/publishing/buffer/status/route';
 export const runtime='nodejs';
 export const maxDuration=300;
 const lockRoot=join(tmpdir(),'sunozara-publishing-locks');
+async function callGet(handler:(r:Request)=>Promise<Response>,url:string){const r=await handler(new Request(url));const d=await r.json();if(!r.ok)throw new Error(d.error||'Provider preflight failed.');return d;}
 async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok){const e=Object.assign(new Error(d.error||'Delivery stopped.'),{retrySafe:d.retrySafe===true});throw e;}return d;}
 export async function POST(req:Request){let lock='',acquired=false;try{
  const {plan,approved,madeForKids,containsSyntheticMedia,resumeCampaign}=await req.json();
@@ -31,6 +33,24 @@ export async function POST(req:Request){let lock='',acquired=false;try{
  // independent not-started publications can continue safely.
  const resume=resumeCampaign===true?resumeDeliveryRows(rows,state):{actionable:rows,skipped:[],unresolved:[]};
  rows=resume.actionable;
+ // Campaign-wide provider preflight must finish before any receipt write, media
+ // staging, upload session or external mutation begins.
+ const youtubeRows=rows.filter((r:any)=>r.destination.platform==='youtube');
+ if(youtubeRows.length){
+  const uniqueYoutube=[...new Set(youtubeRows.map((r:any)=>r.destination.id))];
+  if(uniqueYoutube.length!==1)throw Error('Publishing plan contains more than one YouTube destination.');
+  const probe=youtubeRows[0];
+  const info=await worker(`/publishing/file-info?projectId=${encodeURIComponent(projectId)}&kind=${probe.asset.slot?'short':'full'}&slot=${probe.asset.slot||1}`);
+  const verified=await call(youtubeSession,{projectId,kind:probe.asset.slot?'short':'full',slot:probe.asset.slot||1,...info,connectionId:probe.destination.id,privacyStatus:'private',publishAt:probe.dueAt,selfDeclaredMadeForKids:madeForKids===true,containsSyntheticMedia:containsSyntheticMedia!==false,preflightOnly:true});
+  if(verified.preflightVerified!==true)throw Error('YouTube destination could not be verified before publishing.');
+ }
+ const bufferRowsForPreflight=rows.filter((r:any)=>r.destination.platform!=='youtube');
+ if(bufferRowsForPreflight.length){
+  const status=await callGet(bufferStatus,`http://local/api?channelId=${encodeURIComponent(plan.channelId)}&refresh=1`);
+  const live=new Set((status.channels||[]).map((x:any)=>`${String(x.service).toLowerCase()}:${x.id}:${x.bufferAccountId||''}`));
+  const missing=bufferRowsForPreflight.filter((r:any)=>!live.has(`${r.destination.platform}:${r.destination.id}:${r.destination.accountId||''}`));
+  if(missing.length)throw Error(`Buffer destination preflight failed for: ${[...new Set(missing.map((r:any)=>r.destination.name||r.destination.platform))].join(', ')}. Nothing was published.`);
+ }
  assertDeliveryHistory(rows,state);
  for(const row of rows){const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));if(old?.status==='error'){const status=await call(bufferPostStatus,{projectId,postIds:[old.postId]});if(status.posts?.find((p:any)=>p.id===old.postId)?.status!=='error')throw Error('The provider no longer confirms a failed post. Refresh status before retrying.');}}
  const bufferRows:any[]=[];
