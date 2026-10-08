@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {snapshot,worker} from '@/utils/publishing/snapshot';
-import {executeApproved,assertDeliveryHistory,resumeDeliveryRows} from '@/utils/publishing/execute';
+import {executeApproved,assertDeliveryHistory,resumeDeliveryRows,preserveConfirmedDelivery} from '@/utils/publishing/execute';
 import {validatePlan} from '@/utils/publishing/plan';
 import {POST as youtubeSession} from '@/app/api/publishing/youtube/direct-session/route';
 import {POST as youtubeComplete} from '@/app/api/publishing/youtube/direct-complete/route';
@@ -82,10 +82,10 @@ export async function POST(req:Request){let lock='',acquired=false;try{
    let media:any;
    if(!reuse){const info=await worker(`/publishing/file-info?projectId=${encodeURIComponent(projectId)}&kind=short&slot=${slot}`);const session=await call(stageSession,{projectId,slot,originalFilename:info.filename,mimeType:info.mimeType,sizeBytes:info.sizeBytes});await worker('/publish/buffer/stage',{projectId,slot,signedUploadUrl:session.upload.signedUploadUrl});const opened=await call(stageComplete,{projectId,storagePath:session.upload.storagePath});media={storagePath:session.upload.storagePath,mediaUrl:opened.mediaUrl};}
    const prepared=pending.map(row=>{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));return {row,receipt:{...old,...(reuse?{}:{...media,postId:undefined}),itemKey:keyFor(row),slot,service:row.destination.platform,channelId:row.destination.id,channelName:row.destination.name,assetVersion:row.asset.version,timezone,localTime:row.localTime,dueAt:row.dueAt,publishMode:'schedule',status:'submitting',reconciliation:undefined}}});
-   for(const p of prepared)await worker('/publishing/buffer/receipt',{projectId,receipt:p.receipt});
+   for(const p of prepared){const old=state.canonicalReceipts.find((r:any)=>r.itemKey===p.receipt.itemKey);await worker('/publishing/buffer/receipt',{projectId,receipt:preserveConfirmedDelivery(old,p.receipt)});}
    const response=await call(reuse?bufferSchedule:bufferCreate,{projectId,items:prepared.map(({receipt:r})=>({slot,channelId:r.channelId,service:r.service,mediaUrl:r.mediaUrl,publishMode:'schedule',dueAt:r.dueAt,...(reuse?{postId:r.postId,itemKey:r.itemKey}:{})}))});
    let failed=false;
-   for(const p of prepared){const result=response.results?.find((x:any)=>x.channelId===p.receipt.channelId&&x.slot===slot);if(!result?.post?.id){failed=true;continue;}const confirmed=result.post.status==='scheduled'&&Date.parse(result.post.dueAt)===Date.parse(p.receipt.dueAt);if(!confirmed)failed=true;await worker('/publishing/buffer/receipt',{projectId,receipt:{...p.receipt,postId:result.post.id,status:confirmed?'scheduled':['error','failed','draft'].includes(result.post.status)?result.post.status:'submitting',externalLink:result.post.externalLink}});}
+   for(const p of prepared){const result=response.results?.find((x:any)=>x.channelId===p.receipt.channelId&&x.slot===slot);if(!result?.post?.id){failed=true;continue;}const confirmed=result.post.status==='scheduled'&&Date.parse(result.post.dueAt)===Date.parse(p.receipt.dueAt);if(!confirmed)failed=true;{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===p.receipt.itemKey);const next={...p.receipt,postId:result.post.id,status:confirmed?'scheduled':['error','failed','draft'].includes(result.post.status)?result.post.status:'submitting',externalLink:result.post.externalLink};await worker('/publishing/buffer/receipt',{projectId,receipt:preserveConfirmedDelivery(old,next)});}}
    if(failed)throw Error('Some provider outcomes need reconciliation. Successful receipts are saved; no uncertain post will be retried automatically.');
   }
  }
