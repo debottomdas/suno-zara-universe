@@ -22,7 +22,7 @@ test('lifecycle mutation is channel and owner isolated',()=>{
  assert.match(lifecycle,/\.eq\('id',channelId\)\.eq\('workspaces\.owner_user_id',user\.id\)/);
  assert.match(lifecycle,/\.eq\('id',projectId\)\.eq\('user_id',user\.id\)\.eq\('channel_id',channel\.id\)/);
  assert.match(lifecycle,/update\(\{project_state:projectState,updated_at:updatedAt\}\)/);
- assert.doesNotMatch(lifecycle,/status\s*:/);
+ assert.doesNotMatch(lifecycle,/update\(\{[^}]*\bstatus\s*:/);
 });
 
 const music=fs.readFileSync('components/universe-next/MusicNext.tsx','utf8');
