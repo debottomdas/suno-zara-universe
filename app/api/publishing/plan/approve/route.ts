@@ -64,6 +64,10 @@ export async function POST(req:Request){let lock='',acquired=false;try{
    if(decision.state==='retry_allowed'){
     const receipt={...old,status:decision.status,providerCheckedAt:resolvedAt,reconciliation:{state:'retry_allowed',resolvedAt,note:'Buffer explicitly confirmed a retry-safe state.'}};
     await worker('/publishing/buffer/receipt',{projectId,receipt});
+    // Keep the locked in-memory snapshot aligned with the persisted reconciliation.
+    // assertDeliveryHistory below must see the explicit retry permission we just earned.
+    const receiptIndex=state.canonicalReceipts.findIndex((r:any)=>r.itemKey===old.itemKey);
+    if(receiptIndex>=0)state.canonicalReceipts[receiptIndex]=receipt;
     resume.actionable.push(row);
     continue;
    }
