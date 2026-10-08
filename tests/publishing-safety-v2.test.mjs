@@ -130,3 +130,12 @@ test('YouTube completion verifies provider channel and schedule before saving pu
  const historyAt=route.indexOf('publishing_campaigns');
  assert.ok(verifyAt>=0&&historyAt>verifyAt);
 });
+
+test('Buffer reconciliation classifier is fail-closed and distinguishes confirmed delivery from safe retry',()=>{
+ const source=fs.readFileSync('utils/publishing/execute.ts','utf8');
+ assert.match(source,/classifyBufferReconciliation/);
+ assert.match(source,/\['scheduled','sent','published'\]\.includes\(status\)/);
+ assert.match(source,/\['error','failed','draft'\]\.includes\(status\)/);
+ assert.match(source,/state:'unresolved'/);
+ assert.match(source,/providerPost\.id!==receipt\.postId/);
+});
