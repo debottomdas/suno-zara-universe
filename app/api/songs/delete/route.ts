@@ -86,13 +86,26 @@ export async function DELETE(request: Request) {
       return NextResponse.json({ error: "projectId and channelId are required." }, { status: 400 });
     }
 
-    // Verify ownership using the signed-in user's session before using the admin client.
+    // Verify the selected channel belongs to the signed-in user's workspace before
+    // authorizing any project deletion or privileged admin cleanup.
+    const { data: ownedChannel, error: channelError } = await supabase
+      .from("channels")
+      .select("id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .single();
+
+    if (channelError || !ownedChannel) {
+      return NextResponse.json({ error: "The selected channel is not available." }, { status: 403 });
+    }
+
+    // Verify project ownership inside that already-authorized channel.
     const { data: ownedSong, error: songError } = await supabase
       .from("songs")
       .select("id, title, channel_id")
       .eq("id", projectId)
       .eq("user_id", user.id)
-      .eq("channel_id", channelId)
+      .eq("channel_id", ownedChannel.id)
       .single();
 
     if (songError || !ownedSong) {
