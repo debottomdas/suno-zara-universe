@@ -80,20 +80,39 @@ export async function DELETE(request: Request) {
 
     const body = await request.json().catch(() => ({}));
     const projectId = String(body.projectId || "").trim();
-    if (!projectId) {
-      return NextResponse.json({ error: "projectId is required." }, { status: 400 });
+    const channelId = String(body.channelId || "").trim();
+    const confirmation = String(body.confirmation || "").trim();
+    if (!projectId || !channelId) {
+      return NextResponse.json({ error: "projectId and channelId are required." }, { status: 400 });
     }
 
-    // Verify ownership using the signed-in user's session before using the admin client.
+    // Verify the selected channel belongs to the signed-in user's workspace before
+    // authorizing any project deletion or privileged admin cleanup.
+    const { data: ownedChannel, error: channelError } = await supabase
+      .from("channels")
+      .select("id, workspaces!inner(owner_user_id)")
+      .eq("id", channelId)
+      .eq("workspaces.owner_user_id", user.id)
+      .single();
+
+    if (channelError || !ownedChannel) {
+      return NextResponse.json({ error: "The selected channel is not available." }, { status: 403 });
+    }
+
+    // Verify project ownership inside that already-authorized channel.
     const { data: ownedSong, error: songError } = await supabase
       .from("songs")
-      .select("id, title")
+      .select("id, title, channel_id")
       .eq("id", projectId)
       .eq("user_id", user.id)
+      .eq("channel_id", ownedChannel.id)
       .single();
 
     if (songError || !ownedSong) {
-      return NextResponse.json({ error: "Song not found." }, { status: 404 });
+      return NextResponse.json({ error: "Song not found in the selected channel." }, { status: 404 });
+    }
+    if (confirmation !== ownedSong.title) {
+      return NextResponse.json({ error: "Type the exact project title to confirm permanent deletion." }, { status: 400 });
     }
 
     const admin = createAdminClient();
@@ -107,7 +126,9 @@ export async function DELETE(request: Request) {
       .eq("user_id", user.id);
     if (mediaError) throw new Error(`Could not inspect song media: ${mediaError.message}`);
 
-    // Delete children first to respect foreign keys.
+    // Explicitly clear project-owned rows that predate or do not rely on cascading FKs.
+    // Newer cascade-owned rows (production plan, creative workspace, Buffer staging ledger)
+    // are removed by the songs FK. AI usage intentionally survives with song_id set null.
     await deleteRows(admin, "publishing_jobs", projectId, user.id);
     await deleteRows(admin, "publishing_campaigns", projectId, user.id);
     await deleteRows(admin, "song_images", projectId, user.id);
@@ -124,7 +145,8 @@ export async function DELETE(request: Request) {
       .from("songs")
       .delete()
       .eq("id", projectId)
-      .eq("user_id", user.id);
+      .eq("user_id", user.id)
+      .eq("channel_id", channelId);
     if (deleteSongError) throw new Error(`Could not delete song: ${deleteSongError.message}`);
 
     // Remove all tracked local/Supabase media. Local file deletion succeeds when this route
@@ -155,6 +177,7 @@ export async function DELETE(request: Request) {
       deleted: true,
       projectId,
       title: ownedSong.title || "Untitled",
+      channelId,
       removedStorageObjects: removedSongMedia + removedImages,
       warnings,
     });
