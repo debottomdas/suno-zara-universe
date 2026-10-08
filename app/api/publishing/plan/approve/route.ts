@@ -68,6 +68,8 @@ export async function POST(req:Request){let lock='',acquired=false;try{
     // assertDeliveryHistory below must see the explicit retry permission we just earned.
     const receiptIndex=state.canonicalReceipts.findIndex((r:any)=>r.itemKey===old.itemKey);
     if(receiptIndex>=0)state.canonicalReceipts[receiptIndex]=receipt;
+    const allReceiptIndex=state.receipts?.findIndex?.((r:any)=>r.itemKey===old.itemKey&&r.assetVersion===old.assetVersion);
+    if(typeof allReceiptIndex==='number'&&allReceiptIndex>=0)state.receipts[allReceiptIndex]=receipt;
     resume.actionable.push(row);
     continue;
    }
