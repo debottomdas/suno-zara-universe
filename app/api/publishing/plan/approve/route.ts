@@ -18,8 +18,20 @@ import {GET as bufferStatus} from '@/app/api/publishing/buffer/status/route';
 export const runtime='nodejs';
 export const maxDuration=300;
 const lockRoot=join(tmpdir(),'sunozara-publishing-locks');
-async function callGet(handler:(r:Request)=>Promise<Response>,url:string){const r=await handler(new Request(url));const d=await r.json();if(!r.ok)throw new Error(d.error||'Provider preflight failed.');return d;}
-async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok){const e=Object.assign(new Error(d.error||'Delivery stopped.'),{retrySafe:d.retrySafe===true});throw e;}return d;}
+type PublishingErrorCode='auth_required'|'provider_unavailable'|'destination_mismatch'|'local_service_unavailable'|'safe_failure'|'uncertain_outcome'|'validation_failed';
+function classifyPublishingError(message:string,retrySafe=false):PublishingErrorCode{
+ const value=message.toLowerCase();
+ if(/sign in|oauth|authorization|reconnect|token|permission/.test(value))return 'auth_required';
+ if(/destination preflight failed|assigned channel|more than one youtube destination/.test(value))return 'destination_mismatch';
+ if(/local worker unavailable|127\.0\.0\.1|local service/.test(value))return 'local_service_unavailable';
+ if(/buffer|youtube|provider|rate.?limit|quota|temporarily unavailable/.test(value))return 'provider_unavailable';
+ if(retrySafe)return 'safe_failure';
+ if(/reconcil|uncertain|unknown|failed to fetch|network|timeout/.test(value))return 'uncertain_outcome';
+ return 'validation_failed';
+}
+function publishingError(message:string,retrySafe=false){return Object.assign(new Error(message),{retrySafe,code:classifyPublishingError(message,retrySafe)});}
+async function callGet(handler:(r:Request)=>Promise<Response>,url:string){const r=await handler(new Request(url));const d=await r.json();if(!r.ok)throw publishingError(d.error||'Provider preflight failed.');return d;}
+async function call(handler:(r:Request)=>Promise<Response>,body:any){const r=await handler(new Request('http://local/api',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));const d=await r.json();if(!r.ok)throw publishingError(d.error||'Delivery stopped.',d.retrySafe===true);return d;}
 export async function POST(req:Request){let lock='',acquired=false;try{
  const {plan,approved,madeForKids,containsSyntheticMedia,resumeCampaign}=await req.json();
  if(approved!==true)throw Error('Explicit creator approval is required.');
@@ -137,4 +149,4 @@ export async function POST(req:Request){let lock='',acquired=false;try{
   }
  }
  return NextResponse.json({scheduled:count,skipped:resume.skipped.length,unresolved:resume.unresolved.length});
- }catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Scheduling stopped. Check delivery status before retrying.'},{status:409});}finally{if(acquired)await rmdir(lock).catch(()=>{});}}
+ }catch(e){const message=e instanceof Error?e.message:'Scheduling stopped. Check delivery status before retrying.';const code=(e as Error & {code?:PublishingErrorCode;retrySafe?:boolean})?.code||classifyPublishingError(message,(e as any)?.retrySafe===true);return NextResponse.json({error:message,code,retrySafe:(e as any)?.retrySafe===true},{status:409});}finally{if(acquired)await rmdir(lock).catch(()=>{});}}
