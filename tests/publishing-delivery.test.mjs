@@ -184,3 +184,37 @@ test('resume classifier never treats an uncertain same-asset receipt as retry pe
  assert.equal(resume.actionable.length,1);
  assert.equal(resume.actionable[0].asset.slot,2);
 });
+
+test('resume restores provider-confirmed uncertain Buffer posts and never duplicates them',async()=>{
+ const prior=[
+  ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
+  {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
+  {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
+  {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
+ ];
+ const h=harness({receipts:prior,providerStatus:'scheduled'});
+ const response=await h.run(true,true);assert.equal(response.status,200);
+ const body=await response.json();assert.equal(body.scheduled,15);assert.equal(body.skipped,10);assert.equal(body.unresolved,0);
+ assert.equal(h.calls.filter(x=>x.name==='post-status').length,2);
+ assert.equal(h.calls.filter(x=>x.name==='direct-session'&&!x.body.preflightOnly).length,0);
+ assert.equal(h.calls.filter(x=>x.name==='create-posts-batch').flatMap(x=>x.body.items).length,15);
+ assert.ok(h.receipts.filter(r=>['buffer-instagram-short-01','buffer-tiktok-short-01'].includes(r.itemKey)).every(r=>r.status==='scheduled'&&r.reconciliation?.state==='delivered'));
+});
+
+test('resume allows exact Buffer retry only after provider explicitly confirms failure',async()=>{
+ const prior=[{itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'}];
+ const h=harness({receipts:prior,providerStatus:'error'});
+ h.plan.rows=h.plan.rows.filter(r=>r.key==='instagram:short-1');
+ const response=await h.run(true,true);assert.equal(response.status,200);
+ const body=await response.json();assert.equal(body.unresolved,0);
+ assert.equal(h.calls.filter(x=>x.name==='post-status').length,2);
+ assert.equal(h.calls.filter(x=>x.name==='schedule-posts-batch').length,1);
+ assert.equal(h.calls.filter(x=>x.name==='create-posts-batch').length,0);
+ assert.equal(h.calls.find(x=>x.name==='schedule-posts-batch').body.items[0].postId,'ig1');
+});
+
+test('provider-confirmed resume never invokes YouTube again for already confirmed Akele-shaped rows',async()=>{
+ const prior=Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'}));
+ const h=harness({receipts:prior});const response=await h.run(true,true);assert.equal(response.status,200);
+ assert.equal(h.calls.filter(x=>['direct-session','schedule','/publish/youtube'].includes(x.name)).length,0);
+});
