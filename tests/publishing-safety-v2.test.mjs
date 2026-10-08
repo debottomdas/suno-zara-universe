@@ -19,7 +19,7 @@ test('Buffer receipt writes preserve a prior confirmed provider result',()=>{
 
 test('Akele regression shape: confirmed work is skipped, uncertain work is unresolved, untouched work remains actionable',async()=>{
  const source=await import('../utils/publishing/execute.ts');
- const mk=(platform,id,slot)=>({asset:{version:'akele-v1',slot,label:slot?\`Short \${slot}\`:'Full'},destination:{platform,id,name:id}});
+ const mk=(platform,id,slot)=>({asset:{version:'akele-v1',slot,label:slot?`Short ${slot}`:'Full'},destination:{platform,id,name:id}});
  const rows=[
   mk('youtube','yt',0),...Array.from({length:6},(_,i)=>mk('youtube','yt',i+1)),
   ...['facebook','instagram','tiktok'].flatMap(p=>Array.from({length:6},(_,i)=>mk(p,p,i+1)))
