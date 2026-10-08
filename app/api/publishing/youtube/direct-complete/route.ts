@@ -106,6 +106,8 @@ export async function POST(request: Request) {
     if (!verifiedVideo?.id || clean(verifiedVideo?.snippet?.channelId) !== expectedChannelId) {
       throw new Error("Uploaded YouTube video could not be verified on the assigned channel.");
     }
+    const publishAt = clean(body.publishAt);
+    if (publishAt && !Number.isFinite(Date.parse(publishAt))) throw new Error("Invalid schedule.");
     const providerPublishAt = clean(verifiedVideo?.status?.publishAt);
     if (publishAt && (!providerPublishAt || Date.parse(providerPublishAt) !== Date.parse(publishAt) || verifiedVideo?.status?.privacyStatus !== "private")) {
       throw new Error("YouTube did not confirm the requested private schedule.");
@@ -116,8 +118,6 @@ export async function POST(request: Request) {
 
     const itemKey = kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`;
     const now = new Date().toISOString();
-    const publishAt = clean(body.publishAt);
-    if (publishAt && !Number.isFinite(Date.parse(publishAt))) throw new Error("Invalid schedule.");
     const url = `https://www.youtube.com/watch?v=${videoId}`;
 
     let campaignId = "";
