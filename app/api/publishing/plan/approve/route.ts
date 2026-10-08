@@ -4,7 +4,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {snapshot,worker} from '@/utils/publishing/snapshot';
-import {executeApproved,assertDeliveryHistory,resumeDeliveryRows,preserveConfirmedDelivery} from '@/utils/publishing/execute';
+import {executeApproved,assertDeliveryHistory,resumeDeliveryRows,preserveConfirmedDelivery,classifyBufferReconciliation} from '@/utils/publishing/execute';
 import {validatePlan} from '@/utils/publishing/plan';
 import {POST as youtubeSession} from '@/app/api/publishing/youtube/direct-session/route';
 import {POST as youtubeComplete} from '@/app/api/publishing/youtube/direct-complete/route';
@@ -31,7 +31,34 @@ export async function POST(req:Request){let lock='',acquired=false;try{
  const keyFor=(row:any)=>row.destination.platform==='youtube'?(row.asset.slot?`youtube-short-${String(row.asset.slot).padStart(2,'0')}`:'youtube-full'):`buffer-${row.destination.id}-short-${String(row.asset.slot).padStart(2,'0')}`;
  // Resume never replays confirmed work. Uncertain receipts stay untouched while
  // independent not-started publications can continue safely.
- const resume=resumeCampaign===true?resumeDeliveryRows(rows,state):{actionable:rows,skipped:[],unresolved:[]};
+ let resume=resumeCampaign===true?resumeDeliveryRows(rows,state):{actionable:rows,skipped:[],unresolved:[]};
+ // Resume reconciles uncertain Buffer receipts against the exact existing provider
+ // post before deciding whether that publication may be retried.
+ if(resumeCampaign===true){
+  const remaining:any[]=[];
+  for(const row of resume.unresolved){
+   const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));
+   if(row.destination.platform==='youtube'||!old?.postId){remaining.push(row);continue;}
+   const status=await call(bufferPostStatus,{projectId,postIds:[old.postId]});
+   const providerPost=status.posts?.find((p:any)=>p.id===old.postId);
+   const decision=classifyBufferReconciliation(old,providerPost);
+   const resolvedAt=new Date().toISOString();
+   if(decision.state==='delivered'){
+    const receipt={...old,status:decision.status,scheduledAt:decision.scheduledAt,publishedAt:decision.publishedAt,externalLink:decision.externalLink,providerCheckedAt:resolvedAt,reconciliation:{state:'delivered',resolvedAt,note:'Confirmed from Buffer before resume.'}};
+    await worker('/publishing/buffer/receipt',{projectId,receipt});
+    resume.skipped.push(row);
+    continue;
+   }
+   if(decision.state==='retry_allowed'){
+    const receipt={...old,status:decision.status,providerCheckedAt:resolvedAt,reconciliation:{state:'retry_allowed',resolvedAt,note:'Buffer explicitly confirmed a retry-safe state.'}};
+    await worker('/publishing/buffer/receipt',{projectId,receipt});
+    resume.actionable.push(row);
+    continue;
+   }
+   remaining.push(row);
+  }
+  resume={...resume,unresolved:remaining};
+ }
  rows=resume.actionable;
  // Campaign-wide provider preflight must finish before any receipt write, media
  // staging, upload session or external mutation begins.
