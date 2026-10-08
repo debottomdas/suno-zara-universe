@@ -182,7 +182,7 @@ export async function POST(request: Request) {
     const admin = createAdminClient();
     const { data: connection } = await admin
       .from("publishing_connections")
-      .select("id,scopes")
+      .select("id,scopes,external_account_id")
       .eq("user_id", user.id)
       .eq("platform", "youtube")
       .eq("status", "connected")
@@ -211,6 +211,31 @@ export async function POST(request: Request) {
     const expiry = credential.expires_at ? Date.parse(credential.expires_at) : 0;
     if (!accessToken || !Number.isFinite(expiry) || expiry < Date.now() + 90_000) {
       accessToken = await refreshAccessToken(admin, user.id, connection.id, credential as OAuthCredential);
+    }
+
+    // Hard preflight: prove the live OAuth identity is the exact YouTube channel
+    // assigned to this Universe channel before creating any upload session.
+    const expectedChannelId = clean(connection.external_account_id);
+    if (!expectedChannelId) {
+      return NextResponse.json({ error: "The saved YouTube connection has no channel identity. Reconnect YouTube before publishing.", retrySafe: true }, { status: 409 });
+    }
+    const identityUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+    identityUrl.searchParams.set("part", "id,snippet");
+    identityUrl.searchParams.set("mine", "true");
+    const identityResponse = await fetch(identityUrl, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!identityResponse.ok) {
+      throw new Error(await googleMessage(identityResponse, "Could not verify the connected YouTube channel"));
+    }
+    const identity = await identityResponse.json().catch(() => ({})) as any;
+    const liveChannelId = clean(identity?.items?.[0]?.id);
+    if (!liveChannelId || liveChannelId !== expectedChannelId) {
+      return NextResponse.json({
+        error: "Connected YouTube identity does not match this Suno Zara channel. Publishing stopped before upload.",
+        retrySafe: true,
+      }, { status: 409 });
     }
 
     const url = new URL("https://www.googleapis.com/upload/youtube/v3/videos");
