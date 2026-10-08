@@ -142,7 +142,7 @@ export async function POST(req:Request){let lock='',acquired=false;try{
   const fresh=await snapshot(projectId,plan.channelId);
   if(!fresh.ready||JSON.stringify(fresh.assets.map((a:any)=>a.version))!==JSON.stringify(state.assets.map((a:any)=>a.version))||JSON.stringify(fresh.social)!==JSON.stringify(state.social))throw Error('Release changed during scheduling. Remaining posts were stopped.');
   for(const reuse of [false,true]){
-   const pending=group.filter(row=>{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));return Boolean(old?.postId&&old.status!=='error')===reuse;});
+   const pending=group.filter(row=>{const old=state.canonicalReceipts.find((r:any)=>r.itemKey===keyFor(row));return Boolean(old?.postId&&(old.status!=='error'||old.reconciliation?.state==='retry_allowed'))===reuse;});
    if(!pending.length)continue;
    let media:any;
    if(!reuse){const info=await worker(`/publishing/file-info?projectId=${encodeURIComponent(projectId)}&kind=short&slot=${slot}`);const session=await call(stageSession,{projectId,slot,originalFilename:info.filename,mimeType:info.mimeType,sizeBytes:info.sizeBytes});await worker('/publish/buffer/stage',{projectId,slot,signedUploadUrl:session.upload.signedUploadUrl});const opened=await call(stageComplete,{projectId,storagePath:session.upload.storagePath});media={storagePath:session.upload.storagePath,mediaUrl:opened.mediaUrl};}
