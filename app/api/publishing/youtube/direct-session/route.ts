@@ -238,6 +238,10 @@ export async function POST(request: Request) {
       }, { status: 409 });
     }
 
+    if (body.preflightOnly === true) {
+      return NextResponse.json({ preflightVerified: true, channelId: liveChannelId });
+    }
+
     const url = new URL("https://www.googleapis.com/upload/youtube/v3/videos");
     url.searchParams.set("uploadType", "resumable");
     url.searchParams.set("part", "snippet,status");
