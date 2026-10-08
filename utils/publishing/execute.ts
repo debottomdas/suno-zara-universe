@@ -49,6 +49,14 @@ export function retryWasExplicitlyAllowed(receipt:any){
  return receipt?.reconciliation?.state==='retry_allowed'&&Boolean(receipt?.reconciliation?.resolvedAt);
 }
 
+export function classifyBufferReconciliation(receipt:any, providerPost:any){
+ if(!receipt?.postId||!providerPost||providerPost.id!==receipt.postId)return {state:'unresolved' as const};
+ const status=String(providerPost.status||'').toLowerCase();
+ if(['scheduled','sent','published'].includes(status))return {state:'delivered' as const,status,scheduledAt:providerPost.dueAt||receipt.scheduledAt||receipt.dueAt||null,publishedAt:providerPost.sentAt||receipt.publishedAt||null,externalLink:providerPost.externalLink||receipt.externalLink||null};
+ if(['error','failed','draft'].includes(status))return {state:'retry_allowed' as const,status};
+ return {state:'unresolved' as const,status:status||'unknown'};
+}
+
 export function deliveryReceiptKey(row:any){
  return row.destination.platform==='youtube'?(row.asset.slot?`youtube-short-${String(row.asset.slot).padStart(2,'0')}`:'youtube-full'):`buffer-${row.destination.id}-short-${String(row.asset.slot).padStart(2,'0')}`;
 }
