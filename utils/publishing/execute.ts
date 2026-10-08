@@ -88,7 +88,7 @@ export function assertDeliveryHistory(rows:any[],state:any){
  if(!old)continue;
  const sameAsset=old.assetVersion===row.asset.version;
  const retryAllowed=sameAsset&&retryWasExplicitlyAllowed(old);
- const ordinarilyRetryable=sameAsset&&(['draft','scheduled'].includes(old.status)||row.destination.platform!=='youtube'&&old.status==='error'&&old.providerCheckedAt&&old.postId);
+ const ordinarilyRetryable=sameAsset&&(old.status==='draft'||row.destination.platform!=='youtube'&&old.status==='error'&&old.providerCheckedAt&&old.postId);
  if(!retryAllowed&&!ordinarilyRetryable)throw Error(`${row.asset.label} already has previous delivery activity. Its asset version or outcome needs reconciliation before scheduling again. Open History; Universe will not create a duplicate.`);
  }
 }
