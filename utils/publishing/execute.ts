@@ -8,6 +8,38 @@ export async function executeApproved(plan:Plan,state:any,approved:boolean,deliv
  return rows.length;
 }
 
+
+const CONFIRMED_DELIVERY_STATUSES=new Set(['scheduled','sent','published']);
+
+// Provider-confirmed success is monotonic. A later network interruption or schedule
+// update may be uncertain, but it must never erase the last confirmed delivery fact.
+export function preserveConfirmedDelivery(previous:any,next:any){
+ if(!previous)return next;
+ const sameIdentity=previous.itemKey===next.itemKey&&previous.assetVersion===next.assetVersion;
+ const sameProviderObject=!previous.postId||!next.postId||previous.postId===next.postId;
+ if(sameIdentity&&sameProviderObject&&CONFIRMED_DELIVERY_STATUSES.has(previous.status)&&!CONFIRMED_DELIVERY_STATUSES.has(next.status)){
+  return {
+   ...next,
+   status:previous.status,
+   scheduledAt:previous.scheduledAt??next.scheduledAt,
+   publishedAt:previous.publishedAt??next.publishedAt,
+   postId:previous.postId??next.postId,
+   videoId:previous.videoId??next.videoId,
+   externalLink:previous.externalLink??next.externalLink,
+   lastConfirmedProviderState:{
+    status:previous.status,
+    confirmedAt:previous.providerCheckedAt||previous.updatedAt||previous.scheduledAt||previous.publishedAt||null,
+   },
+   pendingProviderOperation:{
+    attemptedStatus:next.status,
+    attemptedAt:new Date().toISOString(),
+    dueAt:next.dueAt??null,
+   },
+  };
+ }
+ return next;
+}
+
 export type ReconciliationState='retry_allowed'|'delivered';
 export type ReceiptReconciliation={state:ReconciliationState;resolvedAt:string;note?:string};
 
