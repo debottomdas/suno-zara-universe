@@ -71,3 +71,23 @@ test('YouTube tag normalization is whole-tag, ordered and case-insensitive de-du
  assert.match(route,/accepted\.push\(tag\)/);
  assert.doesNotMatch(route,/\.slice\(0,\s*YOUTUBE_TAG_BUDGET\)/);
 });
+
+test('YouTube upload session requires exact live provider identity first',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-session/route.ts','utf8');
+ assert.match(route,/select\("id,scopes,external_account_id"\)/);
+ assert.match(route,/youtube\/v3\/channels/);
+ assert.match(route,/searchParams\.set\("mine", "true"\)/);
+ assert.match(route,/liveChannelId !== expectedChannelId/);
+ assert.match(route,/Publishing stopped before upload/);
+ const identityAt=route.indexOf('identityResponse = await fetch');
+ const uploadAt=route.indexOf('providerSessionAttempted = true');
+ assert.ok(identityAt>=0&&uploadAt>identityAt);
+});
+
+test('YouTube identity mismatch is explicitly retry-safe and cannot create an upload session',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-session/route.ts','utf8');
+ const mismatch=route.indexOf('liveChannelId !== expectedChannelId');
+ const retrySafe=route.indexOf('retrySafe: true',mismatch);
+ const upload=route.indexOf('providerSessionAttempted = true');
+ assert.ok(mismatch>=0&&retrySafe>mismatch&&upload>retrySafe);
+});
