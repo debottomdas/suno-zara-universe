@@ -16,6 +16,7 @@ test('new and loaded projects expose lifecycle without replacing production stat
  assert.match(songs,/status: song\.status/);
  assert.match(songs,/projectState: song\.project_state \|\| "current"/);
  assert.match(songs,/status:'creating', project_state:'current'/);
+ assert.match(songs,/lyrics,status,project_state,hooks/);
 });
 
 test('lifecycle mutation is channel and owner isolated',()=>{
@@ -34,6 +35,8 @@ test('music UI exposes all lifecycle views and moves through isolated API',()=>{
  assert.match(music,/\/api\/songs\/lifecycle/);
  assert.match(music,/projectState:next/);
  assert.match(music,/visibleSongs/);
+ assert.match(music,/if\(chosen\)setProjectView\(chosen\.projectState\|\|'current'\)/);
+ assert.match(music,/url\.searchParams\.set\('projectId',first\.id\)/);
 });
 
 const deletion=fs.readFileSync('app/api/songs/delete/route.ts','utf8');
@@ -41,7 +44,8 @@ const deletion=fs.readFileSync('app/api/songs/delete/route.ts','utf8');
 test('permanent delete requires exact channel ownership and title confirmation',()=>{
  assert.match(deletion,/channelId = String\(body\.channelId/);
  assert.match(deletion,/confirmation = String\(body\.confirmation/);
- assert.match(deletion,/\.eq\("channel_id", channelId\)/);
+ assert.match(deletion,/\.eq\("id", channelId\)[\s\S]*\.eq\("workspaces\.owner_user_id", user\.id\)/);
+ assert.match(deletion,/\.eq\("channel_id", ownedChannel\.id\)/);
  assert.match(deletion,/confirmation !== ownedSong\.title/);
 });
 
