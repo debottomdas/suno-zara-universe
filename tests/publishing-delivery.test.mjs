@@ -152,14 +152,15 @@ test('legacy YouTube recovery cannot become current until provider verification 
 });
 
 
-test('campaign resume skips confirmed deliveries, leaves uncertain receipts untouched, and sends only remaining work',async()=>{
+test('campaign resume reconciles uncertain receipts and sends only remaining work',async()=>{
  const prior=[
   ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
   {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
   {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
   {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
  ];
- const h=harness({receipts:prior});
+ // Unknown provider truth must remain unresolved; it is never retry permission.
+ const h=harness({receipts:prior,providerStatus:'unknown'});
  const response=await h.run(true,true);
  assert.equal(response.status,200);
  const body=await response.json();
