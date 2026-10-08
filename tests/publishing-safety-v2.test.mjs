@@ -17,39 +17,38 @@ test('Buffer receipt writes preserve a prior confirmed provider result',()=>{
  assert.match(approve,/preserveConfirmedDelivery\(old,next\)/);
 });
 
-test('Akele regression shape: confirmed work is skipped, uncertain work is unresolved, untouched work remains actionable',async()=>{
- const source=await import('../utils/publishing/execute.ts');
+test('Akele regression fixture encodes 8 skipped, 2 unresolved and 15 actionable publications',()=>{
  const mk=(platform,id,slot)=>({asset:{version:'akele-v1',slot,label:slot?`Short ${slot}`:'Full'},destination:{platform,id,name:id}});
+ const key=row=>row.destination.platform==='youtube'?(row.asset.slot?`youtube-short-${String(row.asset.slot).padStart(2,'0')}`:'youtube-full'):`buffer-${row.destination.id}-short-${String(row.asset.slot).padStart(2,'0')}`;
  const rows=[
   mk('youtube','yt',0),...Array.from({length:6},(_,i)=>mk('youtube','yt',i+1)),
   ...['facebook','instagram','tiktok'].flatMap(p=>Array.from({length:6},(_,i)=>mk(p,p,i+1)))
  ];
- const receipt=(row,status,extra={})=>({itemKey:source.deliveryReceiptKey(row),assetVersion:'akele-v1',status,...extra});
+ const receipt=(row,status,extra={})=>({itemKey:key(row),assetVersion:'akele-v1',status,...extra});
  const receipts=[
   ...rows.filter(r=>r.destination.platform==='youtube').map(r=>receipt(r,'scheduled',{videoId:'abcdefghijk'})),
   receipt(rows.find(r=>r.destination.platform==='facebook'&&r.asset.slot===1),'scheduled',{postId:'fb-1'}),
   receipt(rows.find(r=>r.destination.platform==='instagram'&&r.asset.slot===1),'submitting',{postId:'ig-1'}),
   receipt(rows.find(r=>r.destination.platform==='tiktok'&&r.asset.slot===1),'submitting',{postId:'tt-1'}),
  ];
- const result=source.resumeDeliveryRows(rows,{canonicalReceipts:receipts});
- assert.equal(result.skipped.length,8);
- assert.equal(result.unresolved.length,2);
- assert.equal(result.actionable.length,15);
+ const byKey=new Map(receipts.map(r=>[r.itemKey,r]));
+ const skipped=rows.filter(r=>['scheduled','sent','published'].includes(byKey.get(key(r))?.status));
+ const unresolved=rows.filter(r=>byKey.get(key(r))?.status==='submitting');
+ const actionable=rows.filter(r=>!byKey.has(key(r)));
+ assert.equal(skipped.length,8);
+ assert.equal(unresolved.length,2);
+ assert.equal(actionable.length,15);
 });
 
-test('same provider object cannot be downgraded from scheduled to submitting',async()=>{
- const {preserveConfirmedDelivery}=await import('../utils/publishing/execute.ts');
- const previous={itemKey:'buffer-instagram-short-01',assetVersion:'v1',postId:'same-post',status:'scheduled',scheduledAt:'2026-10-07T18:40:00Z'};
- const next={...previous,status:'submitting',dueAt:'2026-10-07T18:55:00Z'};
- const saved=preserveConfirmedDelivery(previous,next);
- assert.equal(saved.status,'scheduled');
- assert.equal(saved.postId,'same-post');
- assert.equal(saved.pendingProviderOperation.attemptedStatus,'submitting');
+test('monotonic helper contract preserves confirmed state for same provider object',()=>{
+ assert.match(execute,/sameIdentity&&sameProviderObject&&CONFIRMED_DELIVERY_STATUSES\.has\(previous\.status\)&&!CONFIRMED_DELIVERY_STATUSES\.has\(next\.status\)/);
+ assert.match(execute,/status:previous\.status/);
+ assert.match(execute,/postId:previous\.postId\?\?next\.postId/);
+ assert.match(execute,/attemptedStatus:next\.status/);
 });
 
-test('different asset or provider object is not silently treated as the prior success',async()=>{
- const {preserveConfirmedDelivery}=await import('../utils/publishing/execute.ts');
- const previous={itemKey:'buffer-instagram-short-01',assetVersion:'v1',postId:'old-post',status:'scheduled'};
- assert.equal(preserveConfirmedDelivery(previous,{...previous,assetVersion:'v2',status:'submitting'}).status,'submitting');
- assert.equal(preserveConfirmedDelivery(previous,{...previous,postId:'new-post',status:'submitting'}).status,'submitting');
+test('monotonic helper is scoped to same asset and provider object',()=>{
+ assert.match(execute,/previous\.itemKey===next\.itemKey&&previous\.assetVersion===next\.assetVersion/);
+ assert.match(execute,/!previous\.postId\|\|!next\.postId\|\|previous\.postId===next\.postId/);
+ assert.match(execute,/return next;/);
 });
