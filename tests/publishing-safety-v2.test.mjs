@@ -91,3 +91,30 @@ test('YouTube identity mismatch is explicitly retry-safe and cannot create an up
  const upload=route.indexOf('providerSessionAttempted = true');
  assert.ok(mismatch>=0&&retrySafe>mismatch&&upload>retrySafe);
 });
+
+test('campaign approval preflights YouTube and Buffer before any receipt or provider mutation',()=>{
+ const approve=fs.readFileSync('app/api/publishing/plan/approve/route.ts','utf8');
+ assert.match(approve,/preflightOnly:true/);
+ assert.match(approve,/bufferStatus/);
+ assert.match(approve,/refresh=1/);
+ const youtubePreflight=approve.indexOf('preflightOnly:true');
+ const bufferPreflight=approve.indexOf('refresh=1');
+ const history=approve.indexOf('assertDeliveryHistory(rows,state)',youtubePreflight);
+ const receipt=approve.indexOf("worker(receiptPath",youtubePreflight);
+ assert.ok(youtubePreflight>=0&&bufferPreflight>youtubePreflight&&history>bufferPreflight&&receipt>history);
+});
+
+test('YouTube campaign preflight returns before upload-session mutation',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-session/route.ts','utf8');
+ const preflight=route.indexOf('body.preflightOnly === true');
+ const uploadMutation=route.indexOf('providerSessionAttempted = true');
+ assert.ok(preflight>=0&&uploadMutation>preflight);
+ assert.match(route,/preflightVerified: true/);
+});
+
+test('Buffer campaign preflight requires every selected destination to exist in live reconciled bindings',()=>{
+ const approve=fs.readFileSync('app/api/publishing/plan/approve/route.ts','utf8');
+ assert.match(approve,/const live=new Set/);
+ assert.match(approve,/const missing=bufferRowsForPreflight\.filter/);
+ assert.match(approve,/Nothing was published/);
+});
