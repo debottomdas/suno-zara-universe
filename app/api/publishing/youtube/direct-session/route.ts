@@ -29,6 +29,26 @@ function stringArray(value: unknown, max = 50) {
 function tagsCharacterCount(tags: string[]) {
   return tags.reduce((total, tag, index) => total + (/[\s]/.test(tag) ? `"${tag}"` : tag).length + (index ? 1 : 0), 0);
 }
+const YOUTUBE_TAG_BUDGET = 480;
+
+export function normalizeYouTubeTags(value: unknown, max = 50) {
+  const seen = new Set<string>();
+  const candidates = stringArray(value, max * 2).filter((tag) => {
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return !tag.includes("<") && !tag.includes(">");
+  });
+  const accepted: string[] = [];
+  for (const tag of candidates) {
+    const next = [...accepted, tag];
+    if (tagsCharacterCount(next) > YOUTUBE_TAG_BUDGET) continue;
+    accepted.push(tag);
+    if (accepted.length >= max) break;
+  }
+  return accepted;
+}
+
 function validateMetadata(title: string, description: string, tags: string[]) {
   if (!title) throw new Error("YouTube title is required.");
   if (Array.from(title).length > 100) throw new Error("YouTube title exceeds 100 characters.");
@@ -147,7 +167,7 @@ export async function POST(request: Request) {
       description = clean(full.finalDescription) || clean(full.fullDescription) || clean(full.openingDescription);
       const hashtags = stringArray(full.hashtags, 30);
       description = appendHashtags(description, hashtags);
-      tags = stringArray(full.tags, 50);
+      tags = normalizeYouTubeTags(full.tags, 50);
     } else {
       const shortsPack = (currentPack?.youtube_shorts && typeof currentPack.youtube_shorts === "object" ? currentPack.youtube_shorts : {}) as any;
       const shorts = Array.isArray(shortsPack.shorts) ? shortsPack.shorts : [];
@@ -155,7 +175,7 @@ export async function POST(request: Request) {
       publishingSettings=item;
       title = clean(item.title) || `${clean(song.title) || "Suno Zara"} — Short ${slot}`;
       description = appendHashtags(clean(item.description), stringArray(item.hashtags, 15));
-      tags = stringArray(item.tags, 30);
+      tags = normalizeYouTubeTags(item.tags, 30);
     }
     validateMetadata(title, description, tags);
 
