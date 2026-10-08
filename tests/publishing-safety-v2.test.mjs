@@ -139,3 +139,15 @@ test('Buffer reconciliation classifier is fail-closed and distinguishes confirme
  assert.match(source,/state:'unresolved'/);
  assert.match(source,/providerPost\.id!==receipt\.postId/);
 });
+
+test('resume reconciles uncertain Buffer receipts by exact post id before retry decision',()=>{
+ const route=fs.readFileSync('app/api/publishing/plan/approve/route.ts','utf8');
+ assert.match(route,/for\(const row of resume\.unresolved\)/);
+ assert.match(route,/postIds:\[old\.postId\]/);
+ assert.match(route,/classifyBufferReconciliation\(old,providerPost\)/);
+ assert.match(route,/decision\.state==='delivered'/);
+ assert.match(route,/resume\.skipped\.push\(row\)/);
+ assert.match(route,/decision\.state==='retry_allowed'/);
+ assert.match(route,/resume\.actionable\.push\(row\)/);
+ assert.match(route,/remaining\.push\(row\)/);
+});
