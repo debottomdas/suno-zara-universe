@@ -131,8 +131,17 @@ export async function POST(req:Request){let lock='',acquired=false;try{
   throw e;
  }
   const upload=await worker('/publish/youtube',{projectId,kind,slot:slot||1,uploadUrl:session.uploadUrl,accessToken:session.transientAccessToken,publishAt:row.dueAt,timezone,assetVersion:row.asset.version,channelId:row.destination.id,channelName:row.destination.name});
-  await worker(receiptPath,{projectId,receipt:{...base,...upload,assetVersion:row.asset.version,status:'scheduled',scheduledAt:row.dueAt,timezone}});
-  await call(youtubeComplete,{projectId,kind,slot:slot||1,videoId:upload.videoId,title:session.title,description:session.description,tags:session.tags,privacyStatus:'private',publishAt:row.dueAt,timezone});
+  // A worker-returned video ID proves an upload may exist, not that the provider
+  // confirmed the requested schedule. Keep it unresolved until direct-complete
+  // reads the exact video back from YouTube.
+  const uploaded={...base,...upload,assetVersion:row.asset.version,status:'submitting',timezone,providerOperation:'upload-returned-awaiting-verification'};
+  await worker(receiptPath,{projectId,receipt:uploaded});
+  try{
+   await call(youtubeComplete,{projectId,kind,slot:slot||1,videoId:upload.videoId,title:session.title,description:session.description,tags:session.tags,privacyStatus:'private',publishAt:row.dueAt,timezone});
+  }catch(e){
+   throw publishingError((e as Error).message||'YouTube upload exists but provider verification is uncertain.',false);
+  }
+  await worker(receiptPath,{projectId,receipt:{...uploaded,status:'scheduled',scheduledAt:row.dueAt,providerCheckedAt:new Date().toISOString(),providerOperation:undefined}});
  }
  },rows);
  // Submit every destination that shares a staged Short in ONE batch. The existing
