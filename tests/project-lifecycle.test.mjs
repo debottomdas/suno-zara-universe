@@ -35,3 +35,26 @@ test('music UI exposes all lifecycle views and moves through isolated API',()=>{
  assert.match(music,/projectState:next/);
  assert.match(music,/visibleSongs/);
 });
+
+const deletion=fs.readFileSync('app/api/songs/delete/route.ts','utf8');
+
+test('permanent delete requires exact channel ownership and title confirmation',()=>{
+ assert.match(deletion,/channelId = String\(body\.channelId/);
+ assert.match(deletion,/confirmation = String\(body\.confirmation/);
+ assert.match(deletion,/\.eq\("channel_id", channelId\)/);
+ assert.match(deletion,/confirmation !== ownedSong\.title/);
+});
+
+test('delete is project scoped and does not delete shared channel identity or connections',()=>{
+ assert.doesNotMatch(deletion,/deleteRows\(admin, "channels"/);
+ assert.doesNotMatch(deletion,/deleteRows\(admin, "channel_dna_versions"/);
+ assert.doesNotMatch(deletion,/deleteRows\(admin, "publishing_connections"/);
+ assert.doesNotMatch(deletion,/deleteRows\(admin, "publishing_oauth_credentials"/);
+ assert.match(deletion,/\.from\("songs"\)\s*\.delete\(\)/);
+});
+
+test('delete UI warns that provider publications remain and requires exact title',()=>{
+ assert.match(music,/Anything already published on YouTube or social platforms is NOT deleted there/);
+ assert.match(music,/confirmation!==title/);
+ assert.match(music,/Delete Project/);
+});
