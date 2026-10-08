@@ -118,3 +118,15 @@ test('Buffer campaign preflight requires every selected destination to exist in 
  assert.match(approve,/const missing=bufferRowsForPreflight\.filter/);
  assert.match(approve,/Nothing was published/);
 });
+
+test('YouTube completion verifies provider channel and schedule before saving publishing history',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-complete/route.ts','utf8');
+ assert.match(route,/select\("id,external_account_id"\)/);
+ assert.match(route,/part", "status,snippet"/);
+ assert.match(route,/snippet\?\.channelId\) !== expectedChannelId/);
+ assert.match(route,/YouTube did not confirm the requested private schedule/);
+ assert.match(route,/\["failed", "rejected"\]/);
+ const verifyAt=route.indexOf('const verifyResponse = await fetch');
+ const historyAt=route.indexOf('publishing_campaigns');
+ assert.ok(verifyAt>=0&&historyAt>verifyAt);
+});
