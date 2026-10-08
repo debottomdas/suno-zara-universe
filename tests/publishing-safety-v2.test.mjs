@@ -52,3 +52,22 @@ test('monotonic helper is scoped to same asset and provider object',()=>{
  assert.match(execute,/!previous\.postId\|\|!next\.postId\|\|previous\.postId===next\.postId/);
  assert.match(execute,/return next;/);
 });
+
+test('YouTube tags are normalized before any provider session is attempted',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-session/route.ts','utf8');
+ assert.match(route,/const YOUTUBE_TAG_BUDGET = 480/);
+ assert.match(route,/normalizeYouTubeTags\(full\.tags, 50\)/);
+ assert.match(route,/normalizeYouTubeTags\(item\.tags, 30\)/);
+ assert.match(route,/if \(tagsCharacterCount\(next\) > YOUTUBE_TAG_BUDGET\) continue/);
+ const normalizeAt=route.indexOf('tags = normalizeYouTubeTags');
+ const providerAt=route.indexOf('providerSessionAttempted = true');
+ assert.ok(normalizeAt>=0&&providerAt>normalizeAt);
+});
+
+test('YouTube tag normalization is whole-tag, ordered and case-insensitive de-duplicated',()=>{
+ const route=fs.readFileSync('app/api/publishing/youtube/direct-session/route.ts','utf8');
+ assert.match(route,/const seen = new Set<string>\(\)/);
+ assert.match(route,/tag\.toLocaleLowerCase\(\)/);
+ assert.match(route,/accepted\.push\(tag\)/);
+ assert.doesNotMatch(route,/\.slice\(0,\s*YOUTUBE_TAG_BUDGET\)/);
+});
