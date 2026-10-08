@@ -17,6 +17,11 @@ function harness(options={}){
  const mods={'next/server':{NextResponse:Response},'node:fs/promises':{mkdir:async()=>{},rmdir:async()=>{}},'node:os':{tmpdir:()=>'/fixture'},'node:path':{join:(...x)=>x.join('/')},'node:crypto':{createHash:()=>({update:()=>({digest:()=> 'lock'})})},'@/utils/publishing/plan':m,'@/utils/publishing/execute':executor,'@/utils/publishing/snapshot':{snapshot:async()=>{snapshots++;return {...structuredClone(state),...(options.changedAfterLock&&snapshots>1?{revision:'new'}:{})}},worker:async(path,body)=>{calls.push({name:path,body});if(path.includes('/receipt')){receipts.push(body.receipt);if(options.social){const i=state.canonicalReceipts.findIndex(r=>r.itemKey===body.receipt.itemKey);if(i<0)state.canonicalReceipts.push(body.receipt);else state.canonicalReceipts[i]=body.receipt;}return {ok:true}}if(path.includes('file-info'))return {sizeBytes:100,mimeType:'video/mp4',filename:'fixture.mp4'};if(path==='/publish/youtube')return {videoId:options.social?'abcdefghijk':'fixture',itemKey:body.kind==='full'?'youtube-full':`youtube-short-0${body.slot}`};return {ok:true}}}};
  for(const name of ['direct-session','direct-complete','schedule'])mods[`@/app/api/publishing/youtube/${name}/route`]=handler(name);
  for(const name of ['stage-session','stage-complete','create-posts-batch','schedule-posts-batch','post-status'])mods[`@/app/api/publishing/buffer/${name}/route`]=handler(name);
+ mods['@/app/api/publishing/buffer/status/route']={GET:async req=>{
+  calls.push({name:'buffer-status',url:req.url});
+  const channels=destinations.filter(d=>d.platform!=='youtube').map(d=>({id:d.id,service:d.platform,name:d.name,bufferAccountId:d.accountId||null}));
+  return Response.json({channels,source:'reconciliation'});
+ }};
  const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:(approved,resumeCampaign=false)=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved,resumeCampaign})}))};
 }
 test('approval endpoint makes zero provider or receipt writes without explicit approval',async()=>{const h=harness();assert.equal((await h.run(false)).status,409);assert.equal(h.calls.length,0)});
