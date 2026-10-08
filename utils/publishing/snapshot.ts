@@ -56,7 +56,22 @@ export async function snapshot(projectId:string,channelId:string){
  }
  if(socialMissing.length)reasons.push(`Prepare current Social copy: ${socialMissing.join(', ')}.`);
  const destinations:Destination[]=[...(con.connections||[]).filter((c:any)=>c.platform==='youtube'&&c.status==='connected').slice(0,1).map((c:any)=>({id:c.id,name:c.display_name||c.handle||'YouTube',platform:'youtube',channelId,available:true})),...bufferDestinations(buf,channelId)];
- const currentReceipts=[...(receipts.youtube||[]).filter((r:any)=>r.itemKey==='youtube-full'||/^youtube-short-0[1-6]$/.test(r.itemKey)).map((r:any)=>({...r,platform:'youtube'})),...(receipts.buffer||[]).filter((r:any)=>r.slot>=1&&r.slot<=6&&r.itemKey===`buffer-${r.channelId}-short-${String(r.slot).padStart(2,'0')}`).map((r:any)=>({...r,platform:r.service}))];
- const revision=createHash('sha256').update(JSON.stringify({channelContext,assets:assets.map(({url,...a})=>a),creative:creative.data,pack:social,audio:a,thumbnail:thumbnail?.id,destinations,receipts:currentReceipts})).digest('hex');
- return {projectId,channelId,title:song.title,assets,reasons,ready:reasons.length===0,destinations,revision,thumbnail:thumbnail?.url||thumbnail?.signedUrl,social,receipts:currentReceipts.filter((r:any)=>currentReceipt(r,assets)),canonicalReceipts:currentReceipts,history:[...(receipts.bufferHistory||[]),...currentReceipts.filter((r:any)=>!currentReceipt(r,assets))],connectionNotes:[...(buf.error?[buf.error]:[]),...(buf.accounts||[]).filter((a:any)=>a.error).map((a:any)=>a.error)],userId:user.id};
+ const youtubeDestination=destinations.find((d:any)=>d.platform==='youtube');
+ const normalizedYoutube=(receipts.youtube||[]).filter((r:any)=>r.itemKey==='youtube-full'||/^youtube-short-0[1-6]$/.test(r.itemKey)).map((r:any)=>{
+  const slot=r.kind==='full'?0:Number(r.slot||0),asset=assets.find(a=>a.slot===slot);
+  // Legacy worker receipts created before receipt-identity persistence can still
+  // be adopted without another upload when their immutable local file identity
+  // exactly matches the currently approved asset. The provider videoId/status
+  // remains the source of delivery truth; we only restore missing scope fields.
+  const legacyIdentityMissing=!r.assetVersion&&!r.channelId&&r.videoId&&['scheduled','published'].includes(r.status);
+  const exactFileMatch=Boolean(asset?.ready&&asset?.version&&asset?.approvedFilename&&r.filename&&asset.approvedFilename===r.filename);
+  return {...r,...(legacyIdentityMissing&&exactFileMatch&&youtubeDestination?{assetVersion:asset!.version,channelId:youtubeDestination.id,channelName:youtubeDestination.name,legacyIdentityRecovered:true}:{}) ,platform:'youtube'};
+ });
+ // A legacy receipt recovered from local identity alone is not provider truth.
+ // Keep it out of Current/Scheduled until the existing read-only YouTube monitor
+ // confirms that the video exists on this channel and writes providerCheckedAt.
+ const currentReceipts=[...normalizedYoutube,...(receipts.buffer||[]).filter((r:any)=>r.slot>=1&&r.slot<=6&&r.itemKey===`buffer-${r.channelId}-short-${String(r.slot).padStart(2,'0')}`).map((r:any)=>({...r,platform:r.service}))];
+ const verifiedCurrentReceipts=currentReceipts.filter((r:any)=>!(r.legacyIdentityRecovered&&!r.providerCheckedAt));
+ const revision=createHash('sha256').update(JSON.stringify({channelContext,assets:assets.map(({url,...a})=>a),creative:creative.data,pack:social,audio:a,thumbnail:thumbnail?.id,destinations,receipts:verifiedCurrentReceipts})).digest('hex');
+ return {projectId,channelId,title:song.title,assets,reasons,ready:reasons.length===0,destinations,revision,thumbnail:thumbnail?.url||thumbnail?.signedUrl,social,receipts:verifiedCurrentReceipts.filter((r:any)=>currentReceipt(r,assets)),canonicalReceipts:verifiedCurrentReceipts,history:[...(receipts.bufferHistory||[]),...currentReceipts.filter((r:any)=>!verifiedCurrentReceipts.includes(r)||!currentReceipt(r,assets))],connectionNotes:[...(buf.error?[buf.error]:[]),...(buf.accounts||[]).filter((a:any)=>a.error).map((a:any)=>a.error)],userId:user.id};
 }

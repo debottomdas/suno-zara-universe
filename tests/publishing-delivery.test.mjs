@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 import vm from 'node:vm';
 import ts from 'typescript';
 function load(file,modules={},globals={}){const code=ts.transpileModule(fs.readFileSync(new URL('../'+file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const ctx={exports:{},require:n=>{if(!(n in modules))throw Error('Unexpected import '+n);return modules[n]},Date,Intl,Set,Map,Request,Response,URL,AbortSignal,process,console,Buffer,...globals};vm.runInNewContext(code,ctx);return ctx.exports;}
@@ -14,7 +17,7 @@ function harness(options={}){
  const mods={'next/server':{NextResponse:Response},'node:fs/promises':{mkdir:async()=>{},rmdir:async()=>{}},'node:os':{tmpdir:()=>'/fixture'},'node:path':{join:(...x)=>x.join('/')},'node:crypto':{createHash:()=>({update:()=>({digest:()=> 'lock'})})},'@/utils/publishing/plan':m,'@/utils/publishing/execute':executor,'@/utils/publishing/snapshot':{snapshot:async()=>{snapshots++;return {...structuredClone(state),...(options.changedAfterLock&&snapshots>1?{revision:'new'}:{})}},worker:async(path,body)=>{calls.push({name:path,body});if(path.includes('/receipt')){receipts.push(body.receipt);if(options.social){const i=state.canonicalReceipts.findIndex(r=>r.itemKey===body.receipt.itemKey);if(i<0)state.canonicalReceipts.push(body.receipt);else state.canonicalReceipts[i]=body.receipt;}return {ok:true}}if(path.includes('file-info'))return {sizeBytes:100,mimeType:'video/mp4',filename:'fixture.mp4'};if(path==='/publish/youtube')return {videoId:options.social?'abcdefghijk':'fixture',itemKey:body.kind==='full'?'youtube-full':`youtube-short-0${body.slot}`};return {ok:true}}}};
  for(const name of ['direct-session','direct-complete','schedule'])mods[`@/app/api/publishing/youtube/${name}/route`]=handler(name);
  for(const name of ['stage-session','stage-complete','create-posts-batch','schedule-posts-batch','post-status'])mods[`@/app/api/publishing/buffer/${name}/route`]=handler(name);
- const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:approved=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved})}))};
+ const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:(approved,resumeCampaign=false)=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved,resumeCampaign})}))};
 }
 test('approval endpoint makes zero provider or receipt writes without explicit approval',async()=>{const h=harness();assert.equal((await h.run(false)).status,409);assert.equal(h.calls.length,0)});
 test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)}});
@@ -93,3 +96,85 @@ test('provider monitoring keeps the canonical instant and local display synchron
 test('failed YouTube pre-session scheduling rolls back safely and never starts sibling uploads',async()=>{const h=harness({youtubeFailure:'safe'});assert.equal((await h.run(true)).status,409);assert.equal(h.receipts.length,2);assert.equal(h.receipts[0].status,'submitting');assert.equal(h.receipts.at(-1).status,'draft');assert.equal(m.receiptStatus(h.receipts.at(-1)),'Needs Attention');assert.equal(h.calls.filter(c=>c.name==='/publish/youtube'||c.name==='create-posts-batch').length,0)});
 
 test('dependent Shorts store the obtained own-song long-video ID without pretending Studio linking occurred',async()=>{const social={youtube_shorts:{shorts:Array.from({length:6},(_,i)=>({shortNumber:i+1,relatedVideo:{songId:'p',channelId:'bangla',assetKey:'full',dependency:'publish-long-video-first',method:'youtube-studio',youtubeVideoId:null}}))}};const h=harness({social});h.plan.rows.reverse();const response=await h.run(true);assert.equal(response.status,200);assert.equal(h.calls.find(c=>c.name==='direct-session').body.kind,'full');const shorts=h.receipts.filter(r=>r.platform==='youtube'&&r.kind==='short'&&r.status==='scheduled');assert.equal(shorts.length,6);assert.ok(shorts.every(r=>r.relatedVideo.youtubeVideoId==='abcdefghijk'&&r.relatedVideo.status==='needs-studio-link-after-long-is-public-or-unlisted'));});
+
+
+test('uncertain delivery stays blocked until that exact receipt is explicitly reconciled for retry',()=>{
+ const row={asset:{slot:0,label:'Full video',version:'v0'},destination:{id:'youtube',platform:'youtube'}};
+ const state={canonicalReceipts:[{itemKey:'youtube-full',assetVersion:'v0',status:'submitting'}]};
+ assert.throws(()=>executor.assertDeliveryHistory([row],state),/needs reconciliation/);
+ state.canonicalReceipts[0].reconciliation={state:'retry_allowed',resolvedAt:'2026-10-07T12:00:00.000Z'};
+ assert.doesNotThrow(()=>executor.assertDeliveryHistory([row],state));
+});
+
+test('retry reconciliation never clears another asset version or a delivered resolution',()=>{
+ const row={asset:{slot:0,label:'Full video',version:'v2'},destination:{id:'youtube',platform:'youtube'}};
+ for(const receipt of [
+  {itemKey:'youtube-full',assetVersion:'v1',status:'submitting',reconciliation:{state:'retry_allowed',resolvedAt:'2026-10-07T12:00:00.000Z'}},
+  {itemKey:'youtube-full',assetVersion:'v2',status:'submitting',reconciliation:{state:'delivered',resolvedAt:'2026-10-07T12:00:00.000Z'}},
+ ]) assert.throws(()=>executor.assertDeliveryHistory([row],{canonicalReceipts:[receipt]}),/needs reconciliation/);
+});
+
+
+test('YouTube worker handoff carries immutable receipt identity before the upload response returns',()=>{
+ const approve=fs.readFileSync(path.join(root,'app/api/publishing/plan/approve/route.ts'),'utf8');
+ const worker=fs.readFileSync(path.join(root,'local-worker/full-video-worker.mjs'),'utf8');
+ assert.match(approve,/assetVersion:row\.asset\.version,channelId:row\.destination\.id,channelName:row\.destination\.name/);
+ assert.match(worker,/assetVersion: String\(body\.assetVersion \|\| ""\)\.trim\(\) \|\| undefined/);
+ assert.match(worker,/channelId: String\(body\.channelId \|\| ""\)\.trim\(\) \|\| undefined/);
+});
+
+
+test('legacy YouTube recovery is fail-closed and requires exact current approved filename identity',()=>{
+ const source=fs.readFileSync(path.join(root,'utils/publishing/snapshot.ts'),'utf8');
+ assert.match(source,/legacyIdentityMissing=!r\.assetVersion&&!r\.channelId&&r\.videoId&&\['scheduled','published'\]\.includes\(r\.status\)/);
+ assert.match(source,/exactFileMatch=Boolean\(asset\?\.ready&&asset\?\.version&&asset\?\.approvedFilename&&r\.filename&&asset\.approvedFilename===r\.filename\)/);
+ assert.match(source,/legacyIdentityMissing&&exactFileMatch&&youtubeDestination/);
+});
+
+
+test('publishing assets retain approved filename separately from immutable version id',()=>{
+ const source=fs.readFileSync(path.join(root,'utils/publishing/plan.ts'),'utf8');
+ assert.match(source,/approvedFilename\?:string/);
+ assert.match(source,/approvedFilename:item\?\.approvedVideo\?\.filename\|\|undefined/);
+});
+
+
+test('legacy YouTube recovery cannot become current until provider verification succeeds',()=>{
+ const source=fs.readFileSync(path.join(root,'utils/publishing/snapshot.ts'),'utf8');
+ assert.match(source,/legacyIdentityRecovered&&!r\.providerCheckedAt/);
+ assert.match(source,/verifiedCurrentReceipts=currentReceipts\.filter/);
+ assert.match(source,/canonicalReceipts:verifiedCurrentReceipts/);
+});
+
+
+test('campaign resume skips confirmed deliveries, leaves uncertain receipts untouched, and sends only remaining work',async()=>{
+ const prior=[
+  ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
+  {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
+  {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
+  {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
+ ];
+ const h=harness({receipts:prior});
+ const response=await h.run(true,true);
+ assert.equal(response.status,200);
+ const body=await response.json();
+ assert.equal(body.scheduled,15);
+ assert.equal(body.skipped,8);
+ assert.equal(body.unresolved,2);
+ assert.equal(h.calls.filter(c=>c.name==='direct-session'||c.name==='schedule').length,0);
+ assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,5);
+ assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').flatMap(c=>c.body.items).length,15);
+ assert.equal(h.receipts.some(r=>r.itemKey==='buffer-instagram-short-01'||r.itemKey==='buffer-tiktok-short-01'),false);
+});
+
+test('resume classifier never treats an uncertain same-asset receipt as retry permission',()=>{
+ const rows=[
+  {asset:{slot:1,label:'Short 1',version:'v1'},destination:{id:'instagram',platform:'instagram'}},
+  {asset:{slot:2,label:'Short 2',version:'v2'},destination:{id:'instagram',platform:'instagram'}},
+ ];
+ const state={canonicalReceipts:[{itemKey:'buffer-instagram-short-01',assetVersion:'v1',status:'submitting',postId:'ig1'}]};
+ const resume=executor.resumeDeliveryRows(rows,state);
+ assert.equal(resume.unresolved.length,1);
+ assert.equal(resume.actionable.length,1);
+ assert.equal(resume.actionable[0].asset.slot,2);
+});

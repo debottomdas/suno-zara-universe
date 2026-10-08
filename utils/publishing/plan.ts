@@ -1,5 +1,5 @@
 export type Destination={id:string;platform:string;name:string;channelId:string;accountId?:string|null;available?:boolean};
-export type Asset={key:string;slot:number;label:string;version:string;url?:string;ready:boolean;reason?:string};
+export type Asset={key:string;slot:number;label:string;version:string;approvedFilename?:string;url?:string;ready:boolean;reason?:string};
 export type PlanRow={key:string;assetKey:string;destinationId:string;localTime:string};
 export type Plan={projectId:string;channelId:string;timezone:string;revision:string;rows:PlanRow[]};
 export function localDateTime(iso:string,timezone:string){
@@ -74,5 +74,5 @@ export function assessAsset(slot:number,item:any,versions:any,expectedKey?:strin
  const past=versions.versions?.filter((v:any)=>v.slot===slot&&v.source==='generated').at(-1);
  const changed=outdated||(!item?.approvedVideo&&past&&expectedKey!==undefined&&past.dependencyKey!==expectedKey);
  const label=slot?`Short ${slot}`:'Full video';
- return {key,slot,label,version:version?.id||item?.approvedVideo?.filename||'',url:item?.approvedVideo?.fileUrl,ready:Boolean(item?.approvedVideo)&&!outdated&&!unverified,reason:changed?`${label} needs updating because its visual or source changed.`:`${label} needs review in Music Production.`};
+ return {key,slot,label,version:version?.id||item?.approvedVideo?.filename||'',approvedFilename:item?.approvedVideo?.filename||undefined,url:item?.approvedVideo?.fileUrl,ready:Boolean(item?.approvedVideo)&&!outdated&&!unverified,reason:changed?`${label} needs updating because its visual or source changed.`:`${label} needs review in Music Production.`};
 }
