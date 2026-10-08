@@ -117,3 +117,5 @@
 
 /* Project lifecycle catalogue */
 .projectViews{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.projectViews button{border:1px solid var(--line,#d8d8d8);background:transparent;border-radius:999px;padding:7px 12px;cursor:pointer}.projectViews .projectViewActive{font-weight:700;box-shadow:inset 0 0 0 1px currentColor}.projectMove{display:inline-flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}.projectMove select{border:1px solid var(--line,#d8d8d8);border-radius:8px;padding:6px 9px;background:transparent;color:inherit}
+
+.projectActions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.deleteProject{border:1px solid currentColor;border-radius:8px;padding:6px 10px;background:transparent;color:#b42318;cursor:pointer}.deleteProject:disabled{opacity:.5;cursor:not-allowed}
