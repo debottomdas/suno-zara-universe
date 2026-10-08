@@ -172,3 +172,19 @@ test('publishing workspace maps structured failure codes to actionable safety gu
  assert.match(ui,/Publishing plan needs correction/);
  assert.match(ui,/code:data\.code/);
 });
+
+test('confirmed scheduled delivery is never ordinary retry permission',()=>{
+ const source=fs.readFileSync('utils/publishing/execute.ts','utf8');
+ assert.match(source,/old\.status==='draft'/);
+ assert.doesNotMatch(source,/\['draft','scheduled'\]\.includes\(old\.status\)/);
+});
+
+test('YouTube upload stays unresolved until authoritative provider read-back succeeds',()=>{
+ const route=fs.readFileSync('app/api/publishing/plan/approve/route.ts','utf8');
+ const upload=route.indexOf("const upload=await worker('/publish/youtube'");
+ const unresolved=route.indexOf("status:'submitting'",upload);
+ const complete=route.indexOf('await call(youtubeComplete',upload);
+ const scheduled=route.indexOf("status:'scheduled'",complete);
+ assert.ok(upload>=0&&unresolved>upload&&complete>unresolved&&scheduled>complete);
+ assert.match(route,/upload-returned-awaiting-verification/);
+});
