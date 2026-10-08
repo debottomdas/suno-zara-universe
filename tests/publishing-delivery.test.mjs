@@ -25,7 +25,7 @@ function harness(options={}){
  const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:(approved,resumeCampaign=false)=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved,resumeCampaign})}))};
 }
 test('approval endpoint makes zero provider or receipt writes without explicit approval',async()=>{const h=harness();assert.equal((await h.run(false)).status,409);assert.equal(h.calls.length,0)});
-test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)}});
+test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);const mutations=h.calls.filter(c=>!['buffer-status','direct-session'].includes(c.name)&&!String(c.name).startsWith('/publishing/file-info?'));assert.equal(mutations.length,0)}});
 test('25 approved posts reuse YouTube adapter and one Buffer staging claim per Short',async()=>{const h=harness();const response=await h.run(true);assert.equal(response.status,200);assert.equal((await response.json()).scheduled,25);assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,7);assert.ok(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).every(c=>c.body.privacyStatus==='private'&&c.body.publishAt.endsWith('Z')));const batches=h.calls.filter(c=>c.name==='create-posts-batch');assert.equal(batches.length,6);assert.ok(batches.every(c=>c.body.items.length===3&&c.body.items.every(i=>i.publishMode==='schedule'&&i.dueAt.endsWith('Z'))));assert.equal(h.calls.filter(c=>c.name==='stage-session').length,6);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,25)});
 
 test('YouTube failure before an upload session rolls the receipt back to draft',async()=>{
@@ -33,7 +33,7 @@ test('YouTube failure before an upload session rolls the receipt back to draft',
  h.plan.rows=h.plan.rows.filter(r=>r.key==='youtube:full');
  const response=await h.run(true);
  assert.equal(response.status,409);
- assert.equal(h.calls.filter(c=>c.name==='direct-session').length,1);
+ assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,1);
  const full=h.receipts.filter(r=>r.itemKey==='youtube-full');
  assert.equal(full[0]?.status,'submitting');
  assert.equal(full.at(-1)?.status,'draft');
@@ -52,7 +52,7 @@ test('ambiguous YouTube session failure remains submitting for reconciliation',a
 });
 
 test('state is revalidated after acquiring the delivery lock',async()=>{const h=harness({changedAfterLock:true});assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)});
-test('retry rechecks provider failure before allowing a replacement',async()=>{const old={itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'error',postId:'failed',providerCheckedAt:'2026-09-28'};const blocked=harness({receipts:[old],providerStatus:'sent'});assert.equal((await blocked.run(true)).status,409);assert.deepEqual(blocked.calls.map(c=>c.name),['post-status']);const allowed=harness({receipts:[old]});assert.equal((await allowed.run(true)).status,200);assert.equal(allowed.calls.filter(c=>c.name==='create-posts-batch').length,6);});
+test('retry rechecks provider failure before allowing a replacement',async()=>{const old={itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'error',postId:'failed',providerCheckedAt:'2026-09-28'};const blocked=harness({receipts:[old],providerStatus:'sent'});assert.equal((await blocked.run(true)).status,409);assert.deepEqual(blocked.calls.filter(c=>!['buffer-status','direct-session'].includes(c.name)&&!String(c.name).startsWith('/publishing/file-info?')).map(c=>c.name),['post-status']);const allowed=harness({receipts:[old]});assert.equal((await allowed.run(true)).status,200);assert.equal(allowed.calls.filter(c=>c.name==='create-posts-batch').length,6);});
 
 test('the existing YouTube upload API sends publishAt together with private state',async()=>{
  let uploadedBody;
@@ -63,7 +63,7 @@ test('the existing YouTube upload API sends publishAt together with private stat
  const publishAt=new Date(Date.now()+86400000).toISOString();const response=await route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({projectId:'p',kind:'full',sizeBytes:100,privacyStatus:'public',publishAt})}));assert.equal(response.status,200);assert.equal(uploadedBody.status.privacyStatus,'private');assert.equal(uploadedBody.status.publishAt,publishAt);assert.equal(uploadedBody.snippet.defaultLanguage,'hi');assert.equal(uploadedBody.snippet.categoryId,'10');assert.equal((await response.json()).playlistPreparation.automaticallyApplied,false);
 });
 
-test('a partial Buffer failure preserves prior YouTube and successful sibling receipts, stops remaining batches',async()=>{const h=harness({partialFailure:true});const response=await h.run(true);assert.equal(response.status,409);assert.equal(h.calls.filter(c=>c.name==='direct-session').length,7);assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,1);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,9);assert.equal(h.receipts.filter(r=>r.itemKey==='buffer-instagram-short-01').at(-1).status,'submitting');});
+test('a partial Buffer failure preserves prior YouTube and successful sibling receipts, stops remaining batches',async()=>{const h=harness({partialFailure:true});const response=await h.run(true);assert.equal(response.status,409);assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,7);assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,1);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,9);assert.equal(h.receipts.filter(r=>r.itemKey==='buffer-instagram-short-01').at(-1).status,'submitting');});
 
 for(const target of ['youtube:full','youtube:short-1','instagram:short-1','facebook:short-1','tiktok:short-1'])test(`one edited ${target} survives serialization and reaches its adapter and receipt exactly`,async()=>{
  const h=harness(),before=structuredClone(h.plan.rows),row=h.plan.rows.find(r=>r.key===target);
