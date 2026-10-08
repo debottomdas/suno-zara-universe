@@ -158,3 +158,17 @@ test('publishing approval returns structured actionable failure states',()=>{
  assert.match(route,/classifyPublishingError/);
  assert.match(route,/code,retrySafe:/);
 });
+
+test('publishing workspace maps structured failure codes to actionable safety guidance',()=>{
+ const ui=fs.readFileSync('components/publishing/PlanWorkspace.tsx','utf8');
+ assert.match(ui,/PublishingClientError/);
+ assert.match(ui,/publishingFailureMessage/);
+ assert.match(ui,/Reconnect publishing account/);
+ assert.match(ui,/Publishing destination does not match/);
+ assert.match(ui,/Publishing provider is temporarily unavailable/);
+ assert.match(ui,/Local publishing service is unavailable/);
+ assert.match(ui,/Safe to retry after correction/);
+ assert.match(ui,/Do not retry — reconciliation required/);
+ assert.match(ui,/Publishing plan needs correction/);
+ assert.match(ui,/code:data\.code/);
+});
