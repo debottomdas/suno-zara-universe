@@ -18,10 +18,10 @@ async function googleMessage(response: Response, fallback: string) {
   catch { return `${fallback} (HTTP ${response.status})`; }
 }
 async function currentAccessToken(admin: ReturnType<typeof createAdminClient>, userId: string, channelId: string) {
-  const { data: connection } = await admin.from("publishing_connections").select("id").eq("user_id", userId).eq("platform", "youtube").eq("status", "connected").eq("channel_id", channelId).order("is_primary", { ascending: false }).limit(1).maybeSingle();
-  if (!connection?.id) return "";
+  const { data: connection } = await admin.from("publishing_connections").select("id,external_account_id").eq("user_id", userId).eq("platform", "youtube").eq("status", "connected").eq("channel_id", channelId).order("is_primary", { ascending: false }).limit(1).maybeSingle();
+  if (!connection?.id) return { accessToken: "", expectedChannelId: "" };
   const { data: credential } = await admin.from("publishing_oauth_credentials").select("access_token").eq("connection_id", connection.id).eq("user_id", userId).eq("platform", "youtube").eq("channel_id", channelId).maybeSingle();
-  return clean(credential?.access_token);
+  return { accessToken: clean(credential?.access_token), expectedChannelId: clean(connection.external_account_id) };
 }
 async function normalizeThumbnail(buffer: Buffer, mimeType: string) {
   if (buffer.length <= MAX_THUMBNAIL_BYTES && ["image/jpeg", "image/png"].includes(mimeType.toLowerCase())) return { body: buffer, mimeType: mimeType.toLowerCase() };
@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         .eq("media_kind", "thumbnail")
         .eq("slot", 1)
         .maybeSingle();
-      const token = await currentAccessToken(admin, user.id, clean(song.channel_id));
+      const { accessToken: token } = await currentAccessToken(admin, user.id, clean(song.channel_id));
       if (thumbnail && token) {
         try {
           const source = await openMediaAssetResponse(admin, thumbnail as unknown as StoredMediaAsset, 10 * 60);
@@ -92,10 +92,32 @@ export async function POST(request: Request) {
       }
     }
 
-    const itemKey = kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`;
-    const now = new Date().toISOString();
+    // Provider read-back is authoritative: never record Scheduled merely because
+    // the upload worker returned a video ID.
+    const { accessToken: verificationToken, expectedChannelId } = await currentAccessToken(admin, user.id, clean(song.channel_id));
+    if (!verificationToken || !expectedChannelId) throw new Error("YouTube connection cannot be verified after upload.");
+    const verifyUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
+    verifyUrl.searchParams.set("part", "status,snippet");
+    verifyUrl.searchParams.set("id", videoId);
+    const verifyResponse = await fetch(verifyUrl, { headers: { authorization: `Bearer ${verificationToken}` }, cache: "no-store" });
+    if (!verifyResponse.ok) throw new Error(await googleMessage(verifyResponse, "Could not verify uploaded YouTube video"));
+    const verifyData = await verifyResponse.json().catch(() => ({})) as any;
+    const verifiedVideo = Array.isArray(verifyData.items) ? verifyData.items[0] : null;
+    if (!verifiedVideo?.id || clean(verifiedVideo?.snippet?.channelId) !== expectedChannelId) {
+      throw new Error("Uploaded YouTube video could not be verified on the assigned channel.");
+    }
     const publishAt = clean(body.publishAt);
     if (publishAt && !Number.isFinite(Date.parse(publishAt))) throw new Error("Invalid schedule.");
+    const providerPublishAt = clean(verifiedVideo?.status?.publishAt);
+    if (publishAt && (!providerPublishAt || Date.parse(providerPublishAt) !== Date.parse(publishAt) || verifiedVideo?.status?.privacyStatus !== "private")) {
+      throw new Error("YouTube did not confirm the requested private schedule.");
+    }
+    if (["failed", "rejected"].includes(clean(verifiedVideo?.status?.uploadStatus))) {
+      throw new Error("YouTube rejected the uploaded video.");
+    }
+
+    const itemKey = kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`;
+    const now = new Date().toISOString();
     const url = `https://www.youtube.com/watch?v=${videoId}`;
 
     let campaignId = "";

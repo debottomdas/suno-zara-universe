@@ -29,6 +29,26 @@ function stringArray(value: unknown, max = 50) {
 function tagsCharacterCount(tags: string[]) {
   return tags.reduce((total, tag, index) => total + (/[\s]/.test(tag) ? `"${tag}"` : tag).length + (index ? 1 : 0), 0);
 }
+const YOUTUBE_TAG_BUDGET = 480;
+
+export function normalizeYouTubeTags(value: unknown, max = 50) {
+  const seen = new Set<string>();
+  const candidates = stringArray(value, max * 2).filter((tag) => {
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return !tag.includes("<") && !tag.includes(">");
+  });
+  const accepted: string[] = [];
+  for (const tag of candidates) {
+    const next = [...accepted, tag];
+    if (tagsCharacterCount(next) > YOUTUBE_TAG_BUDGET) continue;
+    accepted.push(tag);
+    if (accepted.length >= max) break;
+  }
+  return accepted;
+}
+
 function validateMetadata(title: string, description: string, tags: string[]) {
   if (!title) throw new Error("YouTube title is required.");
   if (Array.from(title).length > 100) throw new Error("YouTube title exceeds 100 characters.");
@@ -147,7 +167,7 @@ export async function POST(request: Request) {
       description = clean(full.finalDescription) || clean(full.fullDescription) || clean(full.openingDescription);
       const hashtags = stringArray(full.hashtags, 30);
       description = appendHashtags(description, hashtags);
-      tags = stringArray(full.tags, 50);
+      tags = normalizeYouTubeTags(full.tags, 50);
     } else {
       const shortsPack = (currentPack?.youtube_shorts && typeof currentPack.youtube_shorts === "object" ? currentPack.youtube_shorts : {}) as any;
       const shorts = Array.isArray(shortsPack.shorts) ? shortsPack.shorts : [];
@@ -155,14 +175,14 @@ export async function POST(request: Request) {
       publishingSettings=item;
       title = clean(item.title) || `${clean(song.title) || "Suno Zara"} — Short ${slot}`;
       description = appendHashtags(clean(item.description), stringArray(item.hashtags, 15));
-      tags = stringArray(item.tags, 30);
+      tags = normalizeYouTubeTags(item.tags, 30);
     }
     validateMetadata(title, description, tags);
 
     const admin = createAdminClient();
     const { data: connection } = await admin
       .from("publishing_connections")
-      .select("id,scopes")
+      .select("id,scopes,external_account_id")
       .eq("user_id", user.id)
       .eq("platform", "youtube")
       .eq("status", "connected")
@@ -191,6 +211,35 @@ export async function POST(request: Request) {
     const expiry = credential.expires_at ? Date.parse(credential.expires_at) : 0;
     if (!accessToken || !Number.isFinite(expiry) || expiry < Date.now() + 90_000) {
       accessToken = await refreshAccessToken(admin, user.id, connection.id, credential as OAuthCredential);
+    }
+
+    // Hard preflight: prove the live OAuth identity is the exact YouTube channel
+    // assigned to this Universe channel before creating any upload session.
+    const expectedChannelId = clean(connection.external_account_id);
+    if (!expectedChannelId) {
+      return NextResponse.json({ error: "The saved YouTube connection has no channel identity. Reconnect YouTube before publishing.", retrySafe: true }, { status: 409 });
+    }
+    const identityUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+    identityUrl.searchParams.set("part", "id,snippet");
+    identityUrl.searchParams.set("mine", "true");
+    const identityResponse = await fetch(identityUrl, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!identityResponse.ok) {
+      throw new Error(await googleMessage(identityResponse, "Could not verify the connected YouTube channel"));
+    }
+    const identity = await identityResponse.json().catch(() => ({})) as any;
+    const liveChannelId = clean(identity?.items?.[0]?.id);
+    if (!liveChannelId || liveChannelId !== expectedChannelId) {
+      return NextResponse.json({
+        error: "Connected YouTube identity does not match this Suno Zara channel. Publishing stopped before upload.",
+        retrySafe: true,
+      }, { status: 409 });
+    }
+
+    if (body.preflightOnly === true) {
+      return NextResponse.json({ preflightVerified: true, channelId: liveChannelId });
     }
 
     const url = new URL("https://www.googleapis.com/upload/youtube/v3/videos");

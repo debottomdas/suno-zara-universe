@@ -13,22 +13,27 @@ const destinations=['youtube','instagram','facebook','tiktok'].map(platform=>({i
 function harness(options={}){
  let snapshots=0;const calls=[],receipts=[],state={projectId:'p',channelId:'bangla',userId:'u',revision:'rev',ready:options.ready!==false,reasons:['Short 1 changed'],assets,destinations,canonicalReceipts:options.receipts||[],social:options.social||{}};
  const plan={projectId:'p',channelId:'bangla',revision:'rev',timezone:'Europe/London',rows:m.deriveRows(assets,destinations,'bangla','Europe/London',new Date(Date.now()+86400000).toISOString())};
- const handler=name=>({POST:async req=>{const body=await req.json();calls.push({name,body});if(name==='schedule')return Response.json({publishAt:options.wrongYoutubeTime?new Date(Date.parse(body.publishAt)+60000).toISOString():body.publishAt});if(name==='post-status')return Response.json({posts:body.postIds.map(id=>({id,status:options.providerStatus||'error'}))});if(name==='stage-session')return Response.json({upload:{signedUploadUrl:'https://fixture.invalid',storagePath:'fixture'}});if(name==='stage-complete')return Response.json({mediaUrl:'https://fixture.invalid/media'});if(name==='direct-session'&&options.youtubeFailure)return Response.json({error:'Fixture upload rejected',retrySafe:options.youtubeFailure==='safe'},{status:500});if(name==='direct-session')return Response.json({uploadUrl:'https://fixture.invalid/youtube',transientAccessToken:'fake',title:'Test'});if(name.includes('batch'))return Response.json({results:body.items.map(item=>({...item,post:options.partialFailure&&item.channelId==='instagram'?null:{id:item.channelId+item.slot,status:options.bufferStatus===undefined?'scheduled':options.bufferStatus,dueAt:options.wrongTime?new Date(Date.parse(item.dueAt)+60000).toISOString():item.dueAt}}))});return Response.json({ok:true});}});
+ const handler=name=>({POST:async req=>{const body=await req.json();calls.push({name,body});if(name==='schedule')return Response.json({publishAt:options.wrongYoutubeTime?new Date(Date.parse(body.publishAt)+60000).toISOString():body.publishAt});if(name==='post-status')return Response.json({posts:body.postIds.map(id=>({id,status:options.providerStatus||'error'}))});if(name==='stage-session')return Response.json({upload:{signedUploadUrl:'https://fixture.invalid',storagePath:'fixture'}});if(name==='stage-complete')return Response.json({mediaUrl:'https://fixture.invalid/media'});if(name==='direct-session'&&body.preflightOnly===true)return Response.json({preflightVerified:true,channelId:'UCfixture'});if(name==='direct-session'&&options.youtubeFailure)return Response.json({error:'Fixture upload rejected',retrySafe:options.youtubeFailure==='safe'},{status:500});if(name==='direct-session')return Response.json({uploadUrl:'https://fixture.invalid/youtube',transientAccessToken:'fake',title:'Test'});if(name.includes('batch'))return Response.json({results:body.items.map(item=>({...item,post:options.partialFailure&&item.channelId==='instagram'?null:{id:item.channelId+item.slot,status:options.bufferStatus===undefined?'scheduled':options.bufferStatus,dueAt:options.wrongTime?new Date(Date.parse(item.dueAt)+60000).toISOString():item.dueAt}}))});return Response.json({ok:true});}});
  const mods={'next/server':{NextResponse:Response},'node:fs/promises':{mkdir:async()=>{},rmdir:async()=>{}},'node:os':{tmpdir:()=>'/fixture'},'node:path':{join:(...x)=>x.join('/')},'node:crypto':{createHash:()=>({update:()=>({digest:()=> 'lock'})})},'@/utils/publishing/plan':m,'@/utils/publishing/execute':executor,'@/utils/publishing/snapshot':{snapshot:async()=>{snapshots++;return {...structuredClone(state),...(options.changedAfterLock&&snapshots>1?{revision:'new'}:{})}},worker:async(path,body)=>{calls.push({name:path,body});if(path.includes('/receipt')){receipts.push(body.receipt);if(options.social){const i=state.canonicalReceipts.findIndex(r=>r.itemKey===body.receipt.itemKey);if(i<0)state.canonicalReceipts.push(body.receipt);else state.canonicalReceipts[i]=body.receipt;}return {ok:true}}if(path.includes('file-info'))return {sizeBytes:100,mimeType:'video/mp4',filename:'fixture.mp4'};if(path==='/publish/youtube')return {videoId:options.social?'abcdefghijk':'fixture',itemKey:body.kind==='full'?'youtube-full':`youtube-short-0${body.slot}`};return {ok:true}}}};
  for(const name of ['direct-session','direct-complete','schedule'])mods[`@/app/api/publishing/youtube/${name}/route`]=handler(name);
  for(const name of ['stage-session','stage-complete','create-posts-batch','schedule-posts-batch','post-status'])mods[`@/app/api/publishing/buffer/${name}/route`]=handler(name);
+ mods['@/app/api/publishing/buffer/status/route']={GET:async req=>{
+  calls.push({name:'buffer-status',url:req.url});
+  const channels=destinations.filter(d=>d.platform!=='youtube').map(d=>({id:d.id,service:d.platform,name:d.name,bufferAccountId:d.accountId||null}));
+  return Response.json({channels,source:'reconciliation'});
+ }};
  const route=load('app/api/publishing/plan/approve/route.ts',mods);return {calls,receipts,plan,run:(approved,resumeCampaign=false)=>route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({plan,approved,resumeCampaign})}))};
 }
 test('approval endpoint makes zero provider or receipt writes without explicit approval',async()=>{const h=harness();assert.equal((await h.run(false)).status,409);assert.equal(h.calls.length,0)});
-test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)}});
-test('25 approved posts reuse YouTube adapter and one Buffer staging claim per Short',async()=>{const h=harness();const response=await h.run(true);assert.equal(response.status,200);assert.equal((await response.json()).scheduled,25);assert.equal(h.calls.filter(c=>c.name==='direct-session').length,7);assert.ok(h.calls.filter(c=>c.name==='direct-session').every(c=>c.body.privacyStatus==='private'&&c.body.publishAt.endsWith('Z')));const batches=h.calls.filter(c=>c.name==='create-posts-batch');assert.equal(batches.length,6);assert.ok(batches.every(c=>c.body.items.length===3&&c.body.items.every(i=>i.publishMode==='schedule'&&i.dueAt.endsWith('Z'))));assert.equal(h.calls.filter(c=>c.name==='stage-session').length,6);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,25)});
+test('approval endpoint blocks invalidated assets and historical receipts before all mutations',async()=>{for(const options of [{ready:false},{receipts:[{itemKey:'youtube-full',videoId:'legacy',status:'published'}]}]){const h=harness(options);assert.equal((await h.run(true)).status,409);const mutations=h.calls.filter(c=>!['buffer-status','direct-session'].includes(c.name)&&!String(c.name).startsWith('/publishing/file-info?'));assert.equal(mutations.length,0)}});
+test('25 approved posts reuse YouTube adapter and one Buffer staging claim per Short',async()=>{const h=harness();const response=await h.run(true);assert.equal(response.status,200);assert.equal((await response.json()).scheduled,25);assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,7);assert.ok(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).every(c=>c.body.privacyStatus==='private'&&c.body.publishAt.endsWith('Z')));const batches=h.calls.filter(c=>c.name==='create-posts-batch');assert.equal(batches.length,6);assert.ok(batches.every(c=>c.body.items.length===3&&c.body.items.every(i=>i.publishMode==='schedule'&&i.dueAt.endsWith('Z'))));assert.equal(h.calls.filter(c=>c.name==='stage-session').length,6);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,25)});
 
 test('YouTube failure before an upload session rolls the receipt back to draft',async()=>{
  const h=harness({youtubeFailure:'safe'});
  h.plan.rows=h.plan.rows.filter(r=>r.key==='youtube:full');
  const response=await h.run(true);
  assert.equal(response.status,409);
- assert.equal(h.calls.filter(c=>c.name==='direct-session').length,1);
+ assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,1);
  const full=h.receipts.filter(r=>r.itemKey==='youtube-full');
  assert.equal(full[0]?.status,'submitting');
  assert.equal(full.at(-1)?.status,'draft');
@@ -47,18 +52,18 @@ test('ambiguous YouTube session failure remains submitting for reconciliation',a
 });
 
 test('state is revalidated after acquiring the delivery lock',async()=>{const h=harness({changedAfterLock:true});assert.equal((await h.run(true)).status,409);assert.equal(h.calls.length,0)});
-test('retry rechecks provider failure before allowing a replacement',async()=>{const old={itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'error',postId:'failed',providerCheckedAt:'2026-09-28'};const blocked=harness({receipts:[old],providerStatus:'sent'});assert.equal((await blocked.run(true)).status,409);assert.deepEqual(blocked.calls.map(c=>c.name),['post-status']);const allowed=harness({receipts:[old]});assert.equal((await allowed.run(true)).status,200);assert.equal(allowed.calls.filter(c=>c.name==='create-posts-batch').length,6);});
+test('retry rechecks provider failure before allowing a replacement',async()=>{const old={itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'error',postId:'failed',providerCheckedAt:'2026-09-28'};const blocked=harness({receipts:[old],providerStatus:'sent'});assert.equal((await blocked.run(true)).status,409);assert.deepEqual(blocked.calls.filter(c=>!['buffer-status','direct-session'].includes(c.name)&&!String(c.name).startsWith('/publishing/file-info?')).map(c=>c.name),['post-status']);const allowed=harness({receipts:[old]});assert.equal((await allowed.run(true)).status,200);assert.equal(allowed.calls.filter(c=>c.name==='create-posts-batch').length,6);});
 
 test('the existing YouTube upload API sends publishAt together with private state',async()=>{
  let uploadedBody;
  const chain=result=>{const q={select:()=>q,eq:()=>q,filter:()=>q,order:()=>q,limit:()=>q,single:async()=>({data:result}),maybeSingle:async()=>({data:result})};return q};
  const db={auth:{getUser:async()=>({data:{user:{id:'u'}}})},from:t=>chain(t==='songs'?{id:'p',title:'Test',channel_id:'bangla'}:{youtube_full:{recommendedTitle:'Test',finalDescription:'Caption',categoryId:'10',defaultLanguage:'hi',playlistIds:['PL1234567890']}})};
- const admin={from:t=>chain(t==='publishing_connections'?{id:'youtube',scopes:[]}:{access_token:'fixture',expires_at:new Date(Date.now()+3600000).toISOString()})};
- const route=load('app/api/publishing/youtube/direct-session/route.ts',{'next/server':{NextResponse:Response},'@/utils/supabase/server':{createClient:async()=>db},'@/utils/supabase/admin':{createAdminClient:()=>admin}},{fetch:async(url,options)=>{uploadedBody=JSON.parse(options.body);return new Response('',{status:200,headers:{location:'https://fixture.invalid/resumable'}})}});
+ const admin={from:t=>chain(t==='publishing_connections'?{id:'youtube',scopes:[],external_account_id:'UCfixture'}:{access_token:'fixture',expires_at:new Date(Date.now()+3600000).toISOString()})};
+ const route=load('app/api/publishing/youtube/direct-session/route.ts',{'next/server':{NextResponse:Response},'@/utils/supabase/server':{createClient:async()=>db},'@/utils/supabase/admin':{createAdminClient:()=>admin}},{fetch:async(url,options={})=>{if(String(url).includes('/youtube/v3/channels'))return Response.json({items:[{id:'UCfixture'}]});uploadedBody=JSON.parse(options.body);return new Response('',{status:200,headers:{location:'https://fixture.invalid/resumable'}})}});
  const publishAt=new Date(Date.now()+86400000).toISOString();const response=await route.POST(new Request('http://fixture',{method:'POST',body:JSON.stringify({projectId:'p',kind:'full',sizeBytes:100,privacyStatus:'public',publishAt})}));assert.equal(response.status,200);assert.equal(uploadedBody.status.privacyStatus,'private');assert.equal(uploadedBody.status.publishAt,publishAt);assert.equal(uploadedBody.snippet.defaultLanguage,'hi');assert.equal(uploadedBody.snippet.categoryId,'10');assert.equal((await response.json()).playlistPreparation.automaticallyApplied,false);
 });
 
-test('a partial Buffer failure preserves prior YouTube and successful sibling receipts, stops remaining batches',async()=>{const h=harness({partialFailure:true});const response=await h.run(true);assert.equal(response.status,409);assert.equal(h.calls.filter(c=>c.name==='direct-session').length,7);assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,1);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,9);assert.equal(h.receipts.filter(r=>r.itemKey==='buffer-instagram-short-01').at(-1).status,'submitting');});
+test('a partial Buffer failure preserves prior YouTube and successful sibling receipts, stops remaining batches',async()=>{const h=harness({partialFailure:true});const response=await h.run(true);assert.equal(response.status,409);assert.equal(h.calls.filter(c=>c.name==='direct-session'&&!c.body.preflightOnly).length,7);assert.equal(h.calls.filter(c=>c.name==='create-posts-batch').length,1);assert.equal(h.receipts.filter(r=>r.status==='scheduled').length,9);assert.equal(h.receipts.filter(r=>r.itemKey==='buffer-instagram-short-01').at(-1).status,'submitting');});
 
 for(const target of ['youtube:full','youtube:short-1','instagram:short-1','facebook:short-1','tiktok:short-1'])test(`one edited ${target} survives serialization and reaches its adapter and receipt exactly`,async()=>{
  const h=harness(),before=structuredClone(h.plan.rows),row=h.plan.rows.find(r=>r.key===target);
@@ -84,7 +89,7 @@ for(const operation of ['create-posts-batch','schedule-posts-batch'])test(`Buffe
  items.forEach((item,i)=>{const input=captured[0].variables['input'+i];assert.equal(input.dueAt,item.dueAt);assert.equal(input.mode,'customScheduled');assert.equal(input.saveToDraft,false);assert.equal(input.assets[0].video.url,item.mediaUrl);if(operation==='schedule-posts-batch')assert.equal(input.id,item.postId);else assert.equal(input.channelId,item.channelId)});
 });
 
-test('YouTube reschedule uses the edited exact instant and rejects a mismatched confirmation',async()=>{for(const wrongYoutubeTime of [false,true]){const h=harness({wrongYoutubeTime,receipts:[{itemKey:'youtube-full',assetVersion:'v0',videoId:'existing',status:'scheduled',scheduledAt:'2026-10-01T12:00:00Z'}]});h.plan.rows=h.plan.rows.filter(r=>r.key==='youtube:full');const expected=m.toProviderTime(h.plan.rows[0].localTime,h.plan.timezone);assert.equal((await h.run(true)).status,wrongYoutubeTime?409:200);assert.equal(h.calls.find(c=>c.name==='schedule').body.publishAt,expected);assert.equal(h.calls.filter(c=>c.name==='direct-session').length,0);assert.equal(m.receiptStatus(h.receipts.at(-1)),wrongYoutubeTime?'Needs Attention':'Scheduled');if(!wrongYoutubeTime)assert.equal(h.receipts.at(-1).scheduledAt,expected)}});
+test('campaign resume never reschedules an already confirmed YouTube delivery',async()=>{const h=harness({receipts:[{itemKey:'youtube-full',assetVersion:'v0',videoId:'existing',status:'scheduled',scheduledAt:'2026-10-01T12:00:00Z'}]});h.plan.rows=h.plan.rows.filter(r=>r.key==='youtube:full');const response=await h.run(true,true);assert.equal(response.status,200);const body=await response.json();assert.equal(body.skipped,1);assert.equal(body.scheduled,0);assert.equal(h.calls.filter(c=>c.name==='schedule'||c.name==='direct-session'&&!c.body.preflightOnly).length,0);assert.equal(h.receipts.length,0)});
 
 test('provider monitoring keeps the canonical instant and local display synchronized',async()=>{
  const receipts=[{platform:'youtube',itemKey:'youtube-full',videoId:'yt',timezone:'Europe/London',dueAt:'2026-10-01T10:00:00Z',localTime:'2026-10-01T11:00'},{platform:'instagram',itemKey:'buffer-ig-short-01',postId:'ig',timezone:'Europe/London',dueAt:'2026-10-01T10:00:00Z',localTime:'2026-10-01T11:00'}],saved=[];
@@ -95,7 +100,7 @@ test('provider monitoring keeps the canonical instant and local display synchron
 
 test('failed YouTube pre-session scheduling rolls back safely and never starts sibling uploads',async()=>{const h=harness({youtubeFailure:'safe'});assert.equal((await h.run(true)).status,409);assert.equal(h.receipts.length,2);assert.equal(h.receipts[0].status,'submitting');assert.equal(h.receipts.at(-1).status,'draft');assert.equal(m.receiptStatus(h.receipts.at(-1)),'Needs Attention');assert.equal(h.calls.filter(c=>c.name==='/publish/youtube'||c.name==='create-posts-batch').length,0)});
 
-test('dependent Shorts store the obtained own-song long-video ID without pretending Studio linking occurred',async()=>{const social={youtube_shorts:{shorts:Array.from({length:6},(_,i)=>({shortNumber:i+1,relatedVideo:{songId:'p',channelId:'bangla',assetKey:'full',dependency:'publish-long-video-first',method:'youtube-studio',youtubeVideoId:null}}))}};const h=harness({social});h.plan.rows.reverse();const response=await h.run(true);assert.equal(response.status,200);assert.equal(h.calls.find(c=>c.name==='direct-session').body.kind,'full');const shorts=h.receipts.filter(r=>r.platform==='youtube'&&r.kind==='short'&&r.status==='scheduled');assert.equal(shorts.length,6);assert.ok(shorts.every(r=>r.relatedVideo.youtubeVideoId==='abcdefghijk'&&r.relatedVideo.status==='needs-studio-link-after-long-is-public-or-unlisted'));});
+test('dependent Shorts store the obtained own-song long-video ID without pretending Studio linking occurred',async()=>{const social={youtube_shorts:{shorts:Array.from({length:6},(_,i)=>({shortNumber:i+1,relatedVideo:{songId:'p',channelId:'bangla',assetKey:'full',dependency:'publish-long-video-first',method:'youtube-studio',youtubeVideoId:null}}))}};const h=harness({social});h.plan.rows.reverse();const response=await h.run(true);assert.equal(response.status,200);assert.equal(h.calls.find(c=>c.name==='direct-session'&&!c.body.preflightOnly).body.kind,'full');const shorts=h.receipts.filter(r=>r.platform==='youtube'&&r.kind==='short'&&r.status==='scheduled');assert.equal(shorts.length,6);assert.ok(shorts.every(r=>r.relatedVideo.youtubeVideoId==='abcdefghijk'&&r.relatedVideo.status==='needs-studio-link-after-long-is-public-or-unlisted'));});
 
 
 test('uncertain delivery stays blocked until that exact receipt is explicitly reconciled for retry',()=>{
@@ -147,14 +152,15 @@ test('legacy YouTube recovery cannot become current until provider verification 
 });
 
 
-test('campaign resume skips confirmed deliveries, leaves uncertain receipts untouched, and sends only remaining work',async()=>{
+test('campaign resume reconciles uncertain receipts and sends only remaining work',async()=>{
  const prior=[
   ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
   {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
   {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
   {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
  ];
- const h=harness({receipts:prior});
+ // Unknown provider truth must remain unresolved; it is never retry permission.
+ const h=harness({receipts:prior,providerStatus:'unknown'});
  const response=await h.run(true,true);
  assert.equal(response.status,200);
  const body=await response.json();
@@ -177,4 +183,38 @@ test('resume classifier never treats an uncertain same-asset receipt as retry pe
  assert.equal(resume.unresolved.length,1);
  assert.equal(resume.actionable.length,1);
  assert.equal(resume.actionable[0].asset.slot,2);
+});
+
+test('resume restores provider-confirmed uncertain Buffer posts and never duplicates them',async()=>{
+ const prior=[
+  ...Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'})),
+  {itemKey:'buffer-facebook-short-01',slot:1,assetVersion:'v1',status:'scheduled',postId:'fb1'},
+  {itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'},
+  {itemKey:'buffer-tiktok-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'tt1'},
+ ];
+ const h=harness({receipts:prior,providerStatus:'scheduled'});
+ const response=await h.run(true,true);assert.equal(response.status,200);
+ const body=await response.json();assert.equal(body.scheduled,15);assert.equal(body.skipped,10);assert.equal(body.unresolved,0);
+ assert.equal(h.calls.filter(x=>x.name==='post-status').length,2);
+ assert.equal(h.calls.filter(x=>x.name==='direct-session'&&!x.body.preflightOnly).length,0);
+ assert.equal(h.calls.filter(x=>x.name==='create-posts-batch').flatMap(x=>x.body.items).length,15);
+ assert.ok(h.receipts.filter(r=>['buffer-instagram-short-01','buffer-tiktok-short-01'].includes(r.itemKey)).every(r=>r.status==='scheduled'&&r.reconciliation?.state==='delivered'));
+});
+
+test('resume allows exact Buffer retry only after provider explicitly confirms failure',async()=>{
+ const prior=[{itemKey:'buffer-instagram-short-01',slot:1,assetVersion:'v1',status:'submitting',postId:'ig1'}];
+ const h=harness({receipts:prior,providerStatus:'error'});
+ h.plan.rows=h.plan.rows.filter(r=>r.key==='instagram:short-1');
+ const response=await h.run(true,true);assert.equal(response.status,200);
+ const body=await response.json();assert.equal(body.unresolved,0);
+ assert.equal(h.calls.filter(x=>x.name==='post-status').length,2);
+ assert.equal(h.calls.filter(x=>x.name==='schedule-posts-batch').length,1);
+ assert.equal(h.calls.filter(x=>x.name==='create-posts-batch').length,0);
+ assert.equal(h.calls.find(x=>x.name==='schedule-posts-batch').body.items[0].postId,'ig1');
+});
+
+test('provider-confirmed resume never invokes YouTube again for already confirmed Akele-shaped rows',async()=>{
+ const prior=Array.from({length:7},(_,slot)=>({itemKey:slot?`youtube-short-${String(slot).padStart(2,'0')}`:'youtube-full',slot,kind:slot?'short':'full',assetVersion:'v'+slot,status:'scheduled',videoId:'abcdefghijk'}));
+ const h=harness({receipts:prior});const response=await h.run(true,true);assert.equal(response.status,200);
+ assert.equal(h.calls.filter(x=>['direct-session','schedule','/publish/youtube'].includes(x.name)).length,0);
 });

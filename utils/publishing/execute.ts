@@ -8,6 +8,38 @@ export async function executeApproved(plan:Plan,state:any,approved:boolean,deliv
  return rows.length;
 }
 
+
+const CONFIRMED_DELIVERY_STATUSES=new Set(['scheduled','sent','published']);
+
+// Provider-confirmed success is monotonic. A later network interruption or schedule
+// update may be uncertain, but it must never erase the last confirmed delivery fact.
+export function preserveConfirmedDelivery(previous:any,next:any){
+ if(!previous)return next;
+ const sameIdentity=previous.itemKey===next.itemKey&&previous.assetVersion===next.assetVersion;
+ const sameProviderObject=!previous.postId||!next.postId||previous.postId===next.postId;
+ if(sameIdentity&&sameProviderObject&&CONFIRMED_DELIVERY_STATUSES.has(previous.status)&&!CONFIRMED_DELIVERY_STATUSES.has(next.status)){
+  return {
+   ...next,
+   status:previous.status,
+   scheduledAt:previous.scheduledAt??next.scheduledAt,
+   publishedAt:previous.publishedAt??next.publishedAt,
+   postId:previous.postId??next.postId,
+   videoId:previous.videoId??next.videoId,
+   externalLink:previous.externalLink??next.externalLink,
+   lastConfirmedProviderState:{
+    status:previous.status,
+    confirmedAt:previous.providerCheckedAt||previous.updatedAt||previous.scheduledAt||previous.publishedAt||null,
+   },
+   pendingProviderOperation:{
+    attemptedStatus:next.status,
+    attemptedAt:new Date().toISOString(),
+    dueAt:next.dueAt??null,
+   },
+  };
+ }
+ return next;
+}
+
 export type ReconciliationState='retry_allowed'|'delivered';
 export type ReceiptReconciliation={state:ReconciliationState;resolvedAt:string;note?:string};
 
@@ -15,6 +47,14 @@ export type ReceiptReconciliation={state:ReconciliationState;resolvedAt:string;n
 // clears another asset version, slot, platform or destination.
 export function retryWasExplicitlyAllowed(receipt:any){
  return receipt?.reconciliation?.state==='retry_allowed'&&Boolean(receipt?.reconciliation?.resolvedAt);
+}
+
+export function classifyBufferReconciliation(receipt:any, providerPost:any){
+ if(!receipt?.postId||!providerPost||providerPost.id!==receipt.postId)return {state:'unresolved' as const};
+ const status=String(providerPost.status||'').toLowerCase();
+ if(['scheduled','sent','published'].includes(status))return {state:'delivered' as const,status,scheduledAt:providerPost.dueAt||receipt.scheduledAt||receipt.dueAt||null,publishedAt:providerPost.sentAt||receipt.publishedAt||null,externalLink:providerPost.externalLink||receipt.externalLink||null};
+ if(['error','failed','draft'].includes(status))return {state:'retry_allowed' as const,status};
+ return {state:'unresolved' as const,status:status||'unknown'};
 }
 
 export function deliveryReceiptKey(row:any){
@@ -48,7 +88,7 @@ export function assertDeliveryHistory(rows:any[],state:any){
  if(!old)continue;
  const sameAsset=old.assetVersion===row.asset.version;
  const retryAllowed=sameAsset&&retryWasExplicitlyAllowed(old);
- const ordinarilyRetryable=sameAsset&&(['draft','scheduled'].includes(old.status)||row.destination.platform!=='youtube'&&old.status==='error'&&old.providerCheckedAt&&old.postId);
+ const ordinarilyRetryable=sameAsset&&(old.status==='draft'||row.destination.platform!=='youtube'&&old.status==='error'&&old.providerCheckedAt&&old.postId);
  if(!retryAllowed&&!ordinarilyRetryable)throw Error(`${row.asset.label} already has previous delivery activity. Its asset version or outcome needs reconciliation before scheduling again. Open History; Universe will not create a duplicate.`);
  }
 }
