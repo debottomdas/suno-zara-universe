@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -23,13 +24,6 @@ export async function GET(request: Request) {
       error: authError,
     } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "You must be signed in." },
-        { status: 401 }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const projectId = String(
       searchParams.get("projectId") || ""
@@ -39,6 +33,23 @@ export async function GET(request: Request) {
       return NextResponse.json(
         { error: "projectId is required." },
         { status: 400 }
+      );
+    }
+
+    if (authError || !user) {
+      if (localModeAvailable()) {
+        const song = await localSong(projectId);
+        if (song) {
+          return NextResponse.json({
+            styles: Array.isArray(song.sunoStyles) ? song.sunoStyles : [],
+            projectId,
+            localMode: true,
+          });
+        }
+      }
+      return NextResponse.json(
+        { error: "Local project snapshot is not available yet." },
+        { status: 503 }
       );
     }
 
@@ -70,7 +81,7 @@ export async function GET(request: Request) {
           `
         )
         .eq("song_id", projectId)
-        .eq("user_id", user.id)
+        .eq("user_id", user!.id)
         .order("created_at", {
           ascending: true,
         });
@@ -117,14 +128,7 @@ export async function POST(request: Request) {
       error: authError,
     } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "You must be signed in." },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
+     const body = await request.json();
     const action = typeof body.action === "string" ? body.action.trim() : "generate";
     const projectId = String(body.projectId || "").trim();
     const additionalDirection =
@@ -139,39 +143,37 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data: song, error: songError } = await supabase
-      .from("songs")
-      .select(
-        `
-        id,
-        user_id,
-        title,
-        idea,
-        language,
-        script,
-        mood,
-        genre,
-        freedom,
-        selected_hook,
-        lyrics
-        `
-      )
-      .eq("id", projectId)
-      .eq("user_id", user.id)
-      .single();
-
-    if (songError || !song) {
-      return NextResponse.json(
-        { error: "Song not found." },
-        { status: 404 }
-      );
+    const localOnly = Boolean(authError || !user);
+    let song: any = null;
+    if (!localOnly) {
+      const result = await supabase.from("songs").select(`
+        id,user_id,title,idea,language,script,mood,genre,freedom,selected_hook,lyrics
+      `).eq("id", projectId).eq("user_id", user!.id).single();
+      song = result.data;
+    } else if (localModeAvailable()) {
+      const local = await localSong(projectId);
+      if (local) song = { ...local, selected_hook: local.selected_hook ?? local.selectedHook };
     }
+    if (!song) return NextResponse.json(
+      { error: localOnly ? "Local project snapshot is not available yet." : "Song not found." },
+      { status: localOnly ? 503 : 404 }
+    );
 
     if (!song.lyrics?.trim()) {
       return NextResponse.json(
         { error: "Generate the full song before creating Suno styles." },
         { status: 400 }
       );
+    }
+
+    if (action === "save" && localOnly) {
+      const incoming = Array.isArray(body.styles) ? body.styles : [];
+      const styles = incoming.filter((style: any) => style && typeof style.name === "string" && typeof style.prompt === "string");
+      if (!styles.length) return NextResponse.json({ error: "At least one Suno style is required." }, { status: 400 });
+      if (styles.filter((style: any) => Boolean(style.recommended)).length !== 1) return NextResponse.json({ error: "Exactly one Suno style must remain recommended." }, { status: 400 });
+      const updated = await updateLocalSong(projectId, { sunoStyles: styles });
+      if (!updated) return NextResponse.json({ error: "Could not save Suno styles locally." }, { status: 500 });
+      return NextResponse.json({ styles, projectId, saved: true, localMode: true });
     }
 
     if (action === "save") {
@@ -198,13 +200,13 @@ export async function POST(request: Request) {
         .from("suno_styles")
         .delete()
         .eq("song_id", song.id)
-        .eq("user_id", user.id);
+        .eq("user_id", user!.id);
       if (deleteStylesError) throw new Error(`Could not update Suno styles: ${deleteStylesError.message}`);
 
       const { error: saveStylesError } = await supabase.from("suno_styles").insert(
         styles.map((style: any) => ({
           song_id: song.id,
-          user_id: user.id,
+          user_id: user!.id,
           name: style.name,
           category: style.category,
           recommended: style.recommended,
@@ -431,12 +433,28 @@ Every Suno prompt must be no more than 1000 characters.
       });
     }
 
+    if (localOnly) {
+      const updated = await updateLocalSong(projectId, {
+        sunoStyles: styles,
+        status: "creating",
+      });
+      if (!updated) {
+        throw new Error("Suno styles were generated but could not be saved locally.");
+      }
+      return NextResponse.json({
+        styles,
+        projectId: song.id,
+        saved: true,
+        localMode: true,
+      });
+    }
+
     // Replace any previously generated Suno styles for this song.
     const { error: deleteStylesError } = await supabase
       .from("suno_styles")
       .delete()
       .eq("song_id", song.id)
-      .eq("user_id", user.id);
+      .eq("user_id", user!.id);
 
     if (deleteStylesError) {
       throw new Error(
@@ -446,7 +464,7 @@ Every Suno prompt must be no more than 1000 characters.
 
     const stylesToSave = styles.map((style) => ({
       song_id: song.id,
-      user_id: user.id,
+      user_id: user!.id,
       name: style.name,
       category: style.category,
       recommended: style.recommended,
@@ -471,13 +489,14 @@ Every Suno prompt must be no more than 1000 characters.
         updated_at: new Date().toISOString(),
       })
       .eq("id", song.id)
-      .eq("user_id", user.id);
+      .eq("user_id", user!.id);
 
     if (songStatusError) {
       throw new Error(
         `Suno styles were saved, but the song status could not be updated: ${songStatusError.message}`
       );
     }
+
 
     return NextResponse.json({
       styles,

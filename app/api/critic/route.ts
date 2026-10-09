@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong } from "@/utils/local-first/store";
 
 export async function POST(request: Request) {
   try {
@@ -27,16 +28,6 @@ export async function POST(request: Request) {
       error: userError,
     } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      return NextResponse.json(
-        {
-          error:
-            "Please sign in to use Critic Mode.",
-        },
-        { status: 401 }
-      );
-    }
-
     /*
      * 2. Validate request.
      */
@@ -60,37 +51,25 @@ export async function POST(request: Request) {
      * RLS ensures the user can only access
      * their own song.
      */
-    const {
-      data: project,
-      error: projectError,
-    } = await supabase
-      .from("songs")
-      .select(`
-        id,
-        title,
-        idea,
-        language,
-        script,
-        mood,
-        genre,
-        freedom,
-        hooks,
-        selected_hook,
-        lyrics,
-        status,
-        created_at,
-        updated_at
-      `)
-      .eq("id", projectId)
-      .single();
+    let project: any = null;
+    if (!userError && user) {
+      const result = await supabase
+        .from("songs")
+        .select(`
+          id,title,idea,language,script,mood,genre,freedom,hooks,selected_hook,lyrics,status,created_at,updated_at
+        `)
+        .eq("id", projectId)
+        .single();
+      project = result.data;
+    } else if (localModeAvailable()) {
+      const local = await localSong(projectId);
+      if (local) project = { ...local, selected_hook: local.selected_hook ?? local.selectedHook, updated_at: local.updated_at ?? local.updatedAt };
+    }
 
-    if (projectError || !project) {
+    if (!project) {
       return NextResponse.json(
-        {
-          error:
-            "Song not found or you do not have access to it.",
-        },
-        { status: 404 }
+        { error: user ? "Song not found or you do not have access to it." : "Local project snapshot is not available yet." },
+        { status: user ? 404 : 503 }
       );
     }
 

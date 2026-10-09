@@ -114,3 +114,7 @@
 @media(min-width:701px) and (max-width:1050px){.layout{grid-template-columns:205px minmax(0,1fr)}}
 .scheduleNext{display:flex;align-items:center;justify-content:space-between;gap:24px;margin:22px 0;padding:22px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(120deg,color-mix(in srgb,var(--accent) 10%,var(--panel)),var(--panel))}.scheduleNext h3{font-family:Georgia,serif;font-size:21px;margin:6px 0}.scheduleNext .gradientButton{display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;margin:0;padding:14px 18px;font-size:13px;text-decoration:none;min-height:48px}.scheduleNext p{margin-bottom:0;max-width:420px}@media(max-width:1000px){.scheduleNext{align-items:flex-start;flex-direction:column}.scheduleNext .gradientButton{white-space:normal}}
 .songhead>div{min-width:0}.songPicker{max-width:100%}@media(max-width:700px){.songhead{grid-template-columns:44px minmax(0,1fr)}}
+
+
+/* Local-first runtime state */
+.localModeBanner{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:12px;min-height:34px;padding:6px 18px;border-bottom:1px solid #b68a4b55;background:#fff4d6;color:#684b16;font-size:10px}.localModeBanner b{font-size:9px;letter-spacing:.08em;white-space:nowrap}.localModeBanner span{opacity:.82}.page[data-theme="dark"] .localModeBanner{background:#3a2d16;color:#f4d58d;border-bottom-color:#80652d}@media(max-width:700px){.localModeBanner{align-items:flex-start;flex-direction:column;gap:2px;padding:7px 12px}}
