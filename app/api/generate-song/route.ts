@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -19,17 +20,7 @@ export async function POST(request: Request) {
       error: userError,
     } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      return NextResponse.json(
-        {
-          error:
-            "Please sign in to generate a song.",
-        },
-        { status: 401 }
-      );
-    }
-
-    /*
+     /*
      * 2. Read request.
      */
     const body = await request.json();
@@ -51,37 +42,24 @@ export async function POST(request: Request) {
      * RLS means the logged-in user can only
      * retrieve their own song.
      */
-    const {
-      data: project,
-      error: projectError,
-    } = await supabase
-      .from("songs")
-      .select(`
-        id,
-        title,
-        idea,
-        language,
-        script,
-        mood,
-        genre,
-        freedom,
-        hooks,
-        selected_hook,
-        lyrics,
-        status,
-        created_at,
-        updated_at
-      `)
-      .eq("id", projectId)
-      .single();
+    let project: any = null;
+    const localOnly = Boolean(userError || !user);
+    if (!localOnly) {
+      const result = await supabase
+        .from("songs")
+        .select(`id,title,idea,language,script,mood,genre,freedom,hooks,selected_hook,lyrics,status,created_at,updated_at`)
+        .eq("id", projectId)
+        .single();
+      project = result.data;
+    } else if (localModeAvailable()) {
+      const local = await localSong(projectId);
+      if (local) project = { ...local, selected_hook: local.selected_hook ?? local.selectedHook, updated_at: local.updated_at ?? local.updatedAt };
+    }
 
-    if (projectError || !project) {
+    if (!project) {
       return NextResponse.json(
-        {
-          error:
-            "Song not found or you do not have access to it.",
-        },
-        { status: 404 }
+        { error: localOnly ? "Local project snapshot is not available yet." : "Song not found or you do not have access to it." },
+        { status: localOnly ? 503 : 404 }
       );
     }
 
@@ -182,6 +160,16 @@ Use exactly this structure:
 
     const now =
       new Date().toISOString();
+
+    if (localOnly) {
+      const updatedSong = await updateLocalSong(project.id, {
+        title: project.title || result.title,
+        lyrics: result.lyrics,
+        status: "song-generated",
+      });
+      if (!updatedSong) return NextResponse.json({ error: "The song was generated but the local snapshot could not be saved." }, { status: 500 });
+      return NextResponse.json({ saved: true, localMode: true, title: updatedSong.title, lyrics: updatedSong.lyrics, status: updatedSong.status });
+    }
 
     /*
      * 5. If a complete song already exists,
