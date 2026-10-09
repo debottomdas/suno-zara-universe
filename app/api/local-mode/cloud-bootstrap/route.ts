@@ -11,7 +11,7 @@ export async function GET(request: Request) {
 
   const url = new URL(request.url);
   const returnTo = clean(url.searchParams.get("returnTo"));
-  if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api\/local-mode\/bootstrap$/i.test(returnTo)) {
+  if (!/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/api\/local-mode\/bootstrap\/receive$/i.test(returnTo)) {
     return NextResponse.json({ error: "Invalid local return address." }, { status: 400 });
   }
 
@@ -49,7 +49,7 @@ export async function GET(request: Request) {
   }
 
   const payload = Buffer.from(JSON.stringify({ workspace, channels: channels || [], songsByChannel }), "utf8").toString("base64url");
-  const target = new URL(returnTo);
-  target.searchParams.set("payload", payload);
-  return NextResponse.redirect(target);
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const html = `<!doctype html><html><body><p>Copying your Suno Zara workspace to this Mac…</p><form id="bootstrap" method="post" action="${escape(returnTo)}"><input type="hidden" name="payload" value="${escape(payload)}"></form><script>document.getElementById('bootstrap').submit()</script></body></html>`;
+  return new NextResponse(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
 }
