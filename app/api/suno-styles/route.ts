@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -117,14 +118,7 @@ export async function POST(request: Request) {
       error: authError,
     } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "You must be signed in." },
-        { status: 401 }
-      );
-    }
-
-    const body = await request.json();
+     const body = await request.json();
     const action = typeof body.action === "string" ? body.action.trim() : "generate";
     const projectId = String(body.projectId || "").trim();
     const additionalDirection =
@@ -139,39 +133,37 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data: song, error: songError } = await supabase
-      .from("songs")
-      .select(
-        `
-        id,
-        user_id,
-        title,
-        idea,
-        language,
-        script,
-        mood,
-        genre,
-        freedom,
-        selected_hook,
-        lyrics
-        `
-      )
-      .eq("id", projectId)
-      .eq("user_id", user.id)
-      .single();
-
-    if (songError || !song) {
-      return NextResponse.json(
-        { error: "Song not found." },
-        { status: 404 }
-      );
+    const localOnly = Boolean(authError || !user);
+    let song: any = null;
+    if (!localOnly) {
+      const result = await supabase.from("songs").select(`
+        id,user_id,title,idea,language,script,mood,genre,freedom,selected_hook,lyrics
+      `).eq("id", projectId).eq("user_id", user!.id).single();
+      song = result.data;
+    } else if (localModeAvailable()) {
+      const local = await localSong(projectId);
+      if (local) song = { ...local, selected_hook: local.selected_hook ?? local.selectedHook };
     }
+    if (!song) return NextResponse.json(
+      { error: localOnly ? "Local project snapshot is not available yet." : "Song not found." },
+      { status: localOnly ? 503 : 404 }
+    );
 
     if (!song.lyrics?.trim()) {
       return NextResponse.json(
         { error: "Generate the full song before creating Suno styles." },
         { status: 400 }
       );
+    }
+
+    if (action === "save" && localOnly) {
+      const incoming = Array.isArray(body.styles) ? body.styles : [];
+      const styles = incoming.filter((style: any) => style && typeof style.name === "string" && typeof style.prompt === "string");
+      if (!styles.length) return NextResponse.json({ error: "At least one Suno style is required." }, { status: 400 });
+      if (styles.filter((style: any) => Boolean(style.recommended)).length !== 1) return NextResponse.json({ error: "Exactly one Suno style must remain recommended." }, { status: 400 });
+      const updated = await updateLocalSong(projectId, { sunoStyles: styles });
+      if (!updated) return NextResponse.json({ error: "Could not save Suno styles locally." }, { status: 500 });
+      return NextResponse.json({ styles, projectId, saved: true, localMode: true });
     }
 
     if (action === "save") {
@@ -478,6 +470,8 @@ Every Suno prompt must be no more than 1000 characters.
         `Suno styles were saved, but the song status could not be updated: ${songStatusError.message}`
       );
     }
+
+    if (localOnly) await updateLocalSong(projectId, { sunoStyles: styles });
 
     return NextResponse.json({
       styles,
