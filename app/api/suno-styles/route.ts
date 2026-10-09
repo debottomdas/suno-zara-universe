@@ -47,7 +47,7 @@ export async function GET(request: Request) {
       .from("songs")
       .select("id")
       .eq("id", projectId)
-      .eq("user_id", user.id)
+      .eq("user_id", user!.id)
       .single();
 
     if (songError || !song) {
@@ -71,7 +71,7 @@ export async function GET(request: Request) {
           `
         )
         .eq("song_id", projectId)
-        .eq("user_id", user.id)
+        .eq("user_id", user!.id)
         .order("created_at", {
           ascending: true,
         });
@@ -190,13 +190,13 @@ export async function POST(request: Request) {
         .from("suno_styles")
         .delete()
         .eq("song_id", song.id)
-        .eq("user_id", user.id);
+        .eq("user_id", user!.id);
       if (deleteStylesError) throw new Error(`Could not update Suno styles: ${deleteStylesError.message}`);
 
       const { error: saveStylesError } = await supabase.from("suno_styles").insert(
         styles.map((style: any) => ({
           song_id: song.id,
-          user_id: user.id,
+          user_id: user!.id,
           name: style.name,
           category: style.category,
           recommended: style.recommended,
@@ -428,7 +428,7 @@ Every Suno prompt must be no more than 1000 characters.
       .from("suno_styles")
       .delete()
       .eq("song_id", song.id)
-      .eq("user_id", user.id);
+      .eq("user_id", user!.id);
 
     if (deleteStylesError) {
       throw new Error(
@@ -438,7 +438,7 @@ Every Suno prompt must be no more than 1000 characters.
 
     const stylesToSave = styles.map((style) => ({
       song_id: song.id,
-      user_id: user.id,
+      user_id: user!.id,
       name: style.name,
       category: style.category,
       recommended: style.recommended,
@@ -463,7 +463,7 @@ Every Suno prompt must be no more than 1000 characters.
         updated_at: new Date().toISOString(),
       })
       .eq("id", song.id)
-      .eq("user_id", user.id);
+      .eq("user_id", user!.id);
 
     if (songStatusError) {
       throw new Error(
