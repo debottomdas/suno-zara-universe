@@ -182,7 +182,7 @@ Use exactly this structure:
         .from("song_versions")
         .insert({
           song_id: project.id,
-          user_id: user.id,
+          user_id: user!.id,
           title: project.title,
           lyrics: project.lyrics,
           version_type:
