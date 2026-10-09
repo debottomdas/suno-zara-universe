@@ -114,3 +114,24 @@ export async function updateLocalSong(projectId: string, patch: Record<string, u
   await writeState({ ...current, songsByChannel });
   return updated;
 }
+
+
+export async function replaceLocalWorkspace(input: { workspace: any; channels: any[]; songsByChannel: Record<string, any[]> }) {
+  if (!localRuntimeAllowed()) throw new Error("Local mode is unavailable.");
+  const channels = Array.isArray(input.channels) ? input.channels : [];
+  const songsByChannel = input.songsByChannel && typeof input.songsByChannel === "object" ? input.songsByChannel : {};
+  const allowed = new Set(channels.map((channel: any) => String(channel?.id || "")).filter(Boolean));
+  const filtered: Record<string, any[]> = {};
+  for (const [channelId, projects] of Object.entries(songsByChannel)) {
+    if (allowed.has(channelId)) filtered[channelId] = Array.isArray(projects) ? projects : [];
+  }
+  const next: LocalWorkspaceState = {
+    schemaVersion: 1,
+    syncedAt: new Date().toISOString(),
+    workspace: input.workspace || null,
+    channels,
+    songsByChannel: filtered,
+  };
+  await writeState(next);
+  return next;
+}
