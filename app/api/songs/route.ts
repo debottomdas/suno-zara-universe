@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { cacheSongs, localModeAvailable, localSongs } from "@/utils/local-first/store";
 
 export async function GET(request: Request) {
   try {
@@ -10,15 +11,19 @@ export async function GET(request: Request) {
       error: userError,
     } = await supabase.auth.getUser();
 
+    const channelId =
+      new URL(request.url).searchParams.get("channelId")?.trim() || "";
+
     if (userError || !user) {
+      if (channelId && localModeAvailable()) {
+        const local = await localSongs(channelId);
+        if (local.projects.length) return NextResponse.json(local);
+      }
       return NextResponse.json(
         { error: "Please sign in to view your songs." },
         { status: 401 }
       );
     }
-
-    const channelId =
-      new URL(request.url).searchParams.get("channelId")?.trim() || "";
 
     if (!channelId) {
       return NextResponse.json(
@@ -113,10 +118,17 @@ export async function GET(request: Request) {
       })
     );
 
+    await cacheSongs(channelId, projects);
     return NextResponse.json({
       projects,
+      localMode: false,
     });
   } catch (error) {
+    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    if (channelId && localModeAvailable()) {
+      const local = await localSongs(channelId);
+      if (local.projects.length) return NextResponse.json(local);
+    }
     console.error(
       "Failed to load songs:",
       error
