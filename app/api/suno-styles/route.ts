@@ -24,13 +24,6 @@ export async function GET(request: Request) {
       error: authError,
     } = await supabase.auth.getUser();
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { error: "You must be signed in." },
-        { status: 401 }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const projectId = String(
       searchParams.get("projectId") || ""
@@ -43,11 +36,28 @@ export async function GET(request: Request) {
       );
     }
 
+    if (authError || !user) {
+      if (localModeAvailable()) {
+        const song = await localSong(projectId);
+        if (song) {
+          return NextResponse.json({
+            styles: Array.isArray(song.sunoStyles) ? song.sunoStyles : [],
+            projectId,
+            localMode: true,
+          });
+        }
+      }
+      return NextResponse.json(
+        { error: "Local project snapshot is not available yet." },
+        { status: 503 }
+      );
+    }
+
     const { data: song, error: songError } = await supabase
       .from("songs")
       .select("id")
       .eq("id", projectId)
-      .eq("user_id", user!.id)
+      .eq("user_id", user.id)
       .single();
 
     if (songError || !song) {
@@ -423,6 +433,22 @@ Every Suno prompt must be no more than 1000 characters.
       });
     }
 
+    if (localOnly) {
+      const updated = await updateLocalSong(projectId, {
+        sunoStyles: styles,
+        status: "creating",
+      });
+      if (!updated) {
+        throw new Error("Suno styles were generated but could not be saved locally.");
+      }
+      return NextResponse.json({
+        styles,
+        projectId: song.id,
+        saved: true,
+        localMode: true,
+      });
+    }
+
     // Replace any previously generated Suno styles for this song.
     const { error: deleteStylesError } = await supabase
       .from("suno_styles")
@@ -471,7 +497,6 @@ Every Suno prompt must be no more than 1000 characters.
       );
     }
 
-    if (localOnly) await updateLocalSong(projectId, { sunoStyles: styles });
 
     return NextResponse.json({
       styles,
