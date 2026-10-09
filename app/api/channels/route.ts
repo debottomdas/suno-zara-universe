@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { cacheChannels, localChannels, localModeAvailable } from "@/utils/local-first/store";
 
 function clean(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
 
@@ -39,7 +40,13 @@ export async function GET() {
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    if (!user) {
+      if (localModeAvailable()) {
+        const local = await localChannels();
+        if (local.channels.length) return NextResponse.json(local);
+      }
+      return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    }
     const workspace = await ensureWorkspace(supabase, user);
     let { data: channels, error: channelsError } = await supabase.from("channels")
       .select("id, workspace_id, name, description, language, channel_type, profile, is_archived, created_at, updated_at")
@@ -81,8 +88,13 @@ export async function GET() {
         if (backfillError) throw backfillError;
       }
     }
-    return NextResponse.json({ workspace, channels });
+    await cacheChannels(workspace, channels ?? []);
+    return NextResponse.json({ workspace, channels, localMode: false });
   } catch (error) {
+    if (localModeAvailable()) {
+      const local = await localChannels();
+      if (local.channels.length) return NextResponse.json(local);
+    }
     console.error("Channels GET error:", error);
     return NextResponse.json({ error: error instanceof Error ? error.message : "Could not load channels." }, { status: 500 });
   }
