@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { cacheChannels, localChannels, localModeAvailable } from "@/utils/local-first/store";
+import { cacheChannels, createLocalChannel, localChannels, localModeAvailable, updateLocalChannel } from "@/utils/local-first/store";
 
 function clean(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
 
@@ -45,7 +45,7 @@ export async function GET() {
         const local = await localChannels();
         if (local.channels.length) return NextResponse.json(local);
       }
-      return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+      return NextResponse.json(await localChannels());
     }
     const workspace = await ensureWorkspace(supabase, user);
     let { data: channels, error: channelsError } = await supabase.from("channels")
@@ -104,6 +104,7 @@ export async function POST(request: Request) {
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
+    if (!user && localModeAvailable()) { const body = await request.json(); const name=clean(body.name); if(!name)return NextResponse.json({error:"Channel name is required."},{status:400}); const channel=await createLocalChannel({name,description:clean(body.description),language:clean(body.language),channelType:clean(body.channelType)||"music",profile:body.profile}); return NextResponse.json({channel,localMode:true},{status:201}); }
     if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
     const workspace = await ensureWorkspace(supabase, user);
     const body = await request.json();
@@ -127,9 +128,8 @@ export async function PATCH(request: Request) {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
 
-    if (!user) {
-      return NextResponse.json({ error: "Please sign in." }, { status: 401 });
-    }
+    if (!user && localModeAvailable()) { const body=await request.json(); const channelId=clean(body.channelId); if(!channelId)return NextResponse.json({error:"Channel ID is required."},{status:400}); const name=body.name!==undefined?clean(body.name):undefined; const channel=await updateLocalChannel(channelId,{name,archive:body.archive===true}); if(!channel)return NextResponse.json({error:"Channel not found."},{status:404}); return NextResponse.json({channel,localMode:true}); }
+    if (!user) return NextResponse.json({ error: "Please sign in." }, { status: 401 });
 
     const workspace = await ensureWorkspace(supabase, user);
     const body = await request.json();
