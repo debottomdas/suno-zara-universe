@@ -88,3 +88,29 @@ export async function localSongs(channelId: string) {
   const state = await readLocalWorkspace();
   return { projects: state.songsByChannel[channelId] || [], localMode: true, syncedAt: state.syncedAt };
 }
+
+export async function localSong(projectId: string) {
+  const state = await readLocalWorkspace();
+  for (const [channelId, projects] of Object.entries(state.songsByChannel)) {
+    const project = projects.find((item: any) => item?.id === projectId || item?.projectId === projectId);
+    if (project) return { ...project, channelId };
+  }
+  return null;
+}
+
+export async function updateLocalSong(projectId: string, patch: Record<string, unknown>) {
+  if (!localRuntimeAllowed()) return null;
+  const current = await readLocalWorkspace();
+  let updated: any = null;
+  const songsByChannel: Record<string, any[]> = {};
+  for (const [channelId, projects] of Object.entries(current.songsByChannel)) {
+    songsByChannel[channelId] = projects.map((item: any) => {
+      if (item?.id !== projectId && item?.projectId !== projectId) return item;
+      updated = { ...item, ...patch, id: item.id || projectId, projectId, updatedAt: new Date().toISOString(), localDirty: true };
+      return updated;
+    });
+  }
+  if (!updated) return null;
+  await writeState({ ...current, songsByChannel });
+  return updated;
+}
