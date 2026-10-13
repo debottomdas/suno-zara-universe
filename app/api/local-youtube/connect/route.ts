@@ -20,25 +20,10 @@ export async function GET(request: NextRequest) {
   try {
     assertLocalYouTubeRequest(request);
 
-    const origin = request.headers.get("origin");
-    const fetchSite = request.headers.get("sec-fetch-site");
-
-    const userNavigation =
-      request.headers.get("sec-fetch-mode") === "navigate" &&
-      request.headers.get("sec-fetch-dest") === "document" &&
-      (fetchSite === "none" || fetchSite === "same-origin");
-
-    if (
-      origin !== "http://localhost:3000" &&
-      origin !== "http://127.0.0.1:3000" &&
-      fetchSite !== "same-origin" &&
-      !userNavigation
-    ) {
-      return NextResponse.json(
-        { error: "Connection must start from the local application." },
-        { status: 403 }
-      );
-    }
+    // Loopback-only access is enforced above. Browser navigation headers
+    // differ between direct URL entry, bookmarks and link clicks, so they
+    // must not gate the OAuth start. State, PKCE and the callback cookie
+    // protect the authorization response.
 
     const clientId = process.env.GOOGLE_YOUTUBE_CLIENT_ID;
     const configuredRedirect =
