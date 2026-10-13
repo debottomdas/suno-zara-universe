@@ -68,13 +68,36 @@ export async function cacheChannels(workspace: any, channels: any[]) {
 export async function cacheSongs(channelId: string, projects: any[]) {
   if (!localRuntimeAllowed() || !channelId) return;
   const current = await readLocalWorkspace();
+  const existing = current.songsByChannel[channelId] || [];
+  const incoming = Array.isArray(projects) ? projects : [];
+
+  // Preserve local edits when refreshing from Supabase.
+  const dirty = new Map(
+    existing
+      .filter((song: any) => song?.localDirty === true)
+      .map((song: any) => [String(song.id || song.projectId), song])
+  );
+
+  const merged = incoming.map((song: any) => {
+    const id = String(song.id || song.projectId);
+    return dirty.get(id) || song;
+  });
+
+  const incomingIds = new Set(
+    incoming.map((song: any) => String(song.id || song.projectId))
+  );
+
+  for (const [id, song] of dirty) {
+    if (!incomingIds.has(id)) merged.push(song);
+  }
+
   await writeState({
     ...current,
     schemaVersion: 1,
     syncedAt: new Date().toISOString(),
     songsByChannel: {
       ...current.songsByChannel,
-      [channelId]: Array.isArray(projects) ? projects : [],
+      [channelId]: merged,
     },
   });
 }
@@ -125,6 +148,37 @@ export async function replaceLocalWorkspace(input: { workspace: any; channels: a
   for (const [channelId, projects] of Object.entries(songsByChannel)) {
     if (allowed.has(channelId)) filtered[channelId] = Array.isArray(projects) ? projects : [];
   }
+  // Preserve unsynchronised local edits during cloud bootstrap.
+  const current = await readLocalWorkspace();
+
+  for (const [channelId, existingSongs] of Object.entries(current.songsByChannel)) {
+    const dirtySongs = existingSongs.filter((song: any) => song?.localDirty === true);
+    if (!dirtySongs.length) continue;
+
+    // Never silently discard a channel containing local edits.
+    if (!filtered[channelId]) {
+      filtered[channelId] = [];
+      const existingChannel = current.channels.find((c: any) => c.id === channelId);
+      if (existingChannel && !channels.some((c: any) => c.id === channelId)) {
+        channels.push(existingChannel);
+      }
+    }
+
+    const merged = [...filtered[channelId]];
+
+    for (const dirtySong of dirtySongs) {
+      const id = String(dirtySong.id || dirtySong.projectId);
+      const index = merged.findIndex(
+        (song: any) => String(song.id || song.projectId) === id
+      );
+
+      if (index >= 0) merged[index] = dirtySong;
+      else merged.push(dirtySong);
+    }
+
+    filtered[channelId] = merged;
+  }
+
   const next: LocalWorkspaceState = {
     schemaVersion: 1,
     syncedAt: new Date().toISOString(),
