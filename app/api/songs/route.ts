@@ -1,8 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { cacheSongs, localModeAvailable, localSongs } from "@/utils/local-first/store";
+import { cacheSongs, localModeAvailable, localSongs, localChannels } from "@/utils/local-first/store";
 
 export async function GET(request: Request) {
+  const host = request.headers.get("host");
+  if (localModeAvailable() && (host === "localhost:3000" || host === "127.0.0.1:3000")) {
+    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    if (!channelId) return NextResponse.json({ error: "channelId is required." }, { status: 400 });
+    const { channels } = await localChannels();
+    if (!channels.some((channel) => channel.id === channelId)) {
+      return NextResponse.json({ error: "Unknown local channel." }, { status: 404 });
+    }
+    return NextResponse.json(await localSongs(channelId));
+  }
   try {
     const supabase = await createClient();
 
