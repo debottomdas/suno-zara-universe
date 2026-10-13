@@ -118,3 +118,7 @@
 
 /* Local-first runtime state */
 .localModeBanner{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:center;gap:12px;min-height:34px;padding:6px 18px;border-bottom:1px solid #b68a4b55;background:#fff4d6;color:#684b16;font-size:10px}.localModeBanner b{font-size:9px;letter-spacing:.08em;white-space:nowrap}.localModeBanner span{opacity:.82}.page[data-theme="dark"] .localModeBanner{background:#3a2d16;color:#f4d58d;border-bottom-color:#80652d}@media(max-width:700px){.localModeBanner{align-items:flex-start;flex-direction:column;gap:2px;padding:7px 12px}}
+/* Project lifecycle catalogue */
+.projectViews{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.projectViews button{border:1px solid var(--line,#d8d8d8);background:transparent;border-radius:999px;padding:7px 12px;cursor:pointer}.projectViews .projectViewActive{font-weight:700;box-shadow:inset 0 0 0 1px currentColor}.projectMove{display:inline-flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}.projectMove select{border:1px solid var(--line,#d8d8d8);border-radius:8px;padding:6px 9px;background:transparent;color:inherit}
+
+.projectActions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}.deleteProject{border:1px solid currentColor;border-radius:8px;padding:6px 10px;background:transparent;color:#b42318;cursor:pointer}.deleteProject:disabled{opacity:.5;cursor:not-allowed}
