@@ -36,7 +36,11 @@ async function ensureWorkspace(supabase: any, user: any) {
   return workspace;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const host = request.headers.get("host");
+  if (localModeAvailable() && (host === "localhost:3000" || host === "127.0.0.1:3000")) {
+    return NextResponse.json(await localChannels());
+  }
   try {
     const supabase = await createClient();
     const { data: { user } } = await supabase.auth.getUser();
