@@ -129,6 +129,14 @@ export async function GET(request: NextRequest) {
       (await tokenResponse.json()) as GoogleTokenResponse;
 
     if (!tokens.access_token) return finish("token_error");
+    const granted = new Set((tokens.scope || "").split(/\s+/).filter(Boolean));
+    const required = [
+      "https://www.googleapis.com/auth/youtube.readonly",
+      "https://www.googleapis.com/auth/youtube.upload",
+    ];
+    if (!required.every((scope) => granted.has(scope))) {
+      return finish("missing_youtube_permissions");
+    }
 
     const channelUrl = new URL(
       "https://www.googleapis.com/youtube/v3/channels"
