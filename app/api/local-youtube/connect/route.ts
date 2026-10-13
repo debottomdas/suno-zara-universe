@@ -23,10 +23,16 @@ export async function GET(request: NextRequest) {
     const origin = request.headers.get("origin");
     const fetchSite = request.headers.get("sec-fetch-site");
 
+    const userNavigation =
+      request.headers.get("sec-fetch-mode") === "navigate" &&
+      request.headers.get("sec-fetch-dest") === "document" &&
+      (fetchSite === "none" || fetchSite === "same-origin");
+
     if (
       origin !== "http://localhost:3000" &&
       origin !== "http://127.0.0.1:3000" &&
-      fetchSite !== "same-origin"
+      fetchSite !== "same-origin" &&
+      !userNavigation
     ) {
       return NextResponse.json(
         { error: "Connection must start from the local application." },
