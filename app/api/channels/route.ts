@@ -42,8 +42,7 @@ export async function GET() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
       if (localModeAvailable()) {
-        const local = await localChannels();
-        if (local.channels.length) return NextResponse.json(local);
+        return NextResponse.json(await localChannels());
       }
       return NextResponse.json({ error: "Please sign in." }, { status: 401 });
     }
