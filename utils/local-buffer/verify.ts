@@ -6,7 +6,8 @@ type BufferChannel = { id: string; name: string; displayName?: string | null; se
 type GraphQLResponse<T> = { data?: T; errors?: Array<{ message?: string }> };
 
 const verifiedCache = new Map<string, { value: Awaited<ReturnType<typeof verifyLocalBufferUncached>>; expires: number }>();
-const inFlight = new Map<string, Promise<Awaited<ReturnType<typeof verifyLocalBufferUncached>>>>();
+type VerificationResult = Awaited<ReturnType<typeof verifyLocalBufferUncached>> | { status: "rate_limited"; channels: never[]; retryAfterSeconds: number } | (Awaited<ReturnType<typeof verifyLocalBufferUncached>> & { stale: boolean; rateLimited: boolean });
+const inFlight = new Map<string, Promise<VerificationResult>>();
 const retryAfter = new Map<string, number>();
 const CACHE_MS = 15 * 60 * 1000;
 
