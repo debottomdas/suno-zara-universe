@@ -53,21 +53,25 @@ export default function LocalBufferDrafts({ channelId }: { channelId: string }) 
     } catch (e) { setError(e instanceof Error ? e.message : 'Draft creation failed'); }
     finally { setBusy(false); }
   }
-  if (!destinations.length) return null;
   return <section style={{ marginTop: 16, borderTop: '1px solid #64748b', paddingTop: 12 }}>
-    <b>Buffer draft test — private only</b>
+    <b>Cloudinary video upload</b>
+    <p>Upload an approved video from your Mac. Uploading works independently of Buffer verification and does not publish anything.</p>
     <p>Choose one verified social destination. This creates a draft inside Buffer; it does not schedule or publish.</p>
+    <label style={{ display: 'block', marginTop: 8 }}>Upload video from this Mac (Cloudinary, max 100 MB)
+      <input type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" disabled={uploading || busy} onChange={e => void uploadVideo(e.target.files?.[0])} style={{ display: 'block', width: '100%' }} />
+    </label>
+    {uploading && <p role="status">Uploading video to Cloudinary…</p>}
+    {!destinations.length && <p role="status">Buffer destinations are temporarily unavailable. You can still upload videos; draft creation will be available after Buffer verification recovers.</p>}
+    {destinations.length > 0 && <>
+    <p>Choose a verified destination to save a private Buffer draft. No scheduling or publishing.</p>
     <select aria-label="Buffer social destination" value={destinationId} onChange={e => setDestinationId(e.target.value)} style={{ width: '100%', padding: 8 }}>
       <option value="">Select a destination</option>
       {destinations.map(d => <option key={d.id} value={d.id}>{d.service}: {d.displayName || d.name}</option>)}
     </select>
     <textarea aria-label="Buffer draft text" placeholder="Enter test draft text (not published)" rows={3} value={text} onChange={e => setText(e.target.value)} style={{ width: '100%', marginTop: 8, padding: 8 }} />
-    <label style={{ display: 'block', marginTop: 8 }}>Upload video from this Mac (Cloudinary, max 100 MB)
-      <input type="file" accept="video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm" disabled={uploading || busy} onChange={e => void uploadVideo(e.target.files?.[0])} style={{ display: 'block', width: '100%' }} />
-    </label>
-    {uploading && <p role="status">Uploading video to Cloudinary…</p>}
     <input aria-label="Public HTTPS video URL" placeholder="Public HTTPS video URL (required for Instagram/TikTok)" value={videoUrl} onChange={e => setVideoUrl(e.target.value)} style={{ width: "100%", padding: 8, marginBottom: 8 }} />
     <button type="button" disabled={busy || uploading || !destinationId || !text.trim()} onClick={() => void saveDraft()}>{busy ? 'Saving draft…' : 'Review & save private Buffer draft'}</button>
+    </>}
     {result && <p role="status">{result}</p>}
     {error && <p role="alert">{error}</p>}
   </section>;
