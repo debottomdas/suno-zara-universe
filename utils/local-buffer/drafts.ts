@@ -4,12 +4,15 @@ import { verifyLocalBuffer } from "@/utils/local-buffer/verify";
 
 type Result = { data?: { createPost?: { post?: { id: string; text?: string }; message?: string } }; errors?: Array<{ message: string }> };
 
-export async function createLocalBufferDraft(universeChannelId: string, bufferChannelId: string, text: string) {
+export async function createLocalBufferDraft(universeChannelId: string, bufferChannelId: string, text: string, videoUrl?: string) {
   const verification = await verifyLocalBuffer(universeChannelId);
   if (verification.status !== "verified") throw new Error("Buffer account could not be verified.");
   const destination = verification.channels.find(channel => channel.id === bufferChannelId);
   if (!destination) throw new Error("Selected social destination does not belong to this Universe channel's Buffer account.");
-  if (destination.service.toLowerCase() !== "facebook") throw new Error("This draft test currently supports Facebook text posts only. Instagram and TikTok require separate media-specific validation.");
+  const service = destination.service.toLowerCase();
+  if (!["facebook", "instagram", "tiktok"].includes(service)) throw new Error("Unsupported Buffer destination.");
+  if ((service === "instagram" || service === "tiktok") && !videoUrl) throw new Error("A public HTTPS video URL is required.");
+  if (videoUrl) { const url = new URL(videoUrl); if (url.protocol !== "https:" || url.username || url.password || url.hostname === "localhost" || url.hostname.endsWith(".local")) throw new Error("Video must have a public HTTPS URL."); }
   const apiKey = await getBufferKey(universeChannelId);
   if (!apiKey) throw new Error("No Buffer key saved.");
   const query = `mutation CreateUniverseDraft($input: CreatePostInput!) {
@@ -24,7 +27,9 @@ export async function createLocalBufferDraft(universeChannelId: string, bufferCh
     body: JSON.stringify({ query, variables: { input: {
       channelId: destination.id,
       text,
-      ...(destination.service.toLowerCase() === "facebook" ? { metadata: { facebook: { type: "post" } } } : {}),
+      ...(service === "facebook" ? { metadata: { facebook: { type: videoUrl ? "reel" : "post" } } } : {}),
+      ...(service === "instagram" ? { metadata: { instagram: { type: "reel", shouldShareToFeed: true } } } : {}),
+      ...(videoUrl ? { assets: [{ video: { url: videoUrl } }] } : {}),
       schedulingType: "automatic",
       mode: "addToQueue",
       saveToDraft: true
