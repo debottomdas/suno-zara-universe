@@ -508,6 +508,11 @@ export default function UniverseSidebar({
                     window.location.search +
                     window.location.hash;
 
+                  const localRuntime = ['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.port === '3000';
+                  if (localRuntime) {
+                    window.alert('Use the Local Buffer account section above. Your saved API key can be checked with “Verify Buffer account & social channels”. No Buffer login is required.');
+                    return;
+                  }
                   window.location.assign(
                     `/api/publishing/buffer/connect?channelId=${encodeURIComponent(connectionsChannel.id)}&returnTo=${encodeURIComponent(returnTo)}`
                   );
