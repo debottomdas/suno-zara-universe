@@ -4,13 +4,28 @@ import { useState } from "react";
 type ShortSlot = { slot: number; approvedVideo?: { filename?: string; originalFilename?: string } | null };
 type Receipt = { slot: number; videoUrl: string; publicId?: string };
 
-export default function LocalMediaPreparation({ projectId, channelId, releaseReady, shortSlots }: {
-  projectId: string | null; channelId: string | null; releaseReady: boolean; shortSlots: ShortSlot[];
+export default function LocalMediaPreparation({ projectId, channelId, releaseReady, shortSlots, socialPack }: {
+  projectId: string | null; channelId: string | null; releaseReady: boolean; shortSlots: ShortSlot[]; socialPack?: Record<string, any> | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const [error, setError] = useState("");
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const destinations = [
+    { key: "youtube_full", label: "YouTube full video", collection: null },
+    { key: "youtube_shorts", label: "YouTube Shorts", collection: "shorts" },
+    { key: "instagram", label: "Instagram Reels", collection: "reels" },
+    { key: "facebook", label: "Facebook Reels", collection: "reels" },
+    { key: "tiktok", label: "TikTok", collection: "posts" },
+  ] as const;
+  const socialSummary = destinations.map(dest => {
+    const pack = socialPack?.[dest.key];
+    const posts = dest.collection ? pack?.[dest.collection] : pack ? [pack] : [];
+    const list = Array.isArray(posts) ? posts : [];
+    const hasText = (post: any) => Boolean(String(post?.caption || post?.feedCaption || post?.description || post?.finalDescription || post?.recommendedTitle || post?.title || "").trim());
+    return { label: dest.label, count: list.filter(hasText).length, expected: dest.collection ? 6 : 1 };
+  });
+  const socialComplete = socialSummary.every(item => item.count >= item.expected);
   const approved = shortSlots.filter(s => s.approvedVideo && Number.isInteger(s.slot) && s.slot >= 1 && s.slot <= 6).sort((a,b) => a.slot - b.slot);
   async function prepare() {
     if (!projectId || !channelId || !releaseReady || !approved.length || busy) return;
@@ -37,6 +52,12 @@ export default function LocalMediaPreparation({ projectId, channelId, releaseRea
     <h3 className="text-sm font-bold text-cyan-100">Local publishing · Cloudinary media preparation</h3>
     <p className="mt-1 text-xs text-zinc-300">Prepare the approved Shorts directly from your Mac. No file picker, no manual URLs, no Buffer or YouTube publishing.</p>
     <p className="mt-2 text-xs text-zinc-400">{approved.length} approved Short(s) available in this release.</p>
+    <div className="mt-3 rounded-lg border border-white/10 p-3">
+      <h4 className="text-xs font-bold text-zinc-100">Social Pack → Publishing handoff</h4>
+      {socialSummary.map(item => <p key={item.label} className="mt-1 text-xs text-zinc-300">{item.label}: {item.count}/{item.expected} posts with saved copy</p>)}
+      {!socialComplete && <p className="mt-2 text-xs text-amber-200">Complete and approve the missing Social Pack posts before scheduling. This preview does not submit posts.</p>}
+      {socialComplete && <p className="mt-2 text-xs text-emerald-200">All platform copy is present for review. Scheduling is not yet enabled in local mode.</p>}
+    </div>
     <button type="button" className="mt-2 rounded-lg bg-cyan-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50"
       disabled={busy || !releaseReady || !projectId || !channelId || !approved.length}
       onClick={() => void prepare()}>{busy ? "Preparing media…" : "Prepare approved Shorts in Cloudinary"}</button>
