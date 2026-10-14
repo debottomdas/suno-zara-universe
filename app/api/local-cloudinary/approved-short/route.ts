@@ -1,11 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "node:crypto";
+import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { localSong } from "@/utils/local-first/store";
 import { assertLocalYouTubeRequest } from "@/utils/local-youtube/security";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const MAX = 100 * 1024 * 1024;
+const receiptFile = path.join(process.env.SZU_WORKER_ROOT || path.join(os.homedir(), "Suno Zara Universe"), "local-state", "cloudinary-publishing-receipts.json");
+let receiptWrite = Promise.resolve();
+async function loadReceipts(): Promise<Record<string, { videoUrl: string; publicId?: string; uploadedAt: string }>> {
+  try { return JSON.parse(await readFile(receiptFile, "utf8")); } catch { return {}; }
+}
+async function storeReceipt(key: string, value: { videoUrl: string; publicId?: string; uploadedAt: string }) {
+  const operation = receiptWrite.then(async () => {
+    const existing = await loadReceipts();
+    await mkdir(path.dirname(receiptFile), { recursive: true });
+    const tmp = receiptFile + "." + process.pid + ".tmp";
+    await writeFile(tmp, JSON.stringify({ ...existing, [key]: value }, null, 2), { mode: 0o600 });
+    await rename(tmp, receiptFile);
+  });
+  receiptWrite = operation.catch(() => {});
+  return operation;
+}
 const errorResponse = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 export async function POST(request: NextRequest) {
@@ -28,6 +47,9 @@ export async function POST(request: NextRequest) {
     const mime = worker.headers.get("content-type") === "video/quicktime" ? "video/quicktime" : "video/mp4";
     const extension = mime === "video/quicktime" ? "mov" : "mp4";
     const publicId = createHash("sha256").update(bytes).digest("hex");
+    const receiptKey = `${channelId}:${projectId}:short:${slot}:${publicId}`;
+    const existingReceipt = (await loadReceipts())[receiptKey];
+    if (existingReceipt?.videoUrl) return NextResponse.json({ status: "already_uploaded", projectId, channelId, slot, videoUrl: existingReceipt.videoUrl, publicId: existingReceipt.publicId, uploadedAt: existingReceipt.uploadedAt }, { headers: { "Cache-Control": "no-store" } });
     const folder = `suno-zara-universe/${channelId}`;
     const timestamp = String(Math.floor(Date.now() / 1000));
     const signature = createHash("sha1").update(`folder=${folder}&overwrite=false&public_id=${publicId}&timestamp=${timestamp}` + secret).digest("hex");
@@ -39,7 +61,9 @@ export async function POST(request: NextRequest) {
     if (!response.ok || !data.secure_url) return errorResponse(data.error?.message || "Cloudinary upload failed", 502);
     const url = new URL(data.secure_url);
     if (url.protocol !== "https:" || url.hostname !== "res.cloudinary.com") return errorResponse("Unexpected Cloudinary URL", 502);
-    return NextResponse.json({ status: "uploaded", projectId, channelId, slot, videoUrl: data.secure_url, publicId: data.public_id }, { headers: { "Cache-Control": "no-store" } });
+    const uploadedAt = new Date().toISOString();
+    await storeReceipt(receiptKey, { videoUrl: data.secure_url, publicId: data.public_id, uploadedAt });
+    return NextResponse.json({ status: "uploaded", projectId, channelId, slot, videoUrl: data.secure_url, publicId: data.public_id, uploadedAt }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     return errorResponse(error instanceof Error ? error.message : "Publishing media preparation failed", 502);
   }
