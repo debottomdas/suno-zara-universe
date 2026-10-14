@@ -530,8 +530,11 @@ export default function UniverseSidebar({
                     returnTo
                   });
 
+                  const localRuntime = ['localhost', '127.0.0.1'].includes(window.location.hostname) && window.location.port === '3000';
                   window.location.assign(
-                    `/api/publishing/youtube/connect?${params.toString()}`
+                    localRuntime
+                      ? `/api/local-youtube/connect?channelId=${encodeURIComponent(connectionsChannel.id)}`
+                      : `/api/publishing/youtube/connect?${params.toString()}`
                   );
                 }}
               >
