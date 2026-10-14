@@ -9,6 +9,7 @@ export async function createLocalBufferDraft(universeChannelId: string, bufferCh
   if (verification.status !== "verified") throw new Error("Buffer account could not be verified.");
   const destination = verification.channels.find(channel => channel.id === bufferChannelId);
   if (!destination) throw new Error("Selected social destination does not belong to this Universe channel's Buffer account.");
+  if (destination.service.toLowerCase() !== "facebook") throw new Error("This draft test currently supports Facebook text posts only. Instagram and TikTok require separate media-specific validation.");
   const apiKey = await getBufferKey(universeChannelId);
   if (!apiKey) throw new Error("No Buffer key saved.");
   const query = `mutation CreateUniverseDraft($input: CreatePostInput!) {
@@ -23,6 +24,7 @@ export async function createLocalBufferDraft(universeChannelId: string, bufferCh
     body: JSON.stringify({ query, variables: { input: {
       channelId: destination.id,
       text,
+      ...(destination.service.toLowerCase() === "facebook" ? { metadata: { facebook: { type: "post" } } } : {}),
       schedulingType: "automatic",
       mode: "addToQueue",
       saveToDraft: true
