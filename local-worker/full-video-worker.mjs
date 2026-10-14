@@ -1237,6 +1237,21 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "scheduler-v5.4 (YouTube + Buffer scheduling)" });
     }
+    if (req.method === "GET" && url.pathname === "/publishing/approved-video") {
+      const projectId = url.searchParams.get("projectId") || "";
+      const kind = url.searchParams.get("kind") === "full" ? "full" : "short";
+      const slot = Number(url.searchParams.get("slot") || "1");
+      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > 6) return json(res, 400, { error: "Invalid approved media request." });
+      const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
+      const info = await stat(resolved.item.filePath);
+      if (!info.isFile() || info.size < 1 || info.size > 100 * 1024 * 1024) return json(res, 413, { error: "Approved video must be under 100 MB." });
+      const ext = path.extname(resolved.item.filePath).toLowerCase();
+      res.statusCode = 200;
+      res.setHeader("Content-Type", ext === ".mov" ? "video/quicktime" : "video/mp4");
+      res.setHeader("Content-Length", String(info.size));
+      res.setHeader("Cache-Control", "no-store");
+      return createReadStream(resolved.item.filePath).pipe(res);
+    }
     if (req.method === "GET" && url.pathname === "/publishing/file-info") {
       const projectId = url.searchParams.get("projectId") || "";
       const kind = url.searchParams.get("kind") === "short" ? "short" : "full";
