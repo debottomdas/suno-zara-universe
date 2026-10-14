@@ -22,7 +22,7 @@ export default function LocalMediaPreparation({ projectId, channelId, releaseRea
     const pack = socialPack?.[dest.key];
     const posts = dest.collection ? pack?.[dest.collection] : pack ? [pack] : [];
     const list = Array.isArray(posts) ? posts : [];
-    const hasText = (post: any) => Boolean(String(post?.caption || post?.feedCaption || post?.description || post?.finalDescription || post?.recommendedTitle || post?.title || "").trim());
+    const hasText = (post: any) => Boolean(String(post?.caption || post?.feedCaption || post?.description || post?.finalDescription || post?.recommendedTitle || post?.title || post?.mainReleasePost || post?.fullSongCta || "").trim());
     return { label: dest.label, count: list.filter(hasText).length, expected: dest.collection ? 6 : 1 };
   });
   const socialComplete = socialSummary.every(item => item.count >= item.expected);
