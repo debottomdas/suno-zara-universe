@@ -1045,6 +1045,29 @@ async function creativeRequest(req,res,url){
   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};
   if(url.pathname==="/creative/sync"){if(!body.keys||Object.keys(body.keys).length!==7)throw Error("Seven output dependency keys required.");syncDependencies(p,body.keys);}
   else if(url.pathname==="/creative/approve"){const v=p.creative?.versions.find(v=>v.id===body.id);if(!v)throw Error("Version not found.");if(v.slot!==slot)throw Error("Choose a version belonging to this video.");await stat(v.filePath);approveCandidate(p,body.id);}
+  else if(url.pathname==="/creative/adopt"){
+   // Explicit user-reviewed finished-video adoption. Never rewrite the generated candidate.
+   const original=p.creative?.versions?.find(v=>v.id===body.id);
+   if(!original||original.slot!==slot)throw Error("Choose an existing video in this slot.");
+   if(original.source!=="generated")throw Error("Only an existing Universe render can be adopted.");
+   if(body.confirmReviewed!==true)throw Error("Review the video and confirm finished-video adoption.");
+   const info=await stat(original.filePath);
+   if(!info.isFile()||info.size===0)throw Error("The saved video file is missing or empty.");
+   // Verify the actual video can be decoded before accepting it as a finished edit.
+   await run(ffmpegPath,["-v","error","-i",original.filePath,"-map","0:v:0","-frames:v","1","-f","null","-"]);
+   const versionId=randomUUID(),dir=path.join(ROOT,"CreativeVersions",safeName(id));
+   await mkdir(dir,{recursive:true});
+   const filePath=path.join(dir,versionId+".mp4");
+   await copyFile(original.filePath,filePath);
+   const adopted=addCandidate(p,{
+    ...original,filePath,source:"uploaded",originalSource:"generated",
+    originalVersionId:original.id,originalDependencyKey:original.dependencyKey,
+    adoptedAt:new Date().toISOString(),adoptionMode:"reviewed-existing-render",
+    filename:original.filename||path.basename(original.filePath)
+   },slot,"supplied",versionId);
+   await saveManifest(m);
+   return json(res,200,{version:creativePublic(id,adopted)});
+  }
   else if(url.pathname==="/creative/import"){
    const source=body.source;if(!["generated","uploaded"].includes(source))throw Error("Choose an existing video source.");
    const old=slot===0?(source==="uploaded"?p.uploadedFullVideo:legacyGeneratedItem(p)):(source==="uploaded"?p.uploadedShorts?.[String(slot)]:activeGeneratedShort(p,slot));if(!old?.filePath)throw Error("Existing video not found.");
