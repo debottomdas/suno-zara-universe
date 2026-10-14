@@ -1010,6 +1010,7 @@ async function creativeRequest(req,res,url){
  if(req.method==="GET"){
   const m=await loadManifest(),p=m.projects?.[projectId]||{};
   if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
+  if(url.pathname==="/creative/social")return json(res,200,{pack:p.localSocialPack||null,source:"local",cloudSync:false});
   if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
   if(url.pathname==="/creative/file"){
    const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id"));if(!v)return json(res,404,{error:"Version not found."});
@@ -1043,6 +1044,24 @@ async function creativeRequest(req,res,url){
    const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,"supplied",randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
   }
   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};
+  if(url.pathname==="/creative/social"){
+   if(body.action!=="save")throw Error("Choose a local Social copy save action.");
+   if(!body.channelId||typeof body.channelId!=="string")throw Error("Channel required.");
+   if(p.localSocialPack?.channelId&&p.localSocialPack.channelId!==body.channelId)throw Error("This Social pack belongs to another channel.");
+   if((p.localSocialPack?.updatedAt||null)!==(body.expectedUpdatedAt||null))return json(res,409,{error:"Local Social copy changed. Reload before saving."});
+   if(!body.copy||typeof body.copy!=="object"||Array.isArray(body.copy))throw Error("Social copy required.");
+   const fields=["youtube_full","youtube_shorts","instagram","facebook","tiktok"];
+   const copy={};
+   for(const field of fields){
+    const value=body.copy[field];
+    if(typeof value!=="string"||value.length>30000)throw Error("Invalid Social copy for "+field+".");
+    copy[field]=value;
+   }
+   const updatedAt=new Date().toISOString();
+   p.localSocialPack={channelId:body.channelId,copy,updatedAt,approved:false,origin:"local-manual"};
+   await saveManifest(m);
+   return json(res,200,{pack:p.localSocialPack,cloudSync:false});
+  }
   if(url.pathname==="/creative/sync"){if(!body.keys||Object.keys(body.keys).length!==7)throw Error("Seven output dependency keys required.");syncDependencies(p,body.keys);}
   else if(url.pathname==="/creative/approve"){const v=p.creative?.versions.find(v=>v.id===body.id);if(!v)throw Error("Version not found.");if(v.slot!==slot)throw Error("Choose a version belonging to this video.");await stat(v.filePath);approveCandidate(p,body.id);}
   else if(url.pathname==="/creative/adopt"){
