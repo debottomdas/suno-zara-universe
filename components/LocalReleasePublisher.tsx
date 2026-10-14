@@ -1,6 +1,7 @@
 "use client";
 
 import BufferDraftScheduler from "./BufferDraftScheduler";
+import LocalMediaPreparation from "./LocalMediaPreparation";
 import { singleDraftItem, submitBufferSchedule } from "@/utils/buffer-scheduling";
 import { releaseState } from "@/utils/release-state";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -930,6 +931,8 @@ export default function LocalReleasePublisher({
       )}
 
       {publishOpen && (<>
+      {typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) && <LocalMediaPreparation projectId={projectId} channelId={channelId} releaseReady={releaseReady} shortSlots={shortSlots} />}
+
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-emerald-300/15 bg-emerald-300/[0.04] px-3 py-2.5">
           <p className="text-[8px] font-black uppercase tracking-[0.12em] text-zinc-500">Release status</p>
