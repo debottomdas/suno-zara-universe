@@ -25,6 +25,7 @@ type Props = {
   releaseReady: boolean;
   approvedFullVideo: LocalVideo | null;
   shortSlots: ShortSlot[];
+  socialPack?: Record<string, any> | null;
 };
 
 type YouTubeReceipt = {
@@ -109,6 +110,7 @@ export default function LocalReleasePublisher({
   releaseReady,
   approvedFullVideo,
   shortSlots,
+  socialPack,
   onPublishComplete,
 }: Props & { onPublishComplete?: (complete:boolean) => void }) {
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -931,7 +933,7 @@ export default function LocalReleasePublisher({
       )}
 
       {publishOpen && (<>
-      {typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) && <LocalMediaPreparation projectId={projectId} channelId={channelId} releaseReady={releaseReady} shortSlots={shortSlots} />}
+      {typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) && <LocalMediaPreparation projectId={projectId} channelId={channelId} releaseReady={releaseReady} shortSlots={shortSlots} socialPack={socialPack} />}
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-xl border border-emerald-300/15 bg-emerald-300/[0.04] px-3 py-2.5">
