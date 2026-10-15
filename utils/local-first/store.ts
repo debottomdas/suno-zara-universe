@@ -189,3 +189,28 @@ export async function replaceLocalWorkspace(input: { workspace: any; channels: a
   await writeState(next);
   return next;
 }
+
+/** Create an offline project only inside an existing locally owned channel. */
+export async function createLocalSong(input: {
+  projectId: string; channelId: string; title: string; language: string; idea: string; englishTitle?: string;
+}) {
+  if (!localRuntimeAllowed()) return null;
+  const state = await readLocalWorkspace();
+  if (!state.channels.some((channel: any) => channel?.id === input.channelId)) return null;
+  const projects = state.songsByChannel[input.channelId] || [];
+  const existing = projects.find((song: any) => song?.id === input.projectId || song?.projectId === input.projectId);
+  if (existing) return existing;
+  const now = new Date().toISOString();
+  const project = {
+    id: input.projectId, projectId: input.projectId, title: input.title,
+    englishTitle: input.englishTitle || "", language: input.language, idea: input.idea,
+    script: "Native", mood: "", genre: "", freedom: "50",
+    hooks: [], selectedHook: null, lyrics: null, status: "creating",
+    projectState: "current", createdAt: now, updatedAt: now, localDirty: true,
+  };
+  await writeState({
+    ...state,
+    songsByChannel: { ...state.songsByChannel, [input.channelId]: [project, ...projects] },
+  });
+  return project;
+}
