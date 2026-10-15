@@ -1,7 +1,17 @@
 import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import { createLocalDatabase } from "@/utils/local-first/database";
+import { localModeAvailable } from "@/utils/local-first/store";
+import { cookies, headers } from "next/headers";
 
 export async function createClient() {
+  const host = (await headers()).get("host");
+  if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(host || "")) {
+    return createLocalDatabase() as unknown as Awaited<ReturnType<typeof createCloudClient>>;
+  }
+  return createCloudClient();
+}
+
+async function createCloudClient() {
   const cookieStore = await cookies();
 
   return createServerClient(

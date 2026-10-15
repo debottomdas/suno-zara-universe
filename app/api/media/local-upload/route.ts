@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { mkdir, rename, stat, unlink } from "node:fs/promises";
+import { mkdir, rename, stat, unlink, rm } from "node:fs/promises";
 import { createWriteStream } from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createClient } from "@/utils/supabase/server";
 import {
@@ -58,8 +58,9 @@ function validUploadId(value: string) {
 
 export async function POST(request: Request) {
   let tempPath = "";
+  let uploadLock = "";
   try {
-    if (process.env.VERCEL) {
+    if (process.env.VERCEL === "1") {
       return NextResponse.json(
         { error: "Local Media Mode is only available while Suno Zara Universe Music Studio is running on your Mac." },
         { status: 400 }
@@ -92,7 +93,7 @@ export async function POST(request: Request) {
     if (!originalFilename || !validMime(mediaKind, mimeType)) {
       return NextResponse.json({ error: "Unsupported local media file type." }, { status: 400 });
     }
-    if (!Number.isInteger(slot) || slot < 1 || (mediaKind === "vertical-video" && slot > 10)) {
+    if (!Number.isInteger(slot) || slot < 1 || slot > (mediaKind === "vertical-video" ? 10 : 1)) {
       return NextResponse.json({ error: "Invalid media slot." }, { status: 400 });
     }
     if (!Number.isFinite(sizeBytes) || sizeBytes <= 0 || sizeBytes > maxBytes(mediaKind)) {
@@ -138,9 +139,11 @@ export async function POST(request: Request) {
       try { metadata = JSON.parse(metadataText); } catch { metadata = {}; }
     }
 
-    const tempRelative = path.posix.join("temp", "uploads", user.id, `${uploadId}.part`);
-    tempPath = resolveLocalPath(tempRelative);
-    await mkdir(path.dirname(tempPath), { recursive: true });
+    const tempRelative = path.posix.join("temp", "uploads", user.id, `${song.id}-${uploadId}.part`);
+    const pendingPath = resolveLocalPath(tempRelative);
+    await mkdir(path.dirname(pendingPath), { recursive: true });
+    try { await mkdir(`${pendingPath}.lock`); } catch { return NextResponse.json({error:'Upload is busy; wait for the previous chunk.'},{status:409}); }
+    uploadLock = `${pendingPath}.lock`;tempPath = pendingPath;
 
     if (chunkIndex === 0) {
       try { await unlink(tempPath); } catch (error: any) {
@@ -159,8 +162,13 @@ export async function POST(request: Request) {
       }
     }
 
+    let received = 0;
+    const bound = new Transform({transform(chunk, _encoding, callback) {
+      received += chunk.length;
+      callback(received > chunkEnd-chunkStart ? new Error('Upload body exceeds the declared chunk size.') : null, chunk);
+    }});
     await pipeline(
-      Readable.fromWeb(request.body as any),
+      Readable.fromWeb(request.body as any), bound,
       createWriteStream(tempPath, { flags: chunkIndex === 0 ? "w" : "a" })
     );
 
@@ -222,8 +230,7 @@ export async function POST(request: Request) {
       .single();
 
     if (saveError || !savedAsset) {
-      try { await unlink(absolutePath); } catch {}
-      throw new Error(`Could not save local media record: ${saveError?.message || "Unknown error"}`);
+      throw new Error(`Uploaded file preserved at ${relativePath}. Could not save local media record: ${saveError?.message || "Unknown error"}`);
     }
 
     if (previousAsset) {
@@ -250,5 +257,5 @@ export async function POST(request: Request) {
       { error: error instanceof Error ? error.message : "Local media upload failed." },
       { status: 500 }
     );
-  }
+  } finally { if(uploadLock)await rm(uploadLock,{recursive:true,force:true}); }
 }

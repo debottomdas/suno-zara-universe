@@ -1,3 +1,4 @@
+import {isLocalRequest,localMediaRequest} from '@/utils/local-first/media';
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { MEDIA_BUCKET, buildMediaAssetResponse, cleanString, deleteAssetBacking, type StoredMediaAsset } from "@/utils/media-source";
@@ -16,6 +17,7 @@ function getTusEndpoint() {
 async function getOwnedSong(supabase:any,userId:string,projectId:string){const{data,error}=await supabase.from("songs").select("id, title").eq("id",projectId).eq("user_id",userId).single();return error?null:data;}
 
 export async function POST(request: Request) {
+  if(isLocalRequest(request))return localMediaRequest(request,'vertical-video');
   try {
     const supabase=await createClient(); const{data:{user},error:authError}=await supabase.auth.getUser(); if(authError||!user)return NextResponse.json({error:"You must be signed in."},{status:401});
     const body=await request.json(); const action=cleanString(body.action), projectId=cleanString(body.projectId), slot=parseSlot(body.slot); if(!projectId)return NextResponse.json({error:"projectId is required."},{status:400}); if(!slot)return NextResponse.json({error:`slot must be between 1 and ${MAX_SLOTS}.`},{status:400});

@@ -44,8 +44,9 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   }finally{await context.close();}
  }
  async function uploadImage(slot:VisualSlot,file:File){
-  const {upload}=await post('/api/creative-workspace',{projectId,revision:w.revision,action:'prepare-upload',slotId:slot.id,mimeType:file.type,size:file.size});
-  const {error}=await createClient().storage.from(upload.bucket).uploadToSignedUrl(upload.storagePath,upload.token,file,{contentType:file.type});if(error)throw Error(error.message);
+  const {upload,localMode}=await post('/api/creative-workspace',{projectId,revision:w.revision,action:'prepare-upload',slotId:slot.id,mimeType:file.type,size:file.size});
+  if(localMode){const response=await fetch(upload.uploadUrl,{method:'PUT',headers:{'Content-Type':file.type},body:file});const data=await response.json();if(!response.ok)throw Error(data.error||'Image upload failed.');}
+  else{const {error}=await createClient().storage.from(upload.bucket).uploadToSignedUrl(upload.storagePath,upload.token,file,{contentType:file.type});if(error)throw Error(error.message);}
   await command('register-upload',{slotId:slot.id,storagePath:upload.storagePath});
  }
  async function render(slot:number){

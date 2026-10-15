@@ -3,6 +3,7 @@ import {useEffect,useMemo,useState,useCallback,useRef} from 'react';
 import Link from 'next/link';
 import {loadUniverseChannels} from '@/utils/universe-navigation';
 import UniverseSidebar, {channelHref} from './UniverseSidebar';
+import {uploadLocalMedia} from '@/utils/local-media-client';
 import {createClient} from '@/utils/supabase/client';
 import s from './MusicNext.module.css';
 import {loadReleaseState} from '@/utils/release-state';
@@ -250,6 +251,7 @@ function ExistingProjectStage({stage,song,channelId,assets,loading,complete,onBa
    const mimeType=inferAudioMime(file);const meta=await audioDetails(file);
    const prep=await fetch('/api/media/final-audio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'prepare',projectId,originalFilename:file.name,mimeType,sizeBytes:file.size})});
    const pd=await prep.json();if(!prep.ok)throw new Error(pd.error||'Could not prepare audio upload.');
+   if(pd.localMode){await uploadLocalMedia({projectId,mediaKind:'final-audio',file,mimeType,metadata:{source:'uploaded-from-v5',durationSeconds:meta.durationSeconds}});setMessage('✓ Final audio saved');onRefresh();return;}
    const upload=pd.upload;const supabase=createClient();const {error}=await supabase.storage.from(upload.bucket||'song-media').uploadToSignedUrl(upload.storagePath,upload.token,file,{contentType:mimeType});if(error)throw new Error(error.message);
    const reg=await fetch('/api/media/final-audio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register',projectId,storagePath:upload.storagePath,originalFilename:file.name,mimeType,sizeBytes:file.size,metadata:{source:'uploaded-from-v5',durationSeconds:meta.durationSeconds}})});
    const rd=await reg.json();if(!reg.ok)throw new Error(rd.error||'Could not save final audio.');
@@ -267,6 +269,7 @@ function ExistingProjectStage({stage,song,channelId,assets,loading,complete,onBa
    if(kind==='thumbnail'&&Math.abs(dims.width/dims.height-16/9)>.03)throw new Error(`YouTube thumbnail should be 16:9. This image is ${dims.width}×${dims.height}.`);
    const prep=await fetch('/api/media/artwork',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'prepare',projectId,mediaKind:kind,originalFilename:file.name,mimeType,sizeBytes:file.size})});
    const pd=await prep.json();if(!prep.ok)throw new Error(pd.error||'Could not prepare artwork upload.');
+   if(pd.localMode){await uploadLocalMedia({projectId,mediaKind:kind,file,mimeType,metadata:{width:dims.width,height:dims.height}});setMessage('✓ Artwork saved');onRefresh();return;}
    const upload=pd.upload;const supabase=createClient();const {error}=await supabase.storage.from(upload.bucket||'song-media').uploadToSignedUrl(upload.storagePath,upload.token,file,{contentType:mimeType});if(error)throw new Error(error.message);
    const reg=await fetch('/api/media/artwork',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'register',projectId,mediaKind:kind,storagePath:upload.storagePath,originalFilename:file.name,mimeType,sizeBytes:file.size,width:dims.width,height:dims.height})});
    const rd=await reg.json();if(!reg.ok)throw new Error(rd.error||'Could not save artwork.');setMessage(`✓ ${kind==='cover-art'?'Artwork':'Thumbnail'} saved`);onRefresh();

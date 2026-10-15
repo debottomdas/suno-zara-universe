@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { cacheSongs, localModeAvailable, localSongs, localChannels } from "@/utils/local-first/store";
+import { cacheSongs, localModeAvailable, localSongs, localChannels, createLocalSong, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 export async function GET(request: Request) {
   const host = request.headers.get("host");
@@ -156,6 +156,17 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(request.headers.get("host") || "")) {
+      const body = await request.json();
+      const projectId = String(body.projectId || "").trim();
+      const status = String(body.status || "").trim();
+      if (!projectId || !new Set(["creating", "ready-for-suno", "release-ready", "published"]).has(status))
+        return NextResponse.json({ error: "Invalid project status update." }, { status: 400 });
+      const current = await localSong(projectId);
+      if (!current) return NextResponse.json({ error: "Local project not found." }, { status: 404 });
+      const updated = await updateLocalSong(projectId, { status });
+      return NextResponse.json({ projectId, status: updated?.status, updatedAt: updated?.updatedAt, saved: true, localMode: true });
+    }
     const supabase = await createClient();
 
     const {
@@ -235,6 +246,26 @@ export async function PATCH(request: Request) {
 // Asset-first intake reuses songs and the same channel ownership boundary as lyrics import.
 export async function POST(request: Request) {
   try {
+    const host = request.headers.get("host");
+    // Offline writes are restricted to the local development server, never Vercel.
+    if (localModeAvailable() && (host === "localhost:3000" || host === "127.0.0.1:3000")) {
+      const body = await request.json();
+      const clean = (v: unknown, max: number) => typeof v === "string" ? v.trim().slice(0, max) : "";
+      const projectId = clean(body.projectId, 100);
+      const channelId = clean(body.channelId, 100);
+      const title = clean(body.title, 120);
+      const language = clean(body.language, 80);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(projectId))
+        return NextResponse.json({ error: "Invalid project request." }, { status: 400 });
+      if (!channelId || !title || !language)
+        return NextResponse.json({ error: "Choose a channel and enter the song title and language." }, { status: 400 });
+      const project = await createLocalSong({
+        projectId, channelId, title, language,
+        englishTitle: clean(body.englishTitle, 120), idea: clean(body.idea, 4000),
+      });
+      if (!project) return NextResponse.json({ error: "Unknown local channel." }, { status: 404 });
+      return NextResponse.json({ projectId: project.id, project, saved: true, localMode: true });
+    }
     const db = await createClient();
     const { data: { user }, error: authError } = await db.auth.getUser();
     if (authError || !user) return NextResponse.json({error: 'Please sign in to create a project.'}, {status: 401});

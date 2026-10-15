@@ -1,3 +1,4 @@
+import {isLocalRequest,localMediaRequest} from '@/utils/local-first/media';
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { MEDIA_BUCKET, buildMediaAssetResponse, cleanString, deleteAssetBacking, type StoredMediaAsset } from "@/utils/media-source";
@@ -20,6 +21,7 @@ async function getOwnedSong(supabase: any, userId: string, projectId: string) {
 }
 
 export async function POST(request: Request) {
+  if(isLocalRequest(request))return localMediaRequest(request,'youtube-video');
   try {
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();

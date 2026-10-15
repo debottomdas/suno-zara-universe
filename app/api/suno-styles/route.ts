@@ -1,11 +1,14 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
 import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+  maxRetries: 0,
+}); }
 
 type SunoStyle = {
   name: string;
@@ -147,7 +150,7 @@ export async function POST(request: Request) {
     let song: any = null;
     if (!localOnly) {
       const result = await supabase.from("songs").select(`
-        id,user_id,title,idea,language,script,mood,genre,freedom,selected_hook,lyrics
+        id,user_id,channel_id,title,idea,language,script,mood,genre,freedom,selected_hook,lyrics
       `).eq("id", projectId).eq("user_id", user!.id).single();
       song = result.data;
     } else if (localModeAvailable()) {
@@ -363,12 +366,13 @@ Mark exactly one as recommended.
 Every Suno prompt must be no more than 1000 characters.
 `.trim();
 
-    const response = await openai.responses.create({
+    const dna = await resolveActiveChannelDNA(supabase, user!.id, song.channel_id || song.channelId);
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
       input: [
         {
           role: "system",
-          content: systemPrompt,
+          content: `${channelInstructions(dna, 'music')}\n${systemPrompt}`,
         },
         {
           role: "user",

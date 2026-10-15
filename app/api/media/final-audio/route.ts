@@ -1,3 +1,4 @@
+import {isLocalRequest,localMediaRequest} from '@/utils/local-first/media';
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import {
@@ -23,6 +24,7 @@ async function getOwnedSong(supabase: any, userId: string, projectId: string) {
 const SELECT_FIELDS = "id, song_id, user_id, media_kind, slot, original_filename, storage_provider, storage_path, local_path, mime_type, size_bytes, metadata, created_at, updated_at";
 
 export async function POST(request: Request) {
+  if(isLocalRequest(request))return localMediaRequest(request,'final-audio');
   try {
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
