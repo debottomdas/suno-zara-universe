@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { archiveLocalSong, localModeAvailable } from "@/utils/local-first/store";
 import { createAdminClient } from "@/utils/supabase/admin";
 import {
   MEDIA_BUCKET,
@@ -68,6 +69,17 @@ async function deleteRows(admin: any, table: string, songId: string, userId?: st
 
 export async function DELETE(request: Request) {
   try {
+    if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(request.headers.get("host") || "")) {
+      const body = await request.json().catch(() => ({}));
+      const projectId = String(body.projectId || "").trim();
+      const channelId = String(body.channelId || "").trim();
+      const confirmation = String(body.confirmation || "").trim();
+      if (!projectId || !channelId || !confirmation)
+        return NextResponse.json({ error: "Project, channel and exact title confirmation are required." }, { status: 400 });
+      const archived = await archiveLocalSong(projectId, channelId, confirmation);
+      if (!archived) return NextResponse.json({ error: "Project not found or confirmation does not match." }, { status: 404 });
+      return NextResponse.json({ deleted: true, archived: true, projectId, channelId, title: archived.title, removedStorageObjects: 0, warnings: [], localMode: true });
+    }
     const supabase = await createClient();
     const {
       data: { user },
