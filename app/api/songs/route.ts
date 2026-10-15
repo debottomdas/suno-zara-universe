@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
-import { cacheSongs, localModeAvailable, localSongs, localChannels, createLocalSong } from "@/utils/local-first/store";
+import { cacheSongs, localModeAvailable, localSongs, localChannels, createLocalSong, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 export async function GET(request: Request) {
   const host = request.headers.get("host");
@@ -156,6 +156,17 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
+    if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(request.headers.get("host") || "")) {
+      const body = await request.json();
+      const projectId = String(body.projectId || "").trim();
+      const status = String(body.status || "").trim();
+      if (!projectId || !new Set(["creating", "ready-for-suno", "release-ready", "published"]).has(status))
+        return NextResponse.json({ error: "Invalid project status update." }, { status: 400 });
+      const current = await localSong(projectId);
+      if (!current) return NextResponse.json({ error: "Local project not found." }, { status: 404 });
+      const updated = await updateLocalSong(projectId, { status });
+      return NextResponse.json({ projectId, status: updated?.status, updatedAt: updated?.updatedAt, saved: true, localMode: true });
+    }
     const supabase = await createClient();
 
     const {
