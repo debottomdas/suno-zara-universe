@@ -1,4 +1,5 @@
 "use client";
+import {uploadLocalMedia} from '@/utils/local-media-client';
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import * as tus from "tus-js-client";
@@ -259,6 +260,7 @@ export default function ReleasePublisher({
       }),
       "Could not prepare publishing-media upload."
     );
+    if (prepare.localMode) { await uploadLocalMedia({projectId:safeProjectId,mediaKind:kind,slot,file,mimeType:file.type});return; }
     if (!prepare.upload?.storagePath || !prepare.upload?.tusEndpoint) {
       throw new Error("Secure publishing-media upload details were not returned.");
     }
@@ -319,6 +321,7 @@ export default function ReleasePublisher({
       }),
       "Could not prepare thumbnail upload."
     );
+    if (prepare.localMode) { await uploadLocalMedia({projectId:safeProjectId,mediaKind:'thumbnail',file,mimeType});return; }
     if (!prepare.upload?.storagePath || !prepare.upload?.token) {
       throw new Error("Secure thumbnail upload details were not returned.");
     }

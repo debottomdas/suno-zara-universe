@@ -3,7 +3,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { createClient } from "@/utils/supabase/server";
-import { cleanString, resolveLocalPath } from "@/utils/media-source";
+import { cleanString, ensureLocalFile } from "@/utils/media-source";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,7 +32,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "Local media file not found." }, { status: 404 });
     }
 
-    const absolute = resolveLocalPath(asset.local_path);
+    const absolute = await ensureLocalFile(asset.local_path);
     const info = await stat(absolute);
     const total = info.size;
     const range = request.headers.get("range");
@@ -49,8 +49,9 @@ export async function GET(request: Request) {
     if (range && !download) {
       const match = /^bytes=(\d*)-(\d*)$/.exec(range);
       if (match) {
-        const start = match[1] ? Number(match[1]) : 0;
-        const end = match[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
+        const suffix = !match[1] && match[2] ? Number(match[2]) : null;
+        const start = suffix !== null ? Math.max(0,total-suffix) : Number(match[1]);
+        const end = suffix !== null ? total-1 : match[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
         if (Number.isFinite(start) && Number.isFinite(end) && start <= end && start < total) {
           const stream = createReadStream(absolute, { start, end });
           return new Response(Readable.toWeb(stream) as any, {
