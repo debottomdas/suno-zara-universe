@@ -1,3 +1,4 @@
+import { mutateLocalWorkspace } from '@/utils/local-first/store';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { DnaError, UUID, validateLockChanges, validateSave, validateRevision } from './validation';
 import type { ChannelDna, DnaVersion } from './model';
@@ -37,6 +38,18 @@ export async function saveDna(db: SupabaseClient, admin: () => SupabaseClient, u
   const previous = await loadVersion(db, channelId, input.expectedRevision);
   validateLockChanges(previous?.document ?? null, input.document, input.lockChanges);
   await validateAssets(db, userId, channelId, input.document);
+  if ((db as unknown as {local?: boolean}).local) {
+    return mutateLocalWorkspace(state => {
+      const current = state.channels.find(c => c.id === channelId);
+      if (!current || (current.active_dna_revision ?? null) !== input.expectedRevision) throw new DnaError('DNA changed. Reload before saving.', 409);
+      const revision = (input.expectedRevision ?? 0) + 1;
+      validateRevision(revision);
+      state.tables ??= {};
+      (state.tables.channel_dna_versions ??= []).push({channel_id: channelId, revision, schema_version: 1, document: input.document, created_by: userId, created_at: new Date().toISOString(), change_note: input.changeNote, lock_changes: input.lockChanges});
+      current.active_dna_revision = revision;
+      return {revision};
+    });
+  }
   const { data: revision, error } = await admin().rpc('save_channel_dna', {
     p_channel_id: channelId, p_actor_id: userId, p_expected_revision: input.expectedRevision,
     p_document: input.document, p_lock_changes: input.lockChanges, p_change_note: input.changeNote,

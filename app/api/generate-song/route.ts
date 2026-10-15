@@ -1,3 +1,5 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
@@ -6,6 +8,7 @@ import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-fi
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  maxRetries: 0,
 });
 
 export async function POST(request: Request) {
@@ -47,7 +50,7 @@ export async function POST(request: Request) {
     if (!localOnly) {
       const result = await supabase
         .from("songs")
-        .select(`id,title,idea,language,script,mood,genre,freedom,hooks,selected_hook,lyrics,status,created_at,updated_at`)
+        .select(`id,channel_id,title,idea,language,script,mood,genre,freedom,hooks,selected_hook,lyrics,status,created_at,updated_at`)
         .eq("id", projectId)
         .single();
       project = result.data;
@@ -76,11 +79,13 @@ export async function POST(request: Request) {
     /*
      * 4. Generate complete song.
      */
+    const dna = await resolveActiveChannelDNA(supabase, user!.id, project.channel_id || project.channelId);
     const response =
       await openai.responses.create({
         model: "gpt-5.6-luna",
 
-        instructions: `
+        instructions: `${channelInstructions(dna, 'music')}
+
 You are Suno Zara Universe Music Studio, an expert professional songwriter.
 
 Write a complete original song based on the saved project.
