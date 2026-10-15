@@ -1,8 +1,31 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 export async function POST(request: Request) {
   try {
+    if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(request.headers.get("host") || "")) {
+      const body = await request.json();
+      const projectId = String(body.projectId || "").trim();
+      const channelId = String(body.channelId || "").trim();
+      const lyrics = typeof body.lyrics === "string" ? body.lyrics : "";
+      const current = projectId ? await localSong(projectId) : null;
+      if (!current || (channelId && current.channelId !== channelId))
+        return NextResponse.json({ error: "Project not found in the selected local channel." }, { status: 404 });
+      if (!lyrics.trim()) return NextResponse.json({ error: "Lyrics cannot be empty." }, { status: 400 });
+      const context: Record<string, string> = {};
+      for (const key of ["title", "idea", "language", "script", "mood", "genre"])
+        if (typeof body[key] === "string") context[key] = body[key].trim();
+      if (("title" in context && !context.title) || ("language" in context && !context.language))
+        return NextResponse.json({ error: "Song title and language cannot be empty." }, { status: 400 });
+      const history = Array.isArray(current.localLyricsHistory) ? current.localLyricsHistory : [];
+      const prior = current.lyrics?.trim() && current.lyrics !== lyrics
+        ? [{ lyrics: current.lyrics, title: current.title, savedAt: current.updatedAt }, ...history]
+        : history;
+      const updated = await updateLocalSong(projectId, { ...context, lyrics, status: "creating", localLyricsHistory: prior });
+      if (!updated) return NextResponse.json({ error: "Local save failed." }, { status: 500 });
+      return NextResponse.json({ projectId, lyrics, status: updated.status, updatedAt: updated.updatedAt, context, saved: true, localMode: true });
+    }
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) return NextResponse.json({ error: "You must be signed in." }, { status: 401 });
