@@ -1,4 +1,3 @@
-import { mutateLocalWorkspace } from '@/utils/local-first/store';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { DnaError, UUID, validateLockChanges, validateSave, validateRevision } from './validation';
 import type { ChannelDna, DnaVersion } from './model';
@@ -39,6 +38,7 @@ export async function saveDna(db: SupabaseClient, admin: () => SupabaseClient, u
   validateLockChanges(previous?.document ?? null, input.document, input.lockChanges);
   await validateAssets(db, userId, channelId, input.document);
   if ((db as unknown as {local?: boolean}).local) {
+    const {mutateLocalWorkspace} = await import('@/utils/local-first/store');
     return mutateLocalWorkspace(state => {
       const current = state.channels.find(c => c.id === channelId);
       if (!current || (current.active_dna_revision ?? null) !== input.expectedRevision) throw new DnaError('DNA changed. Reload before saving.', 409);

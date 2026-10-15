@@ -8,10 +8,11 @@ import {spawnSync} from 'node:child_process';
 test('local repository persists production changes, serializes writers and rejects unknown operations',async()=>{
  const root=await mkdtemp(path.join(tmpdir(),'szu-database-'));
  try{
-  for(const name of ['store','database']){
-   const source=(await readFile(`utils/local-first/${name}.ts`,'utf8')).replace(/^import ['"]server-only['"];\s*/,'').replace("from './store'","from './store.ts'");
+  for(const name of ['store','database','storage']){
+   const source=(await readFile(`utils/local-first/${name}.ts`,'utf8')).replace(/^import ['"]server-only['"];\s*/,'').replaceAll("from './store'","from './store.ts'").replaceAll("from './storage'","from './storage.ts'").replace("from '@/utils/media-source'","from './media-source.ts'");
    await writeFile(path.join(root,`${name}.ts`),source);
   }
+  await writeFile(path.join(root,'media-source.ts'),await readFile('utils/media-source.ts','utf8'));
   const script=`
    import assert from 'node:assert/strict';
    import {createLocalDatabase} from './database.ts';

@@ -5,10 +5,10 @@ import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
 import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   maxRetries: 0,
-});
+}); }
 
 type SunoStyle = {
   name: string;
@@ -367,7 +367,7 @@ Every Suno prompt must be no more than 1000 characters.
 `.trim();
 
     const dna = await resolveActiveChannelDNA(supabase, user!.id, song.channel_id || song.channelId);
-    const response = await openai.responses.create({
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
       input: [
         {

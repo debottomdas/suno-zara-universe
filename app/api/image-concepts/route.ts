@@ -4,9 +4,9 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+}); }
 
 type VisualConcept = {
   conceptNumber: number;
@@ -238,7 +238,7 @@ Create three concepts that feel genuinely different enough that the
 creator has three real artistic choices.
 `.trim();
 
-    const response = await openai.responses.create({
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
       input: [
         {

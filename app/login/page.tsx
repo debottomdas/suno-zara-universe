@@ -6,8 +6,6 @@ import { createClient } from "@/utils/supabase/client";
 import PublicFooter from "@/components/PublicFooter";
 
 export default function LoginPage() {
-  const supabase = createClient();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
 
@@ -20,7 +18,7 @@ export default function LoginPage() {
       setError("");
 
       const { error } =
-        await supabase.auth.signInWithOAuth({
+        await createClient().auth.signInWithOAuth({
           provider: "google",
           options: {
             redirectTo:
@@ -59,7 +57,7 @@ export default function LoginPage() {
       setLoading(true);
 
       const { error } =
-        await supabase.auth.signInWithPassword({
+        await createClient().auth.signInWithPassword({
           email: email.trim(),
           password,
         });

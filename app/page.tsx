@@ -47,12 +47,20 @@ const sharedServices = [
 
 export default function UniverseHome() {
   const [accountEmail, setAccountEmail] = useState("");
+  const [localMode, setLocalMode] = useState(false);
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getUser().then(({ data }) => {
-      setAccountEmail(data.user?.email ?? "");
-    });
+    let active = true;
+    void (async () => {
+      const response = await fetch('/api/local-mode/status');
+      const status = await response.json();
+      if (!active) return;
+      setLocalMode(status.localMode === true);
+      if (status.localMode) return;
+      const {data} = await createClient().auth.getUser();
+      if (active) setAccountEmail(data.user?.email ?? '');
+    })().catch(() => {});
+    return () => { active = false; };
   }, []);
 
   return (
@@ -69,7 +77,7 @@ export default function UniverseHome() {
             </div>
           </Link>
           <div className="flex items-center gap-3">
-            {!accountEmail && (
+            {!localMode && !accountEmail && (
               <Link href="/login" className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.05] hover:text-white">
                 Sign in
               </Link>

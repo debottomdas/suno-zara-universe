@@ -37,6 +37,7 @@ export async function readLocalWorkspace(): Promise<LocalWorkspaceState> {
   if (!localRuntimeAllowed()) return { ...EMPTY };
   try {
     const parsed = JSON.parse(await readFile(STATE_FILE, "utf8"));
+    if (!parsed || parsed.schemaVersion !== 1 || !Array.isArray(parsed.channels) || !parsed.songsByChannel || typeof parsed.songsByChannel !== 'object' || Array.isArray(parsed.songsByChannel) || Object.values(parsed.songsByChannel).some(projects=>!Array.isArray(projects))) throw new Error('Invalid local workspace schema.');
     return {
       ...EMPTY,
       ...parsed,

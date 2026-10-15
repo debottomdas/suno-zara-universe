@@ -6,8 +6,6 @@ import { createClient } from "@/utils/supabase/client";
 import PublicFooter from "@/components/PublicFooter";
 
 export default function SignupPage() {
-  const supabase = createClient();
-
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] =
@@ -46,7 +44,7 @@ export default function SignupPage() {
       setLoading(true);
 
       const { data, error } =
-        await supabase.auth.signUp({
+        await createClient().auth.signUp({
           email: email.trim(),
           password,
           options: {

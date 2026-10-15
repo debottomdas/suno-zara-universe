@@ -5,10 +5,10 @@ import { NextResponse } from "next/server";
 
 import { createClient } from "@/utils/supabase/server";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   maxRetries: 0,
-});
+}); }
 
 export async function POST(request: Request) {
   try {
@@ -78,7 +78,7 @@ export async function POST(request: Request) {
      * 3. Generate the three hooks.
      */
     const dna = await resolveActiveChannelDNA(supabase, user.id, channel.id);
-    const response = await openai.responses.create({
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
 
       instructions: `${channelInstructions(dna, 'music')}

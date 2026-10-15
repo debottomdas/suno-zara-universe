@@ -1,4 +1,5 @@
 import 'server-only';
+import {localStorage} from './storage';
 import { mutateLocalWorkspace, readLocalWorkspace, type LocalWorkspaceState } from './store';
 
 // A deliberately bounded local repository, sharing the existing route contracts.
@@ -81,10 +82,12 @@ class LocalQuery implements PromiseLike<any> {
           const updated=result.map(r=>({...r,...this.values}));
           if(this.one&&updated.length!==1)throw Error('Record changed or was not found.');
           state.tables??={};(state.tables.local_record_history??=[]).push(...result.map(r=>({table:this.table,record:r,archivedAt:new Date().toISOString()})));
-          putRows(state,this.table,records.map(r=>{const i=result.indexOf(r);return i<0?r:updated[i];}));result=updated;
+          putRows(state,this.table,['songs','song_creative_workspaces'].includes(this.table)?updated:records.map(r=>{const i=result.indexOf(r);return i<0?r:updated[i];}));result=updated;
         }else if(this.operation==='insert'||this.operation==='upsert'){
           result=[];
-          for(const input of Array.isArray(this.values)?this.values:[this.values]){
+          for(const raw of Array.isArray(this.values)?this.values:[this.values]){
+            const input = this.table==='song_media_assets' && raw.storage_provider==='supabase'
+              ? {...raw,storage_provider:'local',local_path:`objects/song-media/${raw.storage_path}`,storage_path:null} : raw;
             const row={id:crypto.randomUUID(),created_at:new Date().toISOString(),updated_at:new Date().toISOString(),...input};
             if(this.table==='channels'){row.is_archived??=false;row.active_dna_revision??=null;}
             if(row.song_id&&!rows(state,'songs').some(s=>s.id===row.song_id))throw Error('Unknown local project.');
@@ -93,7 +96,7 @@ class LocalQuery implements PromiseLike<any> {
             if(index>=0){state.tables??={};(state.tables.local_record_history??=[]).push({table:this.table,record:records[index],archivedAt:new Date().toISOString()});const previous=records[index];records[index]={...previous,...input};result.push(records[index]);}
             else{records.push(row);result.push(row);}
           }
-          putRows(state,this.table,records);
+          putRows(state,this.table,['songs','song_creative_workspaces'].includes(this.table)?result:records);
         }
         for(const o of [...this.ordering].reverse())result.sort((a,b)=>{const x=valueAt(a,o.key),y=valueAt(b,o.key);return (x<y?-1:x>y?1:0)*(o.ascending?1:-1);});
         result=result.slice(0,this.maximum);
@@ -105,5 +108,5 @@ class LocalQuery implements PromiseLike<any> {
   }
 }
 export function createLocalDatabase(){
- return {local:true,auth:{getUser:async()=>({data:{user:{id:localOwner(await readLocalWorkspace()),user_metadata:{}}},error:null})},from:(table:string)=>new LocalQuery(table)};
+ return {local:true,storage:localStorage(),auth:{getUser:async()=>({data:{user:{id:localOwner(await readLocalWorkspace()),user_metadata:{}}},error:null})},from:(table:string)=>new LocalQuery(table)};
 }

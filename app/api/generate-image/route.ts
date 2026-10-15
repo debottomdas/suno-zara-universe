@@ -6,9 +6,10 @@ import OpenAI from "openai";
 import sharp from "sharp";
 import { createClient } from "@/utils/supabase/server";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+  maxRetries: 0,
+}); }
 
 type ImageFormat = "youtube" | "shorts";
 
@@ -431,7 +432,7 @@ ARTWORK RULES:
 Generate one finished image.
 `.trim();
 
-    const result = await openai.images.generate({
+    const result = await aiClient().images.generate({
       model: "gpt-image-2.5-flare",
       prompt,
       size: size as any,
@@ -664,8 +665,8 @@ Generate one finished image.
     }
 
     const storagePath = imageSetId
-      ? `${user.id}/${song.id}/sets/set-${imageSetNumber}/${format}/image-${imageNumber}.png`
-      : `${user.id}/${song.id}/${format}/image-${imageNumber}.png`;
+      ? `${user.id}/${song.id}/sets/set-${imageSetNumber}/${format}/image-${imageNumber}-${crypto.randomUUID()}.png`
+      : `${user.id}/${song.id}/${format}/image-${imageNumber}-${crypto.randomUUID()}.png`;
 
     const { error: uploadError } = await supabase.storage
       .from("song-images")
