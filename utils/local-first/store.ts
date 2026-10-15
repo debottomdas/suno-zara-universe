@@ -109,7 +109,7 @@ export async function localChannels() {
 
 export async function localSongs(channelId: string) {
   const state = await readLocalWorkspace();
-  return { projects: state.songsByChannel[channelId] || [], localMode: true, syncedAt: state.syncedAt };
+  return { projects: (state.songsByChannel[channelId] || []).filter((song: any) => !song.localArchived), localMode: true, syncedAt: state.syncedAt };
 }
 
 export async function localSong(projectId: string) {
