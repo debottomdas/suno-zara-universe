@@ -214,3 +214,19 @@ export async function createLocalSong(input: {
   });
   return project;
 }
+
+/** Hide a local project without deleting its media, receipts or history. */
+export async function archiveLocalSong(projectId: string, channelId: string, confirmation: string) {
+  if (!localRuntimeAllowed()) return null;
+  const state = await readLocalWorkspace();
+  if (!state.channels.some((channel: any) => channel?.id === channelId)) return null;
+  const projects = state.songsByChannel[channelId] || [];
+  const song = projects.find((item: any) => (item.id === projectId || item.projectId === projectId) && !item.localArchived);
+  if (!song || song.title !== confirmation) return null;
+  const archived = { ...song, localArchived: true, localDirty: true, archivedAt: new Date().toISOString() };
+  await writeState({ ...state, songsByChannel: {
+    ...state.songsByChannel,
+    [channelId]: projects.map((item: any) => item === song ? archived : item),
+  } });
+  return archived;
+}
