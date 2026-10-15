@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+function load(fetch){const ctx={exports:{},URLSearchParams,fetch};vm.runInNewContext(ts.transpileModule(fs.readFileSync('utils/universe-navigation.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,ctx);return ctx.exports;}
+for(const [context,path,stage,view] of [['music','/music-next','Publish',undefined],['library','/library-next',undefined,'shorts'],['publishing','/publishing',undefined,undefined],['home','/music-next',undefined,undefined]])test(`channel navigation isolates projects and preserves ${context} context`,()=>{const {channelHref}=load();const url=new URL(channelHref(context,'second / channel',stage,view),'http://local');assert.equal(url.pathname,path);assert.equal(url.searchParams.get('channelId'),'second / channel');assert.equal(url.searchParams.get('projectId'),null);assert.equal(url.searchParams.get('editSchedule'),null);if(stage)assert.equal(url.searchParams.get('stage'),stage);if(view)assert.equal(url.searchParams.get('view'),view);});
+test('channel source handles both API shapes and never caches across accounts',async()=>{let calls=0;const {loadUniverseChannels}=load(async(url,options)=>{assert.equal(url,'/api/channels');assert.equal(options.cache,'no-store');return {ok:true,json:async()=>++calls===1?{channels:[{id:'first'}]}:[{id:'second'}]}});assert.equal((await loadUniverseChannels())[0].id,'first');assert.equal((await loadUniverseChannels())[0].id,'second');});
+test('channel source surfaces API failures without stale fallback',async()=>{const {loadUniverseChannels}=load(async()=>({ok:false,json:async()=>({error:'Please sign in'})}));await assert.rejects(loadUniverseChannels(),/Please sign in/);});

@@ -29,6 +29,26 @@ function stringArray(value: unknown, max = 50) {
 function tagsCharacterCount(tags: string[]) {
   return tags.reduce((total, tag, index) => total + (/[\s]/.test(tag) ? `"${tag}"` : tag).length + (index ? 1 : 0), 0);
 }
+const YOUTUBE_TAG_BUDGET = 480;
+
+export function normalizeYouTubeTags(value: unknown, max = 50) {
+  const seen = new Set<string>();
+  const candidates = stringArray(value, max * 2).filter((tag) => {
+    const key = tag.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return !tag.includes("<") && !tag.includes(">");
+  });
+  const accepted: string[] = [];
+  for (const tag of candidates) {
+    const next = [...accepted, tag];
+    if (tagsCharacterCount(next) > YOUTUBE_TAG_BUDGET) continue;
+    accepted.push(tag);
+    if (accepted.length >= max) break;
+  }
+  return accepted;
+}
+
 function validateMetadata(title: string, description: string, tags: string[]) {
   if (!title) throw new Error("YouTube title is required.");
   if (Array.from(title).length > 100) throw new Error("YouTube title exceeds 100 characters.");
@@ -97,6 +117,8 @@ export async function POST(request: Request) {
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return NextResponse.json({ error: "You must be signed in." }, { status: 401 });
 
+  let providerSessionAttempted = false;
+  let retrySafe = true;
   try {
     const body = await request.json();
     const projectId = clean(body.projectId);
@@ -104,7 +126,9 @@ export async function POST(request: Request) {
     const slot = Math.max(1, Math.min(6, Number(body.slot || 1)));
     const sizeBytes = Number(body.sizeBytes || 0);
     const mimeType = clean(body.mimeType) || "video/mp4";
-    const privacyStatus = clean(body.privacyStatus);
+    const publishAt = clean(body.publishAt);
+    if (publishAt && (!Number.isFinite(Date.parse(publishAt)) || Date.parse(publishAt) <= Date.now() + 120_000)) throw new Error("Choose a future publication time.");
+    const privacyStatus = publishAt ? "private" : clean(body.privacyStatus);
     const selfDeclaredMadeForKids = Boolean(body.selfDeclaredMadeForKids);
     const containsSyntheticMedia = Boolean(body.containsSyntheticMedia);
 
@@ -126,34 +150,44 @@ export async function POST(request: Request) {
       .maybeSingle();
     if (packError) throw new Error(`Could not load saved social pack: ${packError.message}`);
 
+    let currentPack:Record<string,unknown>|null=pack;
+    if(process.env.NODE_ENV==='development'){
+      const {snapshot:releaseSnapshot}=await import('@/utils/publishing/snapshot');
+      const local=await releaseSnapshot(projectId,song.channel_id);
+      if('localCampaign' in local&&local.localCampaign){if(!local.ready)throw new Error(local.reasons.join(' '));currentPack=local.social;}
+    }
     let title = "";
     let description = "";
     let tags: string[] = [];
+    let publishingSettings:Record<string,unknown>={};
     if (kind === "full") {
-      const full = (pack?.youtube_full && typeof pack.youtube_full === "object" ? pack.youtube_full : {}) as any;
+      const full = (currentPack?.youtube_full && typeof currentPack.youtube_full === "object" ? currentPack.youtube_full : {}) as any;
+      publishingSettings=full;
       title = clean(full.recommendedTitle) || clean(song.title) || "Suno Zara Original";
       description = clean(full.finalDescription) || clean(full.fullDescription) || clean(full.openingDescription);
       const hashtags = stringArray(full.hashtags, 30);
       description = appendHashtags(description, hashtags);
-      tags = stringArray(full.tags, 50);
+      tags = normalizeYouTubeTags(full.tags, 50);
     } else {
-      const shortsPack = (pack?.youtube_shorts && typeof pack.youtube_shorts === "object" ? pack.youtube_shorts : {}) as any;
+      const shortsPack = (currentPack?.youtube_shorts && typeof currentPack.youtube_shorts === "object" ? currentPack.youtube_shorts : {}) as any;
       const shorts = Array.isArray(shortsPack.shorts) ? shortsPack.shorts : [];
       const item = shorts.find((x: any) => Number(x?.shortNumber) === slot) || shorts[slot - 1] || {};
+      publishingSettings=item;
       title = clean(item.title) || `${clean(song.title) || "Suno Zara"} — Short ${slot}`;
       description = appendHashtags(clean(item.description), stringArray(item.hashtags, 15));
-      tags = stringArray(item.tags, 30);
+      tags = normalizeYouTubeTags(item.tags, 30);
     }
     validateMetadata(title, description, tags);
 
     const admin = createAdminClient();
     const { data: connection } = await admin
       .from("publishing_connections")
-      .select("id,scopes")
+      .select("id,scopes,external_account_id")
       .eq("user_id", user.id)
       .eq("platform", "youtube")
       .eq("status", "connected")
       .eq("channel_id", song.channel_id)
+      .filter("id", body.connectionId ? "eq" : "not.is", body.connectionId || null)
       .order("is_primary", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -179,9 +213,40 @@ export async function POST(request: Request) {
       accessToken = await refreshAccessToken(admin, user.id, connection.id, credential as OAuthCredential);
     }
 
+    // Hard preflight: prove the live OAuth identity is the exact YouTube channel
+    // assigned to this Universe channel before creating any upload session.
+    const expectedChannelId = clean(connection.external_account_id);
+    if (!expectedChannelId) {
+      return NextResponse.json({ error: "The saved YouTube connection has no channel identity. Reconnect YouTube before publishing.", retrySafe: true }, { status: 409 });
+    }
+    const identityUrl = new URL("https://www.googleapis.com/youtube/v3/channels");
+    identityUrl.searchParams.set("part", "id,snippet");
+    identityUrl.searchParams.set("mine", "true");
+    const identityResponse = await fetch(identityUrl, {
+      headers: { authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
+    });
+    if (!identityResponse.ok) {
+      throw new Error(await googleMessage(identityResponse, "Could not verify the connected YouTube channel"));
+    }
+    const identity = await identityResponse.json().catch(() => ({})) as any;
+    const liveChannelId = clean(identity?.items?.[0]?.id);
+    if (!liveChannelId || liveChannelId !== expectedChannelId) {
+      return NextResponse.json({
+        error: "Connected YouTube identity does not match this Suno Zara channel. Publishing stopped before upload.",
+        retrySafe: true,
+      }, { status: 409 });
+    }
+
+    if (body.preflightOnly === true) {
+      return NextResponse.json({ preflightVerified: true, channelId: liveChannelId });
+    }
+
     const url = new URL("https://www.googleapis.com/upload/youtube/v3/videos");
     url.searchParams.set("uploadType", "resumable");
     url.searchParams.set("part", "snippet,status");
+    providerSessionAttempted = true;
+    retrySafe = false;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -191,16 +256,23 @@ export async function POST(request: Request) {
         "x-upload-content-type": mimeType,
       },
       body: JSON.stringify({
-        snippet: { title, description, tags },
+        snippet: { title, description, tags,
+          ...(/^\d+$/.test(clean(publishingSettings.categoryId))?{categoryId:clean(publishingSettings.categoryId)}:{}),
+          ...(/^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(clean(publishingSettings.defaultLanguage))?{defaultLanguage:clean(publishingSettings.defaultLanguage)}:{}),
+        },
         status: {
           privacyStatus,
+          ...(publishAt ? { publishAt: new Date(publishAt).toISOString() } : {}),
           selfDeclaredMadeForKids,
           containsSyntheticMedia,
         },
       }),
       cache: "no-store",
     });
-    if (!response.ok) throw new Error(await googleMessage(response, "YouTube rejected the upload metadata"));
+    if (!response.ok) {
+      retrySafe = true;
+      throw new Error(await googleMessage(response, "YouTube rejected the upload metadata"));
+    }
     const uploadUrl = response.headers.get("location");
     if (!uploadUrl) throw new Error("YouTube did not return a resumable upload session URL.");
 
@@ -211,10 +283,14 @@ export async function POST(request: Request) {
       description,
       tags,
       connectionId: connection.id,
+      playlistPreparation: {ids:stringArray(publishingSettings.playlistIds),method:'youtube-studio-after-upload',automaticallyApplied:false},
       itemKey: kind === "full" ? "youtube-full" : `youtube-short-${String(slot).padStart(2, "0")}`,
     });
   } catch (error) {
     console.error("YouTube direct session error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not prepare direct YouTube upload." }, { status: 500 });
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : "Could not prepare direct YouTube upload.",
+      retrySafe: !providerSessionAttempted || retrySafe,
+    }, { status: 500 });
   }
 }

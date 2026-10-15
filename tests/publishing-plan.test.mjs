@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import vm from 'node:vm';
+import ts from 'typescript';
+function load(file,modules={}){const code=ts.transpileModule(fs.readFileSync(new URL('../'+file,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const ctx={exports:{},require:n=>modules[n],Date,Intl,Set,console};vm.runInNewContext(code,ctx);return ctx.exports;}
+const m=load('utils/publishing/plan.ts'),{executeApproved}=load('utils/publishing/execute.ts',{'./plan':m});
+const assets=Array.from({length:7},(_,slot)=>({key:slot?`short-${slot}`:'full',slot,label:slot?`Short ${slot}`:'Full video',version:'v'+slot,ready:true}));
+const destinations=['youtube','instagram','facebook','tiktok'].map(platform=>({id:platform,name:platform,platform,channelId:'bangla'}));
+const now=Date.parse('2026-10-01T10:00:00Z'),start='2026-10-02T10:00:00Z';
+const state={assets,destinations,projectId:'release',channelId:'bangla',revision:'v1',ready:true,reasons:[]};
+const plan=()=>({...state,timezone:'Europe/London',rows:m.deriveRows(assets,destinations,'bangla','Europe/London',start)});
+test('complete campaign is derived as 25; destinations may be deselected',()=>{assert.equal(plan().rows.length,25);assert.equal(m.deriveRows(assets,destinations.slice(0,2),'bangla','Europe/London',start).length,13);assert.equal(m.deriveRows(assets,destinations.slice(1,2),'bangla','Europe/London',start).length,6)});
+test('legacy Short 7–10 never return to active campaigns',()=>{const legacy=[...assets,...[7,8,9,10].map(slot=>({key:`short-${slot}`,slot,ready:true}))];assert.equal(m.deriveRows(legacy,destinations,'bangla','Europe/London',start).length,25)});
+test('exact-six identities required; selective missing approval blocks',()=>{assert.throws(()=>m.deriveRows(assets.map(a=>a.slot===1?{...a,ready:false}:a),destinations,'bangla','UTC',start));assert.throws(()=>m.deriveRows([...assets.slice(0,6),assets[5]],destinations,'bangla','UTC',start));});
+test('channel isolation and read-only All Channels',()=>{assert.throws(()=>m.deriveRows(assets,destinations,'hindi','UTC',start));assert.throws(()=>m.deriveRows(assets,destinations,'','UTC',start));assert.throws(()=>m.validatePlan({...plan(),channelId:'hindi'},state,now))});
+test('timezone conversion handles winter, summer and half-hour zones',()=>{assert.equal(m.toProviderTime('2026-10-02T11:00','Europe/London'),new Date(start).toISOString());assert.equal(m.toProviderTime('2026-12-01T11:00','Europe/London'),'2026-12-01T11:00:00.000Z');assert.equal(m.toProviderTime('2026-10-02T15:30','Asia/Kolkata'),start.replace('Z','.000Z'))});
+test('DST gap and fold require an unambiguous creator choice',()=>{assert.throws(()=>m.toProviderTime('2026-03-29T01:30','Europe/London'),/does not exist/);assert.throws(()=>m.toProviderTime('2026-10-25T01:30','Europe/London'),/twice/);assert.throws(()=>m.toProviderTime('2026-02-30T10:00','UTC'));assert.throws(()=>m.toProviderTime('2026-10-01T10:00','fake'))});
+test('review rejects stale state, invalid destination, duplicate, legacy slot and past times',()=>{for(const p of [{...plan(),revision:'old'},{...plan(),rows:[{...plan().rows[0],destinationId:'hindi'}]},{...plan(),rows:[plan().rows[0],plan().rows[0]]},{...plan(),rows:[{...plan().rows[0],assetKey:'short-7'}]},{...plan(),rows:[{...plan().rows[0],localTime:'2020-01-01T00:00'}]}])assert.throws(()=>m.validatePlan(p,state,now));assert.equal(m.validatePlan(plan(),state,now).length,25)});
+test('no delivery callback before explicit approval or on invalidated readiness',async()=>{let mutations=0;await assert.rejects(executeApproved(plan(),state,false,async()=>{mutations++}));await assert.rejects(executeApproved(plan(),{...state,ready:false,reasons:['Short 1 changed.']},true,async()=>{mutations++}));assert.equal(mutations,0)});
+test('scheduled receipts never become Published by passage of time',()=>{assert.equal(m.receiptStatus({status:'scheduled',scheduledAt:'2000-01-01'}),'Scheduled');assert.equal(m.receiptStatus({status:'sent'}),'Published');assert.equal(m.receiptStatus({status:'error'}),'Failed')});
+test('selective creative invalidation blocks only the changed Short without mutating approvals',()=>{
+ const versions={approved:{'short-1':'v1','short-2':'v2'},versions:[{id:'v1',slot:1,source:'generated',dependencyKey:'old'},{id:'v2',slot:2,source:'generated',dependencyKey:'same'}]};const before=JSON.stringify(versions);
+ assert.equal(m.assessAsset(1,{approvedVideo:{filename:'1.mp4'}},versions,'changed').ready,false);
+ assert.match(m.assessAsset(1,{approvedVideo:{filename:'1.mp4'}},versions,'changed').reason,/needs updating/);
+ assert.equal(m.assessAsset(2,{approvedVideo:{filename:'2.mp4'}},versions,'same').ready,true);assert.equal(JSON.stringify(versions),before);
+});
+test('older receipts cannot count as current success and invalidated assets cannot pass',()=>{assert.equal(m.currentReceipt({slot:1,postId:'old',status:'sent'},assets),false);assert.equal(m.currentReceipt({slot:1,assetVersion:'v1',status:'sent'},assets),true);assert.equal(m.currentReceipt({slot:1,assetVersion:'v1',status:'sent'},assets.map(a=>a.slot===1?{...a,ready:false}:a)),false)});
+test('daily proposal preserves local wall time across DST',()=>{const rows=m.deriveRows(assets,destinations,'bangla','Europe/London','2026-10-24T10:00:00Z');assert.ok(rows.every(r=>r.localTime.endsWith('11:00')));assert.equal(m.toProviderTime(rows[1].localTime,'Europe/London'),'2026-10-25T11:00:00.000Z')});
+test('an explicitly approved isolated plan delivers precisely its selected rows',async()=>{let calls=0;const p=plan();p.rows=m.deriveRows(assets,destinations,'bangla','Europe/London',new Date(Date.now()+86400000).toISOString());assert.equal(await executeApproved(p,state,true,async()=>{calls++}),25);assert.equal(calls,25)});

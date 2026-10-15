@@ -1,3 +1,4 @@
+import { claimBufferMedia, recordBufferMedia } from "@/utils/buffer-media-ledger";
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { assertBufferBudget, bufferGraphqlDetailed, getBufferRateLimit, type BufferService } from "@/utils/buffer-api";
@@ -53,6 +54,7 @@ function parseItem(value: unknown): BatchItem | null {
 }
 
 export async function POST(request: Request) {
+  let accessToken: string | undefined;
   try {
     const supabase = await createClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -66,6 +68,9 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "A valid projectId and up to 30 valid Buffer post items are required." }, { status: 400 });
     }
     const validItems = items as BatchItem[];
+    if (new Set(validItems.map(item => `${item.channelId}:${item.slot}`)).size !== validItems.length) {
+      return NextResponse.json({ error: "Each destination and Short slot must occur only once per batch." }, { status: 400 });
+    }
 
     const { data: song, error: songError } = await supabase
       .from("songs")
@@ -86,7 +91,7 @@ export async function POST(request: Request) {
     const allowedBufferIds = new Set((bindings || []).map((item) => item.buffer_channel_id));
     const accountIds = [...new Set((bindings || []).map((item: any) => item.buffer_account_id).filter(Boolean))];
     if (accountIds.length > 1) return NextResponse.json({ error: "This batch spans more than one Buffer account. Select destinations from one Buffer account at a time." }, { status: 400 });
-    const accessToken = accountIds.length === 1 ? await bufferAccessToken(String(accountIds[0]), user.id) : undefined;
+    accessToken = accountIds.length === 1 ? await bufferAccessToken(String(accountIds[0]), user.id) : undefined;
     const invalidDestination = requestedBufferIds.find((id) => !allowedBufferIds.has(id));
     if (invalidDestination) {
       return NextResponse.json(
@@ -136,7 +141,8 @@ export async function POST(request: Request) {
       return { ...item, text, alias };
     });
 
-    assertBufferBudget();
+    assertBufferBudget(accessToken);
+    await claimBufferMedia(user.id, projectId, validItems, accountIds.length === 1 ? String(accountIds[0]) : null);
     const response = await bufferGraphqlDetailed<Record<string, { post?: any; message?: string }>>(
       `mutation CreateSunoZaraBufferPosts(${variableDefs.join(", ")}) { ${fields.join("\n")} }`,
       variables,
@@ -151,9 +157,11 @@ export async function POST(request: Request) {
       return { slot: item.slot, channelId: item.channelId, service: item.service, publishMode: item.publishMode, dueAt: result.post.dueAt || item.dueAt || null, text: item.text, post: result.post };
     });
 
-    return NextResponse.json({ results, rateLimit: getBufferRateLimit(), apiRequestsUsed: 1 });
+    await recordBufferMedia(user.id, projectId, validItems, results);
+    return NextResponse.json({ results, rateLimit: getBufferRateLimit(accessToken), apiRequestsUsed: 1 });
   } catch (error) {
+    const limited = error as { status?: number; retryAfter?: number };
     console.error("Buffer create-posts-batch error:", error);
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create Buffer posts.", rateLimit: getBufferRateLimit() }, { status: 500 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create Buffer posts.", rateLimit: getBufferRateLimit(accessToken) }, { status: limited?.status === 429 ? 429 : 500, headers: limited?.status === 429 ? { "Retry-After": String(limited.retryAfter || 60) } : undefined });
   }
 }

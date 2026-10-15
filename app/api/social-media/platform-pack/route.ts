@@ -1,3 +1,8 @@
+import {applyChannelPublishing} from '@/utils/channel-dna/social';
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
+import {loadReleaseShortSlots} from '@/utils/social/release-slots';
+import {saveSocialPack} from '@/utils/social/persistence';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
@@ -540,20 +545,13 @@ export async function PATCH(request: Request) {
     }
 
     const { error: saveError } =
-      await supabase
-        .from("social_media_packs")
-        .upsert(
-          {
+      await saveSocialPack(supabase,user.id,projectId,{
             song_id: projectId,
             user_id: user.id,
             [platform]: cleanedPack,
             updated_at:
               new Date().toISOString(),
-          },
-          {
-            onConflict: "song_id,user_id",
-          }
-        );
+          });
 
     if (saveError) {
       throw new Error(
@@ -628,7 +626,8 @@ export async function POST(request: Request) {
         .from("songs")
         .select(
           `
-          id,
+          channel_id,
+        id,
           title,
           idea,
           language,
@@ -717,6 +716,9 @@ export async function POST(request: Request) {
       }
     }
 
+    const shortCount=(await loadReleaseShortSlots(supabase,user.id,projectId))?.length||6;
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'social');
     const systemPrompt = `
 You are a senior social-media strategist for original music releases.
 
@@ -759,7 +761,7 @@ Create:
 - 4 to 6 engagement questions
 - 4 to 6 CTA options
 - sensible Facebook hashtags
-- exactly 6 Facebook Reels concepts
+- exactly ${shortCount} Facebook Reels concepts
 
 Facebook should feel conversational and community-oriented.
 
@@ -771,14 +773,14 @@ Create:
 - 6 to 8 Story text ideas
 - 4 to 6 CTA options
 - relevant Instagram hashtags
-- exactly 10 Instagram Reels concepts
+- exactly ${shortCount} Instagram Reels concepts
 
 Instagram Reels should have strong opening hooks and concise captions.
 Visual directions should be practical for vertical 9:16 video.
 
 TIKTOK:
 
-Create exactly 10 distinct TikTok post concepts.
+Create exactly ${shortCount} distinct TikTok post concepts.
 
 Each TikTok must include:
 - creative angle
@@ -861,6 +863,8 @@ Return ONLY valid JSON using exactly this structure:
         : "No saved YouTube Shorts concepts are available.";
 
     const userPrompt = `
+${dnaInstructions}
+
 Build the Facebook, Instagram and TikTok release campaign
 for this finished song.
 
@@ -902,9 +906,9 @@ behaviour and tone of Facebook, Instagram and TikTok.
 
 Do not invent song lyrics.
 
-Facebook must contain exactly 6 Reels.
-Instagram must contain exactly 10 Reels.
-TikTok must contain exactly 10 posts.
+Facebook must contain exactly ${shortCount} Reels.
+Instagram must contain exactly ${shortCount} Reels.
+TikTok must contain exactly ${shortCount} posts.
 `.trim();
 
     const response =
@@ -963,21 +967,21 @@ TikTok must contain exactly 10 posts.
       generatorGuidance
     );
 
-    if (facebook.reels.length !== 6) {
+    if (facebook.reels.length !== shortCount) {
       throw new Error(
-        "AI did not return exactly 6 Facebook Reels."
+        "Facebook copy did not match the release Short slots."
       );
     }
 
-    if (instagram.reels.length !== 10) {
+    if (instagram.reels.length !== shortCount) {
       throw new Error(
-        "AI did not return exactly 10 Instagram Reels."
+        "Instagram copy did not match the release Short slots."
       );
     }
 
-    if (tiktok.posts.length !== 10) {
+    if (tiktok.posts.length !== shortCount) {
       throw new Error(
-        "AI did not return exactly 10 TikTok posts."
+        "TikTok copy did not match the release Short slots."
       );
     }
 
@@ -992,10 +996,7 @@ TikTok must contain exactly 10 posts.
     }
 
     const { error: saveError } =
-      await supabase
-        .from("social_media_packs")
-        .upsert(
-          {
+      await saveSocialPack(supabase,user.id,projectId,{
             song_id: song.id,
             user_id: user.id,
             facebook,
@@ -1003,17 +1004,19 @@ TikTok must contain exactly 10 posts.
             tiktok,
             updated_at:
               new Date().toISOString(),
-          },
-          {
-            onConflict: "song_id,user_id",
-          }
-        );
+          },false,{context:channelContext,song});
 
     if (saveError) {
       throw new Error(
         `Could not save platform packs: ${saveError.message}`
       );
     }
+
+    Object.assign(facebook,applyChannelPublishing(channelContext,song,'facebook',facebook));
+
+    Object.assign(instagram,applyChannelPublishing(channelContext,song,'instagram',instagram));
+
+    Object.assign(tiktok,applyChannelPublishing(channelContext,song,'tiktok',tiktok));
 
     return NextResponse.json({
       projectId: song.id,

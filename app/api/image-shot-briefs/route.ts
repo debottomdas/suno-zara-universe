@@ -1,3 +1,5 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
@@ -53,6 +55,7 @@ export async function POST(request: Request) {
     const { data: song, error: songError } = await supabase
       .from("songs")
       .select(`
+        channel_id,
         id,
         user_id,
         title,
@@ -158,6 +161,8 @@ IMAGE 6 — CLOSE EMOTIONAL DETAIL
 - do not repeat Image 2 camera distance or pose
 `;
 
+    const channelContext = await resolveActiveChannelDNA(supabase,user.id,song.channel_id);
+    const dnaInstructions = channelInstructions(channelContext,'visual');
     const systemPrompt = `
 You are a senior music-video director, cinematographer and visual editor.
 
@@ -210,7 +215,7 @@ and the SAME song.
 The set should feel curated like frames selected from a professionally
 directed music film — coherent in identity but strongly varied in imagery.
 
-Do not include text, title, lyrics, logo, subtitle or watermark.
+Follow Channel DNA for required channel text/branding; otherwise omit text, title, lyrics, logo, subtitle or watermark.
 
 Return ONLY valid JSON:
 
@@ -226,6 +231,8 @@ Return ONLY valid JSON:
 `.trim();
 
     const userPrompt = `
+${dnaInstructions}
+
 SONG TITLE:
 ${song.title || "Untitled"}
 

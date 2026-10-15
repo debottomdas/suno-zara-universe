@@ -42,3 +42,9 @@ next-env.d.ts
 
 # Suno Zara local media - never commit media files
 local-media/
+
+# Suno Zara local engineering work / backups
+/work/
+*.before-*
+/next
+/sunozara-universe@0.1.0

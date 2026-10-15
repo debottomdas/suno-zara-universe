@@ -1,7 +1,18 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { cacheSongs, localModeAvailable, localSongs, localChannels } from "@/utils/local-first/store";
 
 export async function GET(request: Request) {
+  const host = request.headers.get("host");
+  if (localModeAvailable() && (host === "localhost:3000" || host === "127.0.0.1:3000")) {
+    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    if (!channelId) return NextResponse.json({ error: "channelId is required." }, { status: 400 });
+    const { channels } = await localChannels();
+    if (!channels.some((channel) => channel.id === channelId)) {
+      return NextResponse.json({ error: "Unknown local channel." }, { status: 404 });
+    }
+    return NextResponse.json(await localSongs(channelId));
+  }
   try {
     const supabase = await createClient();
 
@@ -10,15 +21,19 @@ export async function GET(request: Request) {
       error: userError,
     } = await supabase.auth.getUser();
 
+    const channelId =
+      new URL(request.url).searchParams.get("channelId")?.trim() || "";
+
     if (userError || !user) {
+      if (channelId && localModeAvailable()) {
+        const local = await localSongs(channelId);
+        if (local.projects.length) return NextResponse.json(local);
+      }
       return NextResponse.json(
         { error: "Please sign in to view your songs." },
         { status: 401 }
       );
     }
-
-    const channelId =
-      new URL(request.url).searchParams.get("channelId")?.trim() || "";
 
     if (!channelId) {
       return NextResponse.json(
@@ -50,6 +65,7 @@ export async function GET(request: Request) {
       .select(`
         id,
         title,
+        english_title,
         idea,
         language,
         script,
@@ -60,6 +76,7 @@ export async function GET(request: Request) {
         selected_hook,
         lyrics,
         status,
+        project_state,
         created_at,
         updated_at
       `)
@@ -87,6 +104,7 @@ export async function GET(request: Request) {
         projectId: song.id,
 
         title: song.title,
+        englishTitle: song.english_title || "",
         idea: song.idea,
         language: song.language,
         script: song.script,
@@ -102,6 +120,7 @@ export async function GET(request: Request) {
         lyrics: song.lyrics,
 
         status: song.status,
+        projectState: song.project_state || "current",
 
         createdAt:
           song.created_at,
@@ -111,10 +130,17 @@ export async function GET(request: Request) {
       })
     );
 
+    await cacheSongs(channelId, projects);
     return NextResponse.json({
       projects,
+      localMode: false,
     });
   } catch (error) {
+    const channelId = new URL(request.url).searchParams.get("channelId")?.trim() || "";
+    if (channelId && localModeAvailable()) {
+      const local = await localSongs(channelId);
+      if (local.projects.length) return NextResponse.json(local);
+    }
     console.error(
       "Failed to load songs:",
       error
@@ -204,4 +230,25 @@ export async function PATCH(request: Request) {
       { status: 500 }
     );
   }
+}
+
+// Asset-first intake reuses songs and the same channel ownership boundary as lyrics import.
+export async function POST(request: Request) {
+  try {
+    const db = await createClient();
+    const { data: { user }, error: authError } = await db.auth.getUser();
+    if (authError || !user) return NextResponse.json({error: 'Please sign in to create a project.'}, {status: 401});
+    const body = await request.json();
+    const clean = (v: unknown, max: number) => typeof v === 'string' ? v.trim().slice(0, max) : '';
+    const requestId=clean(body.projectId,100);
+    if(requestId&&!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId))return NextResponse.json({error:'Invalid project request.'},{status:400});
+    const channelId = clean(body.channelId, 100), title = clean(body.title, 120), englishTitle = clean(body.englishTitle, 120), language = clean(body.language, 80);
+    if (!channelId || !title || !language) return NextResponse.json({error: 'Choose a channel and enter the song title and language.'}, {status: 400});
+    const {data: channel, error: channelError} = await db.from('channels').select('id, workspaces!inner(owner_user_id)').eq('id', channelId).eq('workspaces.owner_user_id', user.id).single();
+    if (channelError || !channel) return NextResponse.json({error: 'The selected channel is not available.'}, {status: 403});
+    const {data: project, error} = await db.from('songs').insert({...(requestId?{id:requestId}:{}),user_id:user.id, channel_id:channel.id, title, english_title:englishTitle||null, language, idea:clean(body.idea, 4000), script:'Native', mood:'', genre:'', freedom:'50', hooks:[], selected_hook:null, lyrics:null, status:'creating', project_state:'current'}).select('id,title,language,idea,lyrics,status,project_state,hooks').single();
+    if(error?.code==='23505'&&requestId){const {data:existing}=await db.from('songs').select('id,title,language,idea,lyrics,status,project_state,hooks').eq('id',requestId).eq('user_id',user.id).eq('channel_id',channel.id).single();if(existing)return NextResponse.json({projectId:existing.id,project:existing,saved:true});}
+    if (error || !project) return NextResponse.json({error:'The project could not be saved. Your details are still available to retry.'}, {status:500});
+    return NextResponse.json({projectId:project.id, project, saved:true});
+  } catch { return NextResponse.json({error:'Could not create the project.'}, {status:500}); }
 }

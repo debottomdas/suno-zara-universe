@@ -10,7 +10,7 @@ const modules = [
   {
     name: "Music Studio",
     description: "Write lyrics, shape Suno styles, create artwork, prepare videos, publish releases and measure performance.",
-    href: "/music",
+    href: "/music-next",
     status: "Ready",
     symbol: "♪",
     accent: "from-rose-500/20 via-fuchsia-500/10 to-transparent",
@@ -57,7 +57,7 @@ export default function UniverseHome() {
 
   return (
     <div className="min-h-screen bg-[#05070b] text-white">
-      <header className="border-b border-white/[0.07] bg-[#070a10]/90 px-6 py-4 backdrop-blur-xl sm:px-10">
+      <header className="relative z-50 border-b border-white/[0.07] bg-[#070a10]/90 px-6 py-4 backdrop-blur-xl sm:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
           <Link href="/" className="flex items-center gap-3">
             <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-fuchsia-300/20 bg-gradient-to-br from-fuchsia-500/20 to-sky-500/10 text-lg font-black shadow-[0_12px_35px_-20px_rgba(217,70,239,.8)]">
@@ -96,7 +96,7 @@ export default function UniverseHome() {
             </div>
 
             <div className="mt-12 flex flex-wrap gap-3">
-              <Link href="/music" className="rounded-2xl bg-white px-6 py-3.5 text-sm font-bold text-black transition hover:bg-zinc-200">
+              <Link href="/music-next" className="rounded-2xl bg-white px-6 py-3.5 text-sm font-bold text-black transition hover:bg-zinc-200">
                 Open Music Studio →
               </Link>
               <a href="#worlds" className="rounded-2xl border border-white/10 bg-white/[0.03] px-6 py-3.5 text-sm font-semibold text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.06] hover:text-white">

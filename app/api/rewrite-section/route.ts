@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, localSong, updateLocalSong } from "@/utils/local-first/store";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -19,17 +20,7 @@ export async function POST(request: Request) {
       error: userError,
     } = await supabase.auth.getUser();
 
-    if (userError || !user) {
-      return NextResponse.json(
-        {
-          error:
-            "Please sign in to rewrite a song.",
-        },
-        { status: 401 }
-      );
-    }
-
-    /*
+     /*
      * 2. Validate request.
      */
     const body = await request.json();
@@ -82,39 +73,21 @@ export async function POST(request: Request) {
      * RLS ensures the user can only access
      * their own song.
      */
-    const {
-      data: project,
-      error: projectError,
-    } = await supabase
-      .from("songs")
-      .select(`
-        id,
-        title,
-        idea,
-        language,
-        script,
-        mood,
-        genre,
-        freedom,
-        hooks,
-        selected_hook,
-        lyrics,
-        status,
-        created_at,
-        updated_at
-      `)
-      .eq("id", projectId)
-      .single();
-
-    if (projectError || !project) {
-      return NextResponse.json(
-        {
-          error:
-            "Song not found or you do not have access to it.",
-        },
-        { status: 404 }
-      );
+    let project: any = null;
+    const localOnly = Boolean(userError || !user);
+    if (!localOnly) {
+      const result = await supabase.from("songs")
+        .select(`id,title,idea,language,script,mood,genre,freedom,hooks,selected_hook,lyrics,status,created_at,updated_at`)
+        .eq("id", projectId).single();
+      project = result.data;
+    } else if (localModeAvailable()) {
+      const local = await localSong(projectId);
+      if (local) project = { ...local, selected_hook: local.selected_hook ?? local.selectedHook, updated_at: local.updated_at ?? local.updatedAt };
     }
+    if (!project) return NextResponse.json(
+      { error: localOnly ? "Local project snapshot is not available yet." : "Song not found or you do not have access to it." },
+      { status: localOnly ? 503 : 404 }
+    );
 
     if (!project.lyrics) {
       return NextResponse.json(
@@ -221,6 +194,12 @@ Use exactly this structure:
     const now =
       new Date().toISOString();
 
+    if (localOnly) {
+      const updatedSong = await updateLocalSong(project.id, { lyrics: result.updatedLyrics, status: "song-generated" });
+      if (!updatedSong) return NextResponse.json({ error: "The rewritten song could not be saved locally." }, { status: 500 });
+      return NextResponse.json({ saved: true, localMode: true, title: updatedSong.title || "", lyrics: updatedSong.lyrics, rewrittenSection: result.rewrittenSection, sectionName });
+    }
+
     /*
      * 5. Preserve current song in
      * Supabase Version History BEFORE
@@ -236,7 +215,7 @@ Use exactly this structure:
       .from("song_versions")
       .insert({
         song_id: project.id,
-        user_id: user.id,
+        user_id: user!.id,
         title: project.title,
         lyrics: project.lyrics,
         version_type:

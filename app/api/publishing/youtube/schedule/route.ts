@@ -204,3 +204,27 @@ export async function POST(request: Request) {
     );
   }
 }
+
+// Monitoring reads provider truth; a passed scheduled time alone is never success.
+export async function GET(request: Request) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: 'Please sign in.' }, { status: 401 });
+    const params = new URL(request.url).searchParams;
+    const projectId = clean(params.get('projectId'));
+    const { data: song } = await supabase.from('songs').select('id,channel_id').eq('id', projectId).eq('user_id', user.id).single();
+    if (!song) return NextResponse.json({ error: 'Song not found.' }, { status: 404 });
+    const ids = (params.get('ids') || '').split(',').filter(id => /^[\w-]{11}$/.test(id)).slice(0, 50);
+    if (!ids.length) return NextResponse.json({ videos: [] });
+    const token = await getAccessToken(user.id, clean(song.channel_id));
+    const { data: connection } = await supabase.from('publishing_connections').select('external_account_id').eq('user_id',user.id).eq('channel_id',song.channel_id).eq('platform','youtube').eq('status','connected').order('is_primary',{ascending:false}).limit(1).maybeSingle();
+    const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+    url.searchParams.set('part','status,snippet');url.searchParams.set('id',ids.join(','));
+    const response = await fetch(url,{headers:{authorization:`Bearer ${token}`},cache:'no-store'});
+    if (!response.ok) throw Error(await googleMessage(response,'Could not read YouTube status'));
+    const data = await response.json();
+    const videos = (data.items || []).filter((v:any)=>v.snippet?.channelId===connection?.external_account_id).map((v:any)=>({videoId:v.id,status:v.status?.uploadStatus==='failed'||v.status?.uploadStatus==='rejected'?'error':v.status?.privacyStatus==='public'?'published':v.status?.publishAt?'scheduled':'private',scheduledAt:v.status?.publishAt||null,errorMessage:v.status?.failureReason||v.status?.rejectionReason||null}));
+    return NextResponse.json({videos});
+  } catch(error) { return NextResponse.json({error:error instanceof Error?error.message:'Status unavailable.'},{status:400}); }
+}

@@ -1,16 +1,20 @@
 import http from "node:http";
+import {validateFinishing,assDocument,fadeFilter,brandingRenderSpec} from "./music-finishing.mjs";
+import {productScope,saveProduct} from "./music-product.mjs";
+import {addCandidate,approveCandidate,syncDependencies,outputName} from "./creative-versions.mjs";
+import { recordBufferReceipt } from "./buffer-receipts.mjs";
 import os from "node:os";
 import path from "node:path";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, readFile, writeFile, rm, stat, unlink, rename } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, stat, unlink, rename, copyFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import ffmpegPath from "ffmpeg-static";
 
 const HOST = "127.0.0.1";
-const PORT = 47123;
-const ROOT = path.join(os.homedir(), "Suno Zara Universe");
+const PORT = Number(process.env.SZU_WORKER_PORT || 47123);
+const ROOT = process.env.SZU_WORKER_ROOT || path.join(os.homedir(), "Suno Zara Universe");
 const MANIFEST_PATH = path.join(ROOT, "worker-manifest.json");
 
 function cors(res) {
@@ -59,6 +63,7 @@ async function saveManifest(manifest) {
 }
 function extensionFor(contentType, fallback = ".bin") {
   const type = String(contentType || "").toLowerCase();
+  if (type.includes("font") || type.includes("truetype")) return ".ttf";
   if (type.includes("png")) return ".png";
   if (type.includes("webp")) return ".webp";
   if (type.includes("jpeg") || type.includes("jpg")) return ".jpg";
@@ -98,6 +103,28 @@ async function run(command, args) {
   });
 }
 
+async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir,slot=0,offset=0,masterDuration=duration) {
+ if(finishing)validateFinishing(finishing,masterDuration);
+ let codec='';await new Promise(resolve=>{const child=spawn(ffmpegPath,['-hide_banner','-i',audioFile],{stdio:['ignore','ignore','pipe']});let text='';child.stderr.on('data',c=>text+=c);child.on('error',resolve);child.on('close',()=>{codec=/Audio: aac\b/.test(text)?'aac':'';resolve();});});
+ const assets=[];
+ for(const ref of finishing?.renderAssets||[]){
+  if(!/^[a-f0-9]{64}$/iu.test(ref.expectedSha256)||!['logo','watermark','font','intro','outro'].includes(ref.role))throw Error('Invalid channel branding reference.');
+  const file=await download(ref.url,`brand-asset-${slot}-${assets.length}`,tempDir);
+  if(createHash('sha256').update(await readFile(file)).digest('hex')!==ref.expectedSha256.toLowerCase())throw Error('Channel branding asset changed; review Channel DNA before rendering.');
+  let dimensions={};
+  if(finishing.structuredSubtitles&&['logo','watermark'].includes(ref.role)){
+   dimensions=await new Promise(resolve=>{const child=spawn(ffmpegPath,['-hide_banner','-i',file],{stdio:['ignore','ignore','pipe']});let info='';child.stderr.on('data',c=>info+=c);child.on('error',()=>resolve({}));child.on('close',()=>{const match=info.match(/Video:.*?\b(\d{2,5})x(\d{2,5})\b/);resolve(match?{width:Number(match[1]),height:Number(match[2])}:{});});});
+  }
+  assets.push({...ref,file,...dimensions});
+ }
+ const args=['-y','-i',silentVideo,...(offset?['-ss',offset.toFixed(3)]:[]),'-i',audioFile,'-map','0:v:0','-map','1:a:0'];
+ if(finishing){const assFile=path.join(tempDir,`finishing-${slot}.ass`);await writeFile(assFile,assDocument(finishing,duration,slot,offset,assets),'utf8');const spec=brandingRenderSpec(finishing,duration,slot,assets,assFile,assets.some(a=>a.role==='font')?tempDir:null);args.splice(args.indexOf('-map'),4);args.push(...spec.inputs,'-filter_complex',spec.filter,'-map',spec.output,'-map','1:a:0','-c:v','libx264','-preset','veryfast','-crf','20','-pix_fmt','yuv420p');}
+ else args.push('-c:v','copy');
+ args.push('-c:a',codec==='aac'?'copy':'aac',...(codec==='aac'?[]:['-b:a','192k']),'-t',String(duration),'-shortest','-movflags','+faststart',output);await run(ffmpegPath,args);
+ return {masterSha256:createHash('sha256').update(await readFile(audioFile)).digest('hex'),audioMode:codec==='aac'?'original-aac-copy':'single-aac-encode',finishing:finishing?{subtitles:finishing.subtitles,lyrics:finishing.lyrics,reviewed:finishing.reviewed,cueCount:finishing.cues.filter(c=>c.end>offset&&c.start<offset+duration).length,lyricsSha256:createHash('sha256').update(finishing.lyrics).digest('hex'),channelId:finishing.channelId,dnaRevision:finishing.dnaRevision,brandAlignment:finishing.brandAlignment,brandText:finishing.brandText,transition:finishing.transition}:null};
+}
+function withTransition(filter,duration,scene,complex=false){if(scene.transition!=='fade')return filter;const fade=fadeFilter(duration);return complex?filter.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${filter},${fade}`;}
+
 function normalizeVisuals(body) {
   const supplied = Array.isArray(body.visuals)
     ? body.visuals
@@ -117,6 +144,9 @@ function normalizeVisuals(body) {
       .filter((item) => item.url);
   }
 
+  // Explicit scene timelines may deliberately reuse one approved image.
+  // Keep every planned position; legacy asset discovery still deduplicates.
+  if(body.creativeCandidate)return supplied.slice(0,40);
   const seen = new Set();
   return supplied.filter((item) => {
     const key = `${item.mediaType}:${item.url}`;
@@ -182,7 +212,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
     if (scene.format === "vertical") {
       await run(ffmpegPath, [
         ...base,
-        "-filter_complex", verticalVideoFilter(sceneDuration),
+        "-filter_complex", withTransition(verticalVideoFilter(sceneDuration),sceneDuration,scene,true),
         "-map", "[v]",
         "-an",
         "-c:v", "libx264",
@@ -196,7 +226,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
     } else {
       await run(ffmpegPath, [
         ...base,
-        "-vf", landscapeVideoFilter(sceneDuration),
+        "-vf", withTransition(landscapeVideoFilter(sceneDuration),sceneDuration,scene,false),
         "-an",
         "-c:v", "libx264",
         "-preset", "veryfast",
@@ -214,7 +244,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   if (scene.format === "vertical") {
     await run(ffmpegPath, [
       ...base,
-      "-filter_complex", verticalImageFilter(sceneDuration),
+      "-filter_complex", withTransition(verticalImageFilter(sceneDuration),sceneDuration,scene,true),
       "-map", "[v]",
       "-an",
       "-c:v", "libx264",
@@ -228,7 +258,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   } else {
     await run(ffmpegPath, [
       ...base,
-      "-vf", landscapeImageFilter(sceneDuration, index),
+      "-vf", withTransition(landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
       "-an",
       "-c:v", "libx264",
       "-preset", "veryfast",
@@ -246,7 +276,7 @@ async function renderFullVideo(body) {
   if (!ffmpegPath) throw new Error("FFmpeg is unavailable. Run npm install ffmpeg-static first.");
 
   const projectId = String(body.projectId || "").trim();
-  const title = String(body.title || "Suno Zara Song").trim();
+  const title = String(body.title || "Untitled song").trim();
   const audioUrl = String(body.audioUrl || "").trim();
   const durationSeconds = Number(body.durationSeconds);
   const visuals = normalizeVisuals(body);
@@ -255,6 +285,7 @@ async function renderFullVideo(body) {
     throw new Error("projectId, audioUrl, durationSeconds and at least one visual are required.");
   }
 
+  if(body.finishing)validateFinishing(body.finishing,durationSeconds);
   const jobId = randomUUID();
   const tempDir = path.join(os.tmpdir(), "szu-video-worker", jobId);
   await mkdir(tempDir, { recursive: true });
@@ -265,6 +296,7 @@ async function renderFullVideo(body) {
     for (let i = 0; i < visuals.length; i += 1) {
       downloadedVisuals.push({
         ...visuals[i],
+        transition:body.finishing?.transition,
         file: await download(visuals[i].url, `visual-${i + 1}`, tempDir),
       });
     }
@@ -274,14 +306,16 @@ async function renderFullVideo(body) {
     const targetSceneSeconds = downloadedVisuals.some((item) => item.mediaType === "video") ? 9 : 12;
     const sceneCount = Math.max(downloadedVisuals.length, Math.min(28, Math.ceil(durationSeconds / targetSceneSeconds)));
     const sceneDuration = durationSeconds / sceneCount;
-    const sequence = Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[index % downloadedVisuals.length]);
+    const planned = body.creativeCandidate && Array.isArray(body.sceneDurations) ? body.sceneDurations : null;
+    if(planned && (planned.length!==downloadedVisuals.length || planned.some(x=>!Number.isFinite(x)||x<=0) || Math.abs(planned.reduce((a,b)=>a+b,0)-durationSeconds)>.05))throw Error("Invalid scene timing.");
+    const sequence = planned ? downloadedVisuals : Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[index % downloadedVisuals.length]);
 
     console.log(`[${title}] Rendering ${sceneCount} scenes from ${downloadedVisuals.length} distinct visual assets.`);
 
     const sceneFiles = [];
     for (let index = 0; index < sequence.length; index += 1) {
       console.log(`[${title}] Scene ${index + 1}/${sequence.length} (${sequence[index].mediaType})`);
-      sceneFiles.push(await renderScene(sequence[index], index, sceneDuration, tempDir));
+      sceneFiles.push(await renderScene(sequence[index], index, planned ? planned[index] : sceneDuration, tempDir));
     }
 
     const concatFile = path.join(tempDir, "scenes.ffconcat");
@@ -292,17 +326,13 @@ async function renderFullVideo(body) {
 
     const songFolder = path.join(ROOT, "Music", safeName(title), "Videos");
     await mkdir(songFolder, { recursive: true });
-    const filename = `${safeName(title)}-Full-Video.mp4`;
+    const filename = `${safeName(title)}-Full-Video${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
     const output = path.join(songFolder, filename);
 
-    await run(ffmpegPath, [
-      "-y", "-i", silentVideo, "-i", audioFile,
-      "-map", "0:v:0", "-map", "1:a:0",
-      "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-      "-t", String(durationSeconds), "-shortest", "-movflags", "+faststart", output,
-    ]);
+    const finish=await finishMux(silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
 
     const generatedFullVideo = {
+      ...finish,
       projectId,
       title,
       filename,
@@ -315,6 +345,7 @@ async function renderFullVideo(body) {
       sourceClipCount: downloadedVisuals.filter((item) => item.mediaType === "video").length,
       sceneCount,
     };
+    if(body.creativeCandidate)return generatedFullVideo;
     const manifest = await loadManifest();
     manifest.projects ||= {};
     const existing = manifest.projects[projectId] || {};
@@ -468,6 +499,7 @@ async function saveUploadedFullVideo(req, url) {
   const manifest = await loadManifest();
   manifest.projects ||= {};
   const existing = manifest.projects[projectId] || { projectId, title };
+  if(url.searchParams.get("creativeCandidate")==="1")return uploadedFullVideo;
   const previous = existing.uploadedFullVideo;
   manifest.projects[projectId] = { ...existing, projectId, title, uploadedFullVideo };
   await saveManifest(manifest);
@@ -644,17 +676,17 @@ async function renderShortScene(scene, index, sceneDuration, tempDir, prefix) {
   if (scene.mediaType === "video") {
     const base = ["-y", "-stream_loop", "-1", "-i", scene.file, "-t", sceneDuration.toFixed(4)];
     if (scene.format === "vertical") {
-      await run(ffmpegPath, [...base, "-vf", shortVerticalVideoFilter(sceneDuration), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+      await run(ffmpegPath, [...base, "-vf", withTransition(shortVerticalVideoFilter(sceneDuration),sceneDuration,scene,false), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
     } else {
-      await run(ffmpegPath, [...base, "-filter_complex", shortLandscapeVideoFilter(sceneDuration), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+      await run(ffmpegPath, [...base, "-filter_complex", withTransition(shortLandscapeVideoFilter(sceneDuration),sceneDuration,scene,true), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
     }
     return output;
   }
   const base = ["-y", "-loop", "1", "-framerate", "30", "-t", sceneDuration.toFixed(4), "-i", scene.file];
   if (scene.format === "vertical") {
-    await run(ffmpegPath, [...base, "-vf", shortVerticalImageFilter(sceneDuration, index), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+    await run(ffmpegPath, [...base, "-vf", withTransition(shortVerticalImageFilter(sceneDuration, index),sceneDuration,scene,false), "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
   } else {
-    await run(ffmpegPath, [...base, "-filter_complex", shortLandscapeImageFilter(sceneDuration), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
+    await run(ffmpegPath, [...base, "-filter_complex", withTransition(shortLandscapeImageFilter(sceneDuration),sceneDuration,scene,true), "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p", "-r", "30", "-t", sceneDuration.toFixed(4), output]);
   }
   return output;
 }
@@ -679,7 +711,7 @@ function normalizeHighlights(raw, durationSeconds) {
 async function renderShorts(body) {
   if (!ffmpegPath) throw new Error("FFmpeg is unavailable. Run npm install ffmpeg-static first.");
   const projectId = String(body.projectId || "").trim();
-  const title = String(body.title || "Suno Zara Song").trim();
+  const title = String(body.title || "Untitled song").trim();
   const audioUrl = String(body.audioUrl || "").trim();
   const durationSeconds = Number(body.durationSeconds);
   const visuals = normalizeVisuals(body);
@@ -687,6 +719,7 @@ async function renderShorts(body) {
     throw new Error("projectId, audioUrl, durationSeconds and at least one visual are required.");
   }
   const highlights = normalizeHighlights(body.highlights, durationSeconds);
+  if(body.finishing)validateFinishing(body.finishing,durationSeconds);
   const jobId = randomUUID();
   const tempDir = path.join(os.tmpdir(), "szu-video-worker", `shorts-${jobId}`);
   await mkdir(tempDir, { recursive: true });
@@ -694,15 +727,17 @@ async function renderShorts(body) {
     const audioFile = await download(audioUrl, "audio", tempDir);
     const downloadedVisuals = [];
     for (let i = 0; i < visuals.length; i += 1) {
-      downloadedVisuals.push({ ...visuals[i], file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
+      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
     }
     const shortsFolder = path.join(ROOT, "Music", safeName(title), "Shorts");
     await mkdir(shortsFolder, { recursive: true });
     const generatedShorts = [];
-    for (let slot = 1; slot <= 6; slot += 1) {
-      const highlight = highlights[slot - 1];
-      const clipDuration = Math.max(8, Math.min(30, highlight.endSeconds - highlight.startSeconds));
-      const sceneCount = clipDuration <= 16 ? 2 : 3;
+    for (const slot of (body.creativeCandidate ? [Number(body.slot)] : [1,2,3,4,5,6])) {
+      outputName(slot);
+      const highlight = body.creativeCandidate ? body.highlight : highlights[slot - 1];
+      if(body.creativeCandidate && (!highlight || !Number.isFinite(highlight.startSeconds) || !Number.isFinite(highlight.endSeconds) || highlight.startSeconds<0 || highlight.endSeconds>durationSeconds || highlight.endSeconds-highlight.startSeconds<8 || highlight.endSeconds-highlight.startSeconds>60))throw Error("Invalid Short timing.");
+      const clipDuration = Math.max(8, Math.min(body.creativeCandidate ? 60 : 30, highlight.endSeconds - highlight.startSeconds));
+      const sceneCount = body.creativeCandidate ? 1 : clipDuration <= 16 ? 2 : 3;
       const sceneDuration = clipDuration / sceneCount;
       const sequence = Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[((slot - 1) * 2 + index) % downloadedVisuals.length]);
       const sceneFiles = [];
@@ -713,20 +748,18 @@ async function renderShorts(body) {
       await writeFile(concatFile, ["ffconcat version 1.0", ...sceneFiles.map((file) => `file '${ffconcatEscape(file)}'`)].join("\n") + "\n");
       const silentVideo = path.join(tempDir, `short-${slot}-silent.mp4`);
       await run(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", concatFile, "-c", "copy", silentVideo]);
-      const filename = `${safeName(title)}-Short-${String(slot).padStart(2, "0")}.mp4`;
+      const filename = `${safeName(title)}-Short-${String(slot).padStart(2, "0")}${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
       const output = path.join(shortsFolder, filename);
-      await run(ffmpegPath, [
-        "-y", "-i", silentVideo, "-ss", highlight.startSeconds.toFixed(3), "-i", audioFile,
-        "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-t", clipDuration.toFixed(3), "-shortest", "-movflags", "+faststart", output,
-      ]);
+      const finish=await finishMux(silentVideo,audioFile,output,clipDuration,body.finishing,tempDir,slot,highlight.startSeconds,durationSeconds);
       generatedShorts.push({
+        ...finish,
         projectId, title, slot, filename, filePath: output, source: "generated", generatedAt: new Date().toISOString(),
         startSeconds: highlight.startSeconds, endSeconds: highlight.startSeconds + clipDuration, durationSeconds: clipDuration,
         width: 1080, height: 1920, visualCount: sequence.length,
       });
       console.log(`[${title}] Short ${slot}/6 rendered (${highlight.startSeconds.toFixed(1)}s–${(highlight.startSeconds + clipDuration).toFixed(1)}s).`);
     }
+    if(body.creativeCandidate)return generatedShorts;
     const manifest = await loadManifest();
     manifest.projects ||= {};
     const existing = manifest.projects[projectId] || {};
@@ -946,6 +979,7 @@ async function saveUploadedShort(req, url) {
   manifest.projects ||= {};
   const existing = manifest.projects[projectId] || { projectId, title };
   const uploadedShorts = existing.uploadedShorts && typeof existing.uploadedShorts === "object" ? existing.uploadedShorts : {};
+  if(url.searchParams.get("creativeCandidate")==="1")return item;
   const previous = uploadedShorts[String(slot)];
   uploadedShorts[String(slot)] = item;
   manifest.projects[projectId] = { ...existing, projectId, title, uploadedShorts };
@@ -968,11 +1002,115 @@ async function approveShort(projectId, slot, source) {
 }
 
 
+// V5.25 uses the same render functions and existing approved-video contract.
+let creativeBusy=false;
+function creativePublic(projectId,v){return {...v,filePath:undefined,fileUrl:`http://${HOST}:${PORT}/creative/file?projectId=${encodeURIComponent(projectId)}&id=${v.id}`};}
+async function creativeRequest(req,res,url){
+ const projectId=String(url.searchParams.get("projectId")||"");
+ if(req.method==="GET"){
+  const m=await loadManifest(),p=m.projects?.[projectId]||{};
+  if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
+  if(url.pathname==="/creative/social")return json(res,200,{pack:p.localSocialPack||null,source:"local",cloudSync:false});
+  if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
+  if(url.pathname==="/creative/file"){
+   const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id"));if(!v)return json(res,404,{error:"Version not found."});
+   const info=await stat(v.filePath);cors(res);if(url.searchParams.get("download")==="1")res.setHeader("Content-Disposition",`attachment; filename="${safeFilename(v.filename||path.basename(v.filePath))}"`);res.setHeader("Content-Type","video/mp4");res.setHeader("Accept-Ranges","bytes");
+   const match=/^bytes=(\d+)-(\d*)$/.exec(req.headers.range||"");const start=match?Number(match[1]):0,end=match?.[2]?Number(match[2]):info.size-1;
+   if(start>end||end>=info.size){res.statusCode=416;return res.end();}
+   res.statusCode=match?206:200;if(match)res.setHeader("Content-Range",`bytes ${start}-${end}/${info.size}`);res.setHeader("Content-Length",String(end-start+1));return createReadStream(v.filePath,{start,end}).pipe(res);
+  }
+ }
+ if(req.method!=="POST")return json(res,404,{error:"Unknown creative route."});
+ if(creativeBusy)return json(res,409,{error:"A creative worker operation is already running. Wait for it to finish."});
+ creativeBusy=true;
+ try{
+  const upload=url.pathname==="/creative/upload",body=upload?Object.fromEntries(url.searchParams):await readJsonBody(req),id=String(body.projectId||""),slot=Number(body.slot||0);outputName(slot);
+  if(!id)throw Error("Project required.");
+  const name=outputName(slot);
+  if(url.pathname==="/creative/product"){
+   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const result=saveProduct(p,body,body.record,body.workspace,body.snapshot);await saveManifest(m);return json(res,200,result);
+  }
+  if(url.pathname==="/creative/render"){
+   if(!body.dependencyKey)throw Error("Review the video plan first.");
+   const item=slot===0?await renderFullVideo({...body,creativeCandidate:true}):(await renderShorts({...body,creativeCandidate:true}))[0];
+   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,body.dependencyKey,randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
+  }
+  if(upload){
+   const width=Number(body.width),height=Number(body.height),duration=Number(body.durationSeconds);
+   if(!Number.isFinite(duration)||duration<=0)throw Error("Video has no readable duration.");
+   if(!Number.isFinite(width)||!Number.isFinite(height)||width<=0||height<=0||Math.abs(width/height-(slot?9/16:16/9))>.035)throw Error(slot?"Choose a 9:16 Short.":"Choose a 16:9 full video.");
+   url.searchParams.set("creativeCandidate","1");const item=slot===0?await saveUploadedFullVideo(req,url):await saveUploadedShort(req,url);
+   try{await run(ffmpegPath,["-v","error","-i",item.filePath,"-map","0:v:0","-frames:v","1","-f","null","-"]);}catch{await unlink(item.filePath).catch(()=>{});throw Error("Cannot read this video. Try an MP4 or MOV export.");}
+   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,"supplied",randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
+  }
+  const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};
+  if(url.pathname==="/creative/social"){
+   if(body.action!=="save")throw Error("Choose a local Social copy save action.");
+   if(!body.channelId||typeof body.channelId!=="string")throw Error("Channel required.");
+   if(p.localSocialPack?.channelId&&p.localSocialPack.channelId!==body.channelId)throw Error("This Social pack belongs to another channel.");
+   if((p.localSocialPack?.updatedAt||null)!==(body.expectedUpdatedAt||null))return json(res,409,{error:"Local Social copy changed. Reload before saving."});
+   if(!body.copy||typeof body.copy!=="object"||Array.isArray(body.copy))throw Error("Social copy required.");
+   const fields=["youtube_full","youtube_shorts","instagram","facebook","tiktok"];
+   const copy={};
+   for(const field of fields){
+    const value=body.copy[field];
+    if(typeof value!=="string"||value.length>30000)throw Error("Invalid Social copy for "+field+".");
+    copy[field]=value;
+   }
+   const updatedAt=new Date().toISOString();
+   p.localSocialPack={channelId:body.channelId,copy,updatedAt,approved:false,origin:"local-manual"};
+   await saveManifest(m);
+   return json(res,200,{pack:p.localSocialPack,cloudSync:false});
+  }
+  if(url.pathname==="/creative/sync"){if(!body.keys||Object.keys(body.keys).length!==7)throw Error("Seven output dependency keys required.");syncDependencies(p,body.keys);}
+  else if(url.pathname==="/creative/approve"){const v=p.creative?.versions.find(v=>v.id===body.id);if(!v)throw Error("Version not found.");if(v.slot!==slot)throw Error("Choose a version belonging to this video.");await stat(v.filePath);approveCandidate(p,body.id);}
+  else if(url.pathname==="/creative/adopt"){
+   // Explicit user-reviewed finished-video adoption. Never rewrite the generated candidate.
+   const original=p.creative?.versions?.find(v=>v.id===body.id);
+   if(!original||original.slot!==slot)throw Error("Choose an existing video in this slot.");
+   if(original.source!=="generated")throw Error("Only an existing Universe render can be adopted.");
+   if(body.confirmReviewed!==true)throw Error("Review the video and confirm finished-video adoption.");
+   const info=await stat(original.filePath);
+   if(!info.isFile()||info.size===0)throw Error("The saved video file is missing or empty.");
+   // Verify the actual video can be decoded before accepting it as a finished edit.
+   await run(ffmpegPath,["-v","error","-i",original.filePath,"-map","0:v:0","-frames:v","1","-f","null","-"]);
+   const versionId=randomUUID(),dir=path.join(ROOT,"CreativeVersions",safeName(id));
+   await mkdir(dir,{recursive:true});
+   const filePath=path.join(dir,versionId+".mp4");
+   await copyFile(original.filePath,filePath);
+   const adopted=addCandidate(p,{
+    ...original,filePath,source:"uploaded",originalSource:"generated",
+    originalVersionId:original.id,originalDependencyKey:original.dependencyKey,
+    adoptedAt:new Date().toISOString(),adoptionMode:"reviewed-existing-render",
+    filename:original.filename||path.basename(original.filePath)
+   },slot,"supplied",versionId);
+   await saveManifest(m);
+   return json(res,200,{version:creativePublic(id,adopted)});
+  }
+  else if(url.pathname==="/creative/import"){
+   const source=body.source;if(!["generated","uploaded"].includes(source))throw Error("Choose an existing video source.");
+   const old=slot===0?(source==="uploaded"?p.uploadedFullVideo:legacyGeneratedItem(p)):(source==="uploaded"?p.uploadedShorts?.[String(slot)]:activeGeneratedShort(p,slot));if(!old?.filePath)throw Error("Existing video not found.");
+   const versionId=randomUUID(),dir=path.join(ROOT,"CreativeVersions",safeName(id));await mkdir(dir,{recursive:true});const filePath=path.join(dir,versionId+".mp4");await copyFile(old.filePath,filePath);
+   addCandidate(p,{...old,filePath,source:"uploaded",originalSource:source},slot,"supplied",versionId);
+  }else return json(res,404,{error:"Unknown creative route."});
+  await saveManifest(m);return json(res,200,{ok:true});
+ }finally{creativeBusy=false;}
+}
+
 async function resolveApprovedPublishingItem(projectId, kind, slot = 1) {
   const manifest = await loadManifest();
   const project = manifest.projects?.[projectId];
   if (!project) throw new Error("Song project not found in the local worker.");
 
+  // Creative approvals identify an immutable file, not a mutable legacy source pointer.
+  const creativeSlot=kind==="full"?0:Number(slot),name=outputName(creativeSlot);
+  const approvedId=project.creative?.approved?.[name];
+  if(approvedId){
+    const item=project.creative.versions.find(v=>v.id===approvedId&&v.slot===creativeSlot);
+    if(!item?.filePath)throw Error("The approved video version is unavailable. Review this output again.");
+    if(item.source==="generated"&&item.dependencyKey!==project.creative.keys[name])throw Error("This video needs updating before publishing.");
+    return {item,source:item.source,itemKey:creativeSlot?`youtube-short-${String(creativeSlot).padStart(2,"0")}`:"youtube-full"};
+  }
   if (kind === "full") {
     const source = project.approvedFullVideoSource === "uploaded" ? "uploaded" : project.approvedFullVideoSource === "generated" ? "generated" : null;
     if (!source) throw new Error("Approve the full video before publishing.");
@@ -1018,15 +1156,18 @@ async function storePublishingReceipt(projectId, receipt) {
   await saveManifest(manifest);
 }
 
-async function storeBufferReceipt(projectId, receipt) {
+let bufferReceiptWrite = Promise.resolve();
+function storeBufferReceipt(projectId, receipt) {
+  const write = bufferReceiptWrite.then(() => persistBufferReceipt(projectId, receipt));
+  bufferReceiptWrite = write.catch(() => {});
+  return write;
+}
+async function persistBufferReceipt(projectId, receipt) {
   const manifest = await loadManifest();
   manifest.projects ||= {};
   const existing = manifest.projects[projectId] || { projectId };
   const publishingReceipts = existing.publishingReceipts && typeof existing.publishingReceipts === "object" ? existing.publishingReceipts : {};
-  const buffer = publishingReceipts.buffer && typeof publishingReceipts.buffer === "object" ? publishingReceipts.buffer : {};
-  buffer[receipt.itemKey] = receipt;
-  publishingReceipts.buffer = buffer;
-  manifest.projects[projectId] = { ...existing, publishingReceipts };
+  manifest.projects[projectId] = { ...existing, publishingReceipts: recordBufferReceipt(publishingReceipts, receipt) };
   await saveManifest(manifest);
 }
 
@@ -1036,7 +1177,7 @@ async function publishingStatus(projectId) {
   const buffer = manifest.projects?.[projectId]?.publishingReceipts?.buffer || {};
   const youtubeItems = Object.values(youtube).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
   const bufferItems = Object.values(buffer).filter(Boolean).sort((a, b) => String(a.itemKey || "").localeCompare(String(b.itemKey || "")));
-  return { youtube: youtubeItems, buffer: bufferItems };
+  return { youtube: youtubeItems, buffer: bufferItems, bufferHistory: Object.values(manifest.projects?.[projectId]?.publishingReceipts?.bufferAttemptHistory || {}) };
 }
 
 async function stageApprovedShortForBuffer(body) {
@@ -1112,11 +1253,19 @@ async function publishApprovedVideoToYouTube(body) {
     itemKey: resolved.itemKey,
     kind,
     slot: kind === "short" ? slot : 1,
+    // Persist the immutable delivery identity here, before returning to Next.js.
+    // If the HTTP response back to Universe is lost after YouTube accepted the
+    // upload, the worker receipt is still sufficient to reconcile/reschedule it
+    // without creating a duplicate.
+    assetVersion: String(body.assetVersion || "").trim() || undefined,
+    channelId: String(body.channelId || "").trim() || undefined,
+    channelName: String(body.channelName || "").trim() || undefined,
     videoId,
     url: `https://www.youtube.com/watch?v=${videoId}`,
     filename: resolved.item.filename || path.basename(resolved.item.filePath),
     source: resolved.source,
-    publishedAt: new Date().toISOString(),
+    publishedAt: body.publishAt ? null : new Date().toISOString(),
+    ...(body.publishAt ? {scheduledAt:body.publishAt,status:"scheduled",timezone:body.timezone} : {}),
   };
   await storePublishingReceipt(projectId, receipt);
   return receipt;
@@ -1126,8 +1275,24 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === "OPTIONS") { cors(res); res.statusCode = 204; return res.end(); }
     const url = new URL(req.url || "/", `http://${HOST}:${PORT}`);
+    if (url.pathname.startsWith("/creative/")) return await creativeRequest(req,res,url);
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, service: "Suno Zara Universe Video Worker", ffmpeg: Boolean(ffmpegPath), renderer: "scheduler-v5.4 (YouTube + Buffer scheduling)" });
+    }
+    if (req.method === "GET" && url.pathname === "/publishing/approved-video") {
+      const projectId = url.searchParams.get("projectId") || "";
+      const kind = url.searchParams.get("kind") === "full" ? "full" : "short";
+      const slot = Number(url.searchParams.get("slot") || "1");
+      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > 6) return json(res, 400, { error: "Invalid approved media request." });
+      const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
+      const info = await stat(resolved.item.filePath);
+      if (!info.isFile() || info.size < 1 || info.size > 100 * 1024 * 1024) return json(res, 413, { error: "Approved video must be under 100 MB." });
+      const ext = path.extname(resolved.item.filePath).toLowerCase();
+      res.statusCode = 200;
+      res.setHeader("Content-Type", ext === ".mov" ? "video/quicktime" : "video/mp4");
+      res.setHeader("Content-Length", String(info.size));
+      res.setHeader("Cache-Control", "no-store");
+      return createReadStream(resolved.item.filePath).pipe(res);
     }
     if (req.method === "GET" && url.pathname === "/publishing/file-info") {
       const projectId = url.searchParams.get("projectId") || "";
