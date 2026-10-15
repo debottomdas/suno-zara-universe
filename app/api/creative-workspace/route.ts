@@ -10,6 +10,7 @@ import {generateCreativeImage} from '@/utils/creative/image-generation';
 import {readFile} from 'node:fs/promises';
 import {resolveLocalPath} from '@/utils/media-source';
 import {createClient} from '@/utils/supabase/server';
+import {localModeAvailable,localSong,updateLocalSong} from '@/utils/local-first/store';
 import {finalAudioKey,emptyWorkspace,makeSlots,proposePlan,validatePlan,approvedCandidate,type CreativeWorkspace,type VisualSlot} from '@/utils/creative/model';
 export const runtime='nodejs';
 export const maxDuration=300;
@@ -34,10 +35,54 @@ async function response(c:Awaited<ReturnType<typeof context>>){
  if(identity)w.subtitleContext={identity,cueContext:lyricCueContext};else delete w.subtitleContext;
  return NextResponse.json({workspace:w,lyricCueContext});
 }
-export async function GET(req:Request){try{return await response(await context(new URL(req.url).searchParams.get('projectId')||''));}catch(e){return failure(e);}}
+function localRequest(req:Request){return localModeAvailable()&&['localhost:3000','127.0.0.1:3000'].includes(req.headers.get('host')||'');}
+async function localWorkspace(req:Request,body?:any){
+ const projectId=text(body?.projectId||new URL(req.url).searchParams.get('projectId'));
+ const song=await localSong(projectId);
+ if(!song)return NextResponse.json({error:'Local project not found.'},{status:404});
+ const w=structuredClone(song.creativeWorkspace||emptyWorkspace()) as CreativeWorkspace;
+ if(!body)return NextResponse.json({workspace:w,lyricCueContext:null,localMode:true});
+ if(Number(body.revision)!==w.revision)return NextResponse.json({error:'Workspace changed. Reload before editing.'},{status:409});
+ const action=text(body.action);
+ if(w.pending)return NextResponse.json({error:'A request is pending; this action needs the full creative worker.'},{status:409});
+ if(action==='setup'){
+  const duration=Number(body.duration);
+  if(!Number.isFinite(duration)||duration<8||duration>3600)return NextResponse.json({error:'Audio must be between 8 seconds and 60 minutes.'},{status:400});
+  if(w.slots.length)return NextResponse.json({error:'Workspace already exists.'},{status:409});
+  w.slots=makeSlots(duration,song.lyrics||'');w.audioKey=text(body.audioKey);w.instructions=text(body.instructions);
+ }else if(action==='direction'){
+  if(w.instructions!==text(body.instructions))delete w.approvedBible;
+  w.instructions=text(body.instructions);w.bible=text(body.bible);
+  if(body.approve===true){if(!w.bible)return NextResponse.json({error:'Enter visual direction first.'},{status:400});w.approvedBible=w.bible;}
+ }else if(action==='subtitle-preference'){
+  if(body.subtitlesEnabled===null)delete w.subtitlesEnabled;
+  else if(typeof body.subtitlesEnabled==='boolean')w.subtitlesEnabled=body.subtitlesEnabled;
+  else return NextResponse.json({error:'Invalid subtitle preference.'},{status:400});
+ }else if(action==='prompt'){
+  const slot=w.slots.find(s=>s.id===body.slotId);
+  if(!slot)return NextResponse.json({error:'Unknown visual slot.'},{status:404});
+  slot.prompt=text(body.prompt);
+ }else if(action==='add-scene'){
+  if(w.slots.filter(s=>s.kind==='scene').length>=32)return NextResponse.json({error:'Maximum 32 scenes.'},{status:400});
+  const n=Math.max(0,...w.slots.filter(s=>s.kind==='scene').map(s=>s.number))+1;
+  const index=w.slots.findIndex(s=>s.kind!=='scene');
+  w.slots.splice(index<0?w.slots.length:index,0,{id:`scene-${n}`,kind:'scene',number:n,label:`Scene ${n}`,prompt:text(body.prompt)||`Scene ${n}: distinct story beat.`,candidates:[]});
+ }else{
+  return NextResponse.json({error:`Local action "${action}" is not yet supported. No cloud sign-in is required, and no paid request was made.`},{status:501});
+ }
+ w.revision+=1;
+ const updated=await updateLocalSong(projectId,{creativeWorkspace:w});
+ if(!updated)return NextResponse.json({error:'Local workspace save failed.'},{status:500});
+ return NextResponse.json({workspace:w,lyricCueContext:null,localMode:true});
+}
+export async function GET(req:Request){try{if(localRequest(req))return await localWorkspace(req);return await response(await context(new URL(req.url).searchParams.get('projectId')||''));}catch(e){return failure(e);}}
 function failure(e:unknown){return NextResponse.json({error:e instanceof Error?e.message:'Creative workspace request failed.'},{status:400});}
 export async function POST(req:Request){
  try{
+  if(localRequest(req)){
+   if(req.headers.get('content-type')?.includes('multipart/form-data'))return NextResponse.json({error:'Local multipart upload is not yet supported.'},{status:501});
+   return await localWorkspace(req,await req.json());
+  }
   const multipart=req.headers.get('content-type')?.includes('multipart/form-data');const form=multipart?await req.formData():null;
   const body=form?Object.fromEntries(form.entries()):await req.json();const c=await context(text(body.projectId));const {db,user,song,w}=c;
   if(Number(body.revision)!==w.revision)throw Error('This workspace changed in another window. Reload before editing.');
