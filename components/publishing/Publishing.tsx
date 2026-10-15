@@ -9,6 +9,39 @@ import UniverseSidebar, {channelHref} from '../universe-next/UniverseSidebar';
 import PlanWorkspace,{ConnectionNotice,publishingRequest,type PublishingRequest} from './PlanWorkspace';
 const marks:Record<string,string>={youtube:'▶',instagram:'◎',facebook:'f',tiktok:'♪'};
 async function json(url:string,body?:any){const r=await fetch(url,{method:body?'POST':'GET',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,cache:'no-store'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not load publishing.');return d;}
+const LOCAL_WORKER='http://127.0.0.1:47123';
+async function reconcileLocalRelease(release:any,projectId:string,channelId:string){
+ try{
+  const [videosResponse,socialResponse,receiptsResponse]=await Promise.all([
+   fetch(`${LOCAL_WORKER}/creative/status?projectId=${encodeURIComponent(projectId)}`,{cache:'no-store'}),
+   fetch(`${LOCAL_WORKER}/creative/social?projectId=${encodeURIComponent(projectId)}`,{cache:'no-store'}),
+   fetch(`${LOCAL_WORKER}/publishing/status?projectId=${encodeURIComponent(projectId)}`,{cache:'no-store'})
+  ]);
+  if(!videosResponse.ok||!socialResponse.ok||!receiptsResponse.ok)return release;
+  const [videos,social,history]=await Promise.all([videosResponse.json(),socialResponse.json(),receiptsResponse.json()]);
+  const approved=videos.approved||{};
+  const versions=Array.isArray(videos.versions)?videos.versions:[];
+  const localAssets=['full',...Array.from({length:6},(_,i)=>`short-${i+1}`)].map((key,slot)=>{
+   const version=versions.find((v:any)=>v.id===approved[key]);
+   return {key,slot,kind:slot===0?'full':'short',ready:Boolean(version),source:'local',versionId:version?.id||null};
+  });
+  const oldAssets=Array.isArray(release.assets)?release.assets:[];
+  const assets=localAssets.map(asset=>({...oldAssets.find((a:any)=>a.slot===asset.slot),...asset}));
+  const existingReceipts=Array.isArray(release.receipts)?release.receipts:[];
+  const localReceipts=[
+   ...(Array.isArray(history.youtube)?history.youtube:[]).map((r:any)=>({...r,platform:'youtube',kind:r.kind||((r.slot||0)===0?'full':'short')})),
+   ...(Array.isArray(history.buffer)?history.buffer:[]).map((r:any)=>({...r,platform:r.service||'buffer',kind:'short'}))
+  ];
+  const receiptKey=(r:any)=>[r.platform,r.itemKey,r.videoId||r.postId||''].join(':');
+  const receipts=[...existingReceipts];
+  for(const receipt of localReceipts)if(!receipts.some((r:any)=>receiptKey(r)===receiptKey(receipt)))receipts.push(receipt);
+  const localSocial=social.pack?.channelId===channelId?social.pack:null;
+  const allVideosApproved=assets.every(a=>a.ready);
+  // A saved local draft is NOT an approved Social pack and cannot unlock publishing.
+  const reasons=[...new Set([...(Array.isArray(release.reasons)?release.reasons:[]).filter((r:string)=>!/sign in/i.test(r)),...(!allVideosApproved?['Some local video approvals are missing.']:[]),...(localSocial?['Local Social draft saved; publishing approval and cloud sync still required.']:['Social copy needs review.'])])];
+  return {...release,assets,receipts,ready:false,reasons,localReconciled:true,localSocialSaved:Boolean(localSocial),localVideosApproved:assets.filter(a=>a.ready).length};
+ }catch{return release;}
+}
 function music(r:any){return `/music-next?channelId=${encodeURIComponent(r.channelId)}&projectId=${encodeURIComponent(r.projectId)}&stage=${encodeURIComponent('Video & Shorts')}`;}
 function Platforms({destinations}:{destinations:Destination[]}){return <span className={s.platforms}>{[...new Set(destinations.map(d=>d.platform))].map(p=><span key={p} data-platform={p} title={p}>{marks[p]}</span>)}</span>}
 export default function Publishing(){
@@ -20,7 +53,7 @@ export default function Publishing(){
  const displayTime=(value:string)=>timezone?new Date(value).toLocaleString('en-GB',{timeZone:timezone})+' '+timezone:'Choose your publishing timezone';
  useEffect(()=>{loadUniverseChannels().then(channels=>{setChannels(channels);setChannel(new URLSearchParams(location.search).get('channelId')||'');}).catch(e=>{setError(e.message);setLoading(false)});},[]);
  useEffect(()=>{if(!channels.length){setLoading(false);return;}let active=true;setLoading(true);setSelected(null);setReleases([]);setError('');(async()=>{
- const results=await Promise.all(channels.filter(c=>!channel||c.id===channel).map(async c=>{const d=await json(`/api/songs?channelId=${encodeURIComponent(c.id)}`);return Promise.all((d.projects||[]).map(async(p:any)=>{try{return {...await json(`/api/publishing/plan?projectId=${p.id}&channelId=${c.id}`),channelName:c.name};}catch(e){return {projectId:p.id,channelId:c.id,title:p.title,channelName:c.name,ready:false,reasons:[e instanceof Error?e.message:'Could not verify release.'],assets:[],destinations:[],receipts:[],history:[]};}}));}));if(active){setReleases(results.flat());const projectId=new URLSearchParams(location.search).get('projectId');if(projectId){const release=results.flat().find(r=>r.projectId===projectId&&r.channelId===channel);const openPlanner=Boolean(release&&!plannerHandoffOpened.current&&new URLSearchParams(location.search).get('editSchedule')==='1');if(openPlanner)plannerHandoffOpened.current=true;setSelected(release?{...release,openPlanner}:null);}setLoading(false);}
+ const results=await Promise.all(channels.filter(c=>!channel||c.id===channel).map(async c=>{const d=await json(`/api/songs?channelId=${encodeURIComponent(c.id)}`);return Promise.all((d.projects||[]).map(async(p:any)=>{try{return {...await json(`/api/publishing/plan?projectId=${p.id}&channelId=${c.id}`),channelName:c.name};}catch(e){return {projectId:p.id,channelId:c.id,title:p.title,channelName:c.name,ready:false,reasons:[e instanceof Error?e.message:'Could not verify release.'],assets:[],destinations:[],receipts:[],history:[]};}}));}));const reconciled=await Promise.all(results.flat().map((r:any)=>reconcileLocalRelease(r,r.projectId,r.channelId)));if(active){setReleases(reconciled);const projectId=new URLSearchParams(location.search).get('projectId');if(projectId){const release=reconciled.find(r=>r.projectId===projectId&&r.channelId===channel);const openPlanner=Boolean(release&&!plannerHandoffOpened.current&&new URLSearchParams(location.search).get('editSchedule')==='1');if(openPlanner)plannerHandoffOpened.current=true;setSelected(release?{...release,openPlanner}:null);}setLoading(false);}
  })().catch(e=>{if(active){setError(e.message);setLoading(false)}});return()=>{active=false};},[channels,channel,refresh]);
  const posts=releases.flatMap(r=>r.receipts.map((p:any)=>({...p,release:r,state:receiptStatus(p)})));
  const groups=[{name:'Needs Attention',icon:'!',count:releases.filter(r=>!r.ready).length,tone:'attention'},{name:'Ready to Publish',icon:'✓',count:releases.filter(r=>r.ready).length,tone:'ready'},{name:'Scheduled',icon:'▦',count:posts.filter(p=>p.state==='Scheduled').length,tone:'scheduled'},{name:'Published',icon:'▥',count:posts.filter(p=>p.state==='Published').length,tone:'published'}];
@@ -54,7 +87,7 @@ export function Detail({release:r,readOnly,close,reload,request=publishingReques
  {!readOnly&&r.receipts.length>0&&<button disabled={busy} onClick={monitor}>Check provider status</button>}{tab==='History'?<details open><summary>Advanced / History</summary><p>Historical attempts do not count as current delivery success.</p><pre>{JSON.stringify({current:r.receipts,history:r.history},null,2)}</pre></details>:tab==='Posts'?<>{r.receipts.map((p:any)=><div className={s.detailPost} key={p.itemKey}><b>{marks[p.platform]} {p.kind==='full'?'Full video':`Short ${p.slot}`} · {receiptStatus(p)}</b><p>{p.channelName||'YouTube'}</p><p>{p.errorMessage||p.title}</p><p>{p.localTime?.replace('T',' ')} {p.timezone}</p>{(p.externalLink||p.url)&&<a href={p.externalLink||p.url} target="_blank" rel="noreferrer">View {receiptStatus(p)==='Published'?'Live Post':'provider post'} ↗</a>}</div>)}{!r.receipts.length&&<p>No delivery receipts yet.</p>}</>:<>
  {post&&<div className={s.detailPost}><b>{marks[post.platform]} {post.kind==='full'?'Full video':`Short ${post.slot}`} · {receiptStatus(post)}</b><p>{post.channelName||'YouTube'}</p><p>{post.title||post.text}</p><p>{post.errorMessage}</p><p>{post.localTime?.replace('T',' ')} {post.timezone}</p>{(post.externalLink||post.url)&&<a href={post.externalLink||post.url} target="_blank" rel="noreferrer">View provider post ↗</a>}{!readOnly&&r.ready&&['scheduled','draft'].includes(post.status)&&<button onClick={()=>changeSchedule(post)}>Change Schedule</button>}{!readOnly&&r.ready&&post.platform!=='youtube'&&post.status==='error'&&post.providerCheckedAt&&<button onClick={()=>changeSchedule(post)}>Retry · review new schedule</button>}<p className={s.muted}>Schedule changes use the same approval flow below. Cancellation is not yet supported by the connected delivery adapters.</p></div>}
  {!r.ready?<div className={s.attention}><b>{r.title} is almost ready</b>{r.reasons.map((reason:string)=><p key={reason}>{reason}</p>)}{r.reasons.length===1&&<p>Everything else is ready.</p>}<Link href={music(r)}>{r.reasons.length===1&&r.reasons[0].startsWith('Short 1')?'Update Short 1':'Open in Music Production'} →</Link></div>:<div className={s.ready}><b>{r.title} is ready to publish ✓</b><p>Full video · {r.assets.filter((a:any)=>a.slot>0&&a.ready).length} Shorts · Thumbnail · Social Pack</p></div>}
- <ConnectionNotice release={r}/>{r.history?.length>0&&<p className={s.muted}>Previous delivery activity is preserved under History and does not count as delivery of this asset version.</p>}<h3>Release details</h3><dl><dt>Channel</dt><dd>{r.channelName}</dd><dt>Current Shorts</dt><dd>{r.assets.filter((a:any)=>a.slot>0&&a.ready).length} / 6 approved</dd><dt>Destinations</dt><dd>{r.destinations.filter((d:Destination)=>d.available!==false).length} available{r.destinations.some((d:Destination)=>d.available===false)&&` · ${r.destinations.filter((d:Destination)=>d.available===false).length} temporarily unavailable`}</dd></dl><Link href={music(r)}>Open in Music Production →</Link>
+ <ConnectionNotice release={r}/>{r.history?.length>0&&<p className={s.muted}>Previous delivery activity is preserved under History and does not count as delivery of this asset version.</p>}{r.localReconciled&&<p role="status">Local worker verified: {r.localVideosApproved}/7 video approvals. {r.localSocialSaved?'Social draft saved locally (not approved).':'Social copy not confirmed locally.'} Scheduling remains locked until the release is fully reviewed.</p>}<h3>Release details</h3><dl><dt>Channel</dt><dd>{r.channelName}</dd><dt>Current Shorts</dt><dd>{r.assets.filter((a:any)=>a.slot>0&&a.ready).length} / 6 approved</dd><dt>Destinations</dt><dd>{r.destinations.filter((d:Destination)=>d.available!==false).length} available{r.destinations.some((d:Destination)=>d.available===false)&&` · ${r.destinations.filter((d:Destination)=>d.available===false).length} temporarily unavailable`}</dd></dl><Link href={music(r)}>Open in Music Production →</Link>
  {readOnly?<p className={s.context}>Select an individual channel to create or change a publishing plan.</p>:r.ready?<button className={s.primary} onClick={()=>{setSeedPost(null);setPlanning(true)}}>Create Publishing Plan</button>:null}
 
  </>}{error&&<p className={s.attention} role="alert">{error}</p>}</div></aside>{planning&&<PlanWorkspace release={r} seedPost={seedPost} request={request} fixture={fixture} onClose={()=>{setPlanning(false);if(!fixture)reload()}}/>}</>;
