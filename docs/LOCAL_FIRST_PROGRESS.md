@@ -29,3 +29,10 @@ Implement configurable 1–10 Shorts with default six, independent timing/visual
 - `be0286f`: Video & Shorts UI now supports selecting individual, multiple or all configured Shorts and rendering sequentially, with progress, per-slot error collection and saved-version review. No automatic approval/publishing.
 - **Important gap**: current renderer uses one approved image per Short; configurable ordered multiple-image sequences per Short are **not implemented**. User explicitly requires this before publishing. Do not mark Shorts production complete until image-sequence model, UI, render inputs and worker behavior are integrated and tested.
 - No Mac build or integration tests run; verify TypeScript and worker on local Mac. Selective publishing remains deferred.
+
+## Ordered image sequences for Shorts (2026-10-18)
+- `2f61cca`: creative workspace records per-Short ordered candidate IDs; dependency keys incorporate image sequence; rendering prerequisite checks selected image availability.
+- `cb854b5`: backend `short-image-sequence` action validates 1–20 saved scene/Short images and persists ordered IDs.
+- `c50fef5`: per-Short image sequence editor (add/reorder/remove), renderer passes ordered image URLs.
+- `cf79c3c`: creative Short renderer consumes each supplied image in sequence with equal duration; existing non-creative Shorts behavior unchanged.
+- **Still unverified**: TypeScript build, local worker render, image URL hydration and persistence on Mac. Transitions currently follow worker/channel finishing settings; there is no per-cut transition editor. Do not claim end-to-end success until tests pass. Selected-only publishing still not implemented.
