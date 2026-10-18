@@ -22,3 +22,9 @@ Do not merge or deploy. Do not modify Studio Global or preserved baseline. Do no
 
 ## Suggested focused checks
 Run TypeScript/production build, image import against isolated local workspace, variable Shorts render test (1, 3, 6, 10), and selected-only publishing dry run with fake provider. Never send real external publishing requests in automated tests.
+
+## New incremental work (2026-10-18)
+- `2e93f41`: backend `short-count` action, preservation safeguards.
+- `7db14d9`: dynamic model readiness and dependency sync.
+- `0ed6839`: selector and dynamic creative video slots.
+- Next: finish YouTube/Buffer selected-only publishing, release readiness, metadata, scheduling and idempotency. Audit other fixed-six assumptions, run build and focused tests. No real external publishing. Current work is untested; do not mark P3/P4 complete.
