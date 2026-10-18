@@ -1062,7 +1062,7 @@ async function creativeRequest(req,res,url){
    await saveManifest(m);
    return json(res,200,{pack:p.localSocialPack,cloudSync:false});
   }
-  if(url.pathname==="/creative/sync"){if(!body.keys||Object.keys(body.keys).length!==7)throw Error("Seven output dependency keys required.");syncDependencies(p,body.keys);}
+  if(url.pathname==="/creative/sync"){if(!body.keys||typeof body.keys!=="object"||Array.isArray(body.keys)||!Object.prototype.hasOwnProperty.call(body.keys,"full")||Object.keys(body.keys).length<2||Object.keys(body.keys).length>11||Object.keys(body.keys).some(k=>!/^short-(?:[1-9]|10)$/.test(k)&&k!=="full")||Object.values(body.keys).some(v=>typeof v!=="string"))throw Error("One full-video and 1–10 Short dependency keys required.");syncDependencies(p,body.keys);}
   else if(url.pathname==="/creative/approve"){const v=p.creative?.versions.find(v=>v.id===body.id);if(!v)throw Error("Version not found.");if(v.slot!==slot)throw Error("Choose a version belonging to this video.");await stat(v.filePath);approveCandidate(p,body.id);}
   else if(url.pathname==="/creative/adopt"){
    // Explicit user-reviewed finished-video adoption. Never rewrite the generated candidate.
@@ -1283,7 +1283,7 @@ const server = http.createServer(async (req, res) => {
       const projectId = url.searchParams.get("projectId") || "";
       const kind = url.searchParams.get("kind") === "full" ? "full" : "short";
       const slot = Number(url.searchParams.get("slot") || "1");
-      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > 6) return json(res, 400, { error: "Invalid approved media request." });
+      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > (kind==="full"?1:10)) return json(res, 400, { error: "Invalid approved media request." });
       const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
       const info = await stat(resolved.item.filePath);
       if (!info.isFile() || info.size < 1 || info.size > 100 * 1024 * 1024) return json(res, 413, { error: "Approved video must be under 100 MB." });
