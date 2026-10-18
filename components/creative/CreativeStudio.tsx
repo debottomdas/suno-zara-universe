@@ -19,9 +19,9 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const [videosReady,setVideosReady]=useState(false),[workerError,setWorkerError]=useState('');const [bulkFiles,setBulkFiles]=useState<{file:File;slot:number;prefix:string}[]>([]),[bulkIssue,setBulkIssue]=useState(''),[bulkProgress,setBulkProgress]=useState('');
  const [imageBatch,setImageBatch]=useState<{file:File;slotId:string}[]>([]),[imageBatchError,setImageBatchError]=useState(''),[imageBatchProgress,setImageBatchProgress]=useState('');
  const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
- const [cinematic,setCinematic]=useState<{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number;glow:number;vignette:number;atmosphere:number}>({mode:'basic',warmth:0.55,contrast:0.25,softness:0.2,glow:0.45,vignette:0.4,atmosphere:0.25});
+ const [cinematic,setCinematic]=useState<{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number;glow:number;vignette:number;atmosphere:number;overlay:'none'|'golden-light-leak';overlayIntensity:number}>({mode:'basic',warmth:0.55,contrast:0.25,softness:0.2,glow:0.45,vignette:0.4,atmosphere:0.25,overlay:'none',overlayIntensity:0.7});
  const [showStylePreview,setShowStylePreview]=useState(false);
- useEffect(()=>{try{const raw=window.localStorage.getItem(`szu-cinematic-${projectId}`);if(raw){const parsed=JSON.parse(raw);if((parsed.mode==='basic'||parsed.mode==='romantic')&&['warmth','contrast','softness'].every(k=>typeof parsed[k]==='number'&&parsed[k]>=0&&parsed[k]<=1))setCinematic({glow:0.45,vignette:0.4,atmosphere:0.25,...parsed});}}catch{}},[projectId]);
+ useEffect(()=>{try{const raw=window.localStorage.getItem(`szu-cinematic-${projectId}`);if(raw){const parsed=JSON.parse(raw);if((parsed.mode==='basic'||parsed.mode==='romantic')&&['warmth','contrast','softness'].every(k=>typeof parsed[k]==='number'&&parsed[k]>=0&&parsed[k]<=1))setCinematic({glow:0.45,vignette:0.4,atmosphere:0.25,overlay:'none',overlayIntensity:0.7,...parsed});}}catch{}},[projectId]);
  function updateCinematic(next:{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number;glow:number;vignette:number;atmosphere:number}){setCinematic(next);try{window.localStorage.setItem(`szu-cinematic-${projectId}`,JSON.stringify(next));}catch{}}
 
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
@@ -346,6 +346,11 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
       <label>Video style <select value={cinematic.mode} disabled={!!busy} onChange={e=>updateCinematic({...cinematic,mode:e.target.value==='romantic'?'romantic':'basic'})}><option value="basic">Basic · original</option><option value="romantic">Romantic Cinematic · warm and soft</option></select></label>
       {cinematic.mode==='romantic'&&<div>
         {(['warmth','contrast','softness','glow','vignette','atmosphere'] as const).map(key=><label key={key} style={{display:'block',margin:'10px 0'}}>{key[0].toUpperCase()+key.slice(1)} · {Math.round(cinematic[key]*100)}% <input aria-label={`Cinematic ${key}`} type="range" min={0} max={1} step={0.05} value={cinematic[key]} onChange={e=>updateCinematic({...cinematic,[key]:Number(e.target.value)})} style={{width:'100%'}}/></label>)}
+      </div>}
+      {cinematic.mode==='romantic'&&<div style={{margin:'12px 0'}}>
+       <label>Animated overlay <select aria-label="Animated overlay" value={cinematic.overlay} disabled={!!busy} onChange={e=>updateCinematic({...cinematic,overlay:e.target.value==='golden-light-leak'?'golden-light-leak':'none'})}><option value="none">None</option><option value="golden-light-leak">Golden Light Leak · moving warm illumination</option></select></label>
+       {cinematic.overlay==='golden-light-leak'&&<label style={{display:'block',marginTop:10}}>Overlay intensity · {Math.round(cinematic.overlayIntensity*100)}%<input aria-label="Overlay intensity" type="range" min={0} max={1} step={0.05} value={cinematic.overlayIntensity} onChange={e=>updateCinematic({...cinematic,overlayIntensity:Number(e.target.value)})} style={{width:'100%'}}/></label>}
+       <p>Animated overlay is applied in exported MP4 renders, not the still-image preview. Try one Short first; the effect may increase render time.</p>
       </div>}
       <button type="button" onClick={()=>setShowStylePreview(p=>!p)}>{showStylePreview?'Hide':'Show'} style preview</button>
       {showStylePreview&&<div style={{display:'flex',gap:12,flexWrap:'wrap',marginTop:12}}>
