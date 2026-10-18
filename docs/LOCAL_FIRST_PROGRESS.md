@@ -18,3 +18,9 @@ Do not touch `debottomdas/sunozara-studio` or baseline `feature/local-youtube-oa
 
 ## Next action
 Implement configurable 1–10 Shorts with default six, independent timing/visual choices and selected-only publishing. Verify existing six-Short projects remain compatible. Run focused build and targeted tests after implementation; do not claim production completion prematurely.
+
+## 2026-10-18 follow-up commits
+- `2e93f41`: creative-workspace `short-count` action supports 1–10, preserves saved visual candidates, blocks removing populated slots, resets timing approval for review.
+- `7db14d9`: creative readiness and dependency-sync keys use configured Short slots.
+- `0ed6839`: 1–10 Shorts selector and dynamic creative video cards in CreativeStudio.
+- **Not yet tested**: build, live Mac run, local worker sync and full end-to-end. **Not complete**: YouTube/Buffer selected-only publishing, release readiness, social metadata and scheduling; current publisher still hard-codes six. Do not merge/deploy or treat flexible Shorts as production-ready.
