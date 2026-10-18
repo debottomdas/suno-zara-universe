@@ -130,7 +130,7 @@ async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir
 function romanticPreset(raw){
  if(!raw||raw.mode!=='romantic')return null;
  const clamp=(n,min,max,fallback)=>Number.isFinite(Number(n))?Math.max(min,Math.min(max,Number(n))):fallback;
- return {warmth:clamp(raw.warmth,0,1,0.55),contrast:clamp(raw.contrast,0,1,0.25),softness:clamp(raw.softness,0,1,0.2)};
+ return {warmth:clamp(raw.warmth,0,1,0.55),contrast:clamp(raw.contrast,0,1,0.25),softness:clamp(raw.softness,0,1,0.2),glow:clamp(raw.glow,0,1,0.45),vignette:clamp(raw.vignette,0,1,0.4),atmosphere:clamp(raw.atmosphere,0,1,0.25)};
 }
 function withTransition(filter,duration,scene,complex=false){
  let result=filter;
@@ -138,9 +138,12 @@ function withTransition(filter,duration,scene,complex=false){
  if(preset){
   const contrast=(1+preset.contrast*0.15).toFixed(3);
   const saturation=(1+preset.warmth*0.12).toFixed(3);
-  const red=(1+preset.warmth*0.055).toFixed(3);
-  const blue=(1-preset.warmth*0.065).toFixed(3);
-  const grade=`eq=contrast=${contrast}:saturation=${saturation},colorbalance=rs=${(preset.warmth*0.045).toFixed(3)}:bs=${(-preset.warmth*0.04).toFixed(3)},unsharp=5:5:${(0.5-preset.softness*0.55).toFixed(3)}:5:5:0`;
+  const glow=(preset.glow*0.045).toFixed(4);
+  const vignette=(Math.PI/2*(0.05+preset.vignette*0.43)).toFixed(4);
+  const grain=Math.round(preset.atmosphere*14);
+  // Animated light breathing is intentionally subtle; avoid hiding faces or captions.
+  const grade=`eq=contrast=${contrast}:saturation=${saturation}:brightness='${glow}*(0.65+0.35*sin(0.65*t))':eval=frame,colorbalance=rs=${(preset.warmth*0.045).toFixed(3)}:bs=${(-preset.warmth*0.04).toFixed(3)},vignette=angle=${vignette}${grain?`,noise=alls=${grain}:allf=t+u`:''}`;
+
   result=complex?result.replace(/\[v\]\s*$/,`[gradeInput];[gradeInput]${grade}[v]`):`${result},${grade}`;
  }
  if(scene.transition!=='fade')return result;
