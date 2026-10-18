@@ -19,6 +19,8 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const [videosReady,setVideosReady]=useState(false),[workerError,setWorkerError]=useState('');const [bulkFiles,setBulkFiles]=useState<{file:File;slot:number;prefix:string}[]>([]),[bulkIssue,setBulkIssue]=useState(''),[bulkProgress,setBulkProgress]=useState('');
  const [imageBatch,setImageBatch]=useState<{file:File;slotId:string}[]>([]),[imageBatchError,setImageBatchError]=useState(''),[imageBatchProgress,setImageBatchProgress]=useState('');
  const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
+ const [cinematic,setCinematic]=useState<{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number}>({mode:'basic',warmth:0.55,contrast:0.25,softness:0.2});
+ const [showStylePreview,setShowStylePreview]=useState(false);
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
  const operation=useRef(false),active=useRef(true);
  const [batchProgress,setBatchProgress]=useState<{action:string;complete:number;total:number}|null>(null),[batchNeedsReload,setBatchNeedsReload]=useState(false);
@@ -113,7 +115,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
    for(const [key,value] of Object.entries(expectedSubtitles))if(JSON.stringify(finishing[key])!==JSON.stringify(value))throw Error('Subtitle inputs changed. Reload before rendering.');
    if(finishing.channelId!==(w.channelBranding as any)?.channelId||finishing.dnaRevision!==(w.channelBranding as any)?.dnaRevision)throw Error('Channel DNA changed. Reload before rendering.');
   await sync(current);
-  await post(`${WORKER}/creative/render`,{finishing,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:sequenceIds.length?orderedImages.map((c,i)=>({url:c!.url,format:'vertical',mediaType:'image',imageNumber:i+1})):selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});
+  await post(`${WORKER}/creative/render`,{finishing,cinematic,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:sequenceIds.length?orderedImages.map((c,i)=>({url:c!.url,format:'vertical',mediaType:'image',imageNumber:i+1})):selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});
   await loadVideos();setMessage('New video ready for review. Your previous approved version is preserved.');
  }
  async function uploadVideo(slot:number,file:File){
@@ -336,6 +338,18 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
       <ol>{ids.map((candidateId,index)=><li key={index}>{candidates.find(c=>c.id===candidateId)?.label||'Unavailable image'} <button disabled={!!busy||index===0} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index-1?ids[index]:i===index?ids[index-1]:x)}))}>↑</button><button disabled={!!busy||index===ids.length-1} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index+1?ids[index]:i===index?ids[index+1]:x)}))}>↓</button><button disabled={!!busy||ids.length===1} onClick={()=>void run('Removing image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.filter((_,i)=>i!==index)}))}>Remove</button></li>)}</ol>
       <label>Add image <select disabled={!!busy||ids.length>=20} value="" onChange={e=>{if(e.target.value)void run('Adding Short image',()=>change('short-image-sequence',{slotId:id,candidateIds:[...ids,e.target.value]}));}}><option value="">Choose saved image…</option>{candidates.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select></label>
     </details>;})}</section>
+    <section className={styles.panel} aria-label="Video cinematic direction">
+      <h3>3 · Video direction</h3><p>Choose Basic (original renderer) or Romantic Cinematic. This affects new renders only; previously generated and approved videos remain available.</p>
+      <label>Video style <select value={cinematic.mode} disabled={!!busy} onChange={e=>setCinematic(p=>({...p,mode:e.target.value==='romantic'?'romantic':'basic'}))}><option value="basic">Basic · original</option><option value="romantic">Romantic Cinematic · warm and soft</option></select></label>
+      {cinematic.mode==='romantic'&&<div>
+        {(['warmth','contrast','softness'] as const).map(key=><label key={key} style={{display:'block',margin:'10px 0'}}>{key[0].toUpperCase()+key.slice(1)} · {Math.round(cinematic[key]*100)}% <input aria-label={`Cinematic ${key}`} type="range" min={0} max={1} step={0.05} value={cinematic[key]} onChange={e=>setCinematic(p=>({...p,[key]:Number(e.target.value)}))} style={{width:'100%'}}/></label>)}
+      </div>}
+      <button type="button" onClick={()=>setShowStylePreview(p=>!p)}>{showStylePreview?'Hide':'Show'} style preview</button>
+      {showStylePreview&&<div style={{display:'flex',gap:12,flexWrap:'wrap',marginTop:12}}>
+        {(['basic','romantic'] as const).map(mode=><div key={mode} style={{width:180}}><strong>{mode==='basic'?'Basic':'Romantic Cinematic'}</strong><div style={{aspectRatio:'9 / 16',overflow:'hidden',borderRadius:8,background:'#333'}}>{(()=>{const candidate=w.slots.flatMap(x=>x.candidates).find(c=>!!c.url);return candidate?.url?<img alt={mode+' approximate still preview'} src={candidate.url} style={{width:'100%',height:'100%',objectFit:'cover',filter:mode==='basic'?'none':`sepia(${cinematic.warmth*0.28}) saturate(${1+cinematic.warmth*0.12}) contrast(${1+cinematic.contrast*0.15}) blur(${cinematic.softness*0.5}px)`}}/>:<p style={{padding:12,color:'white'}}>Add an image to preview the style.</p>;})()}</div></div>)}
+      </div>}
+      <p>Style preview approximates the look on a still image. Render a new candidate to review the actual video with motion, audio, captions and branding.</p>
+    </section>
     <section className={styles.panel} aria-label="Shorts batch production"><h3>Produce Shorts · individually or together</h3><p>Select which Shorts to render from their approved images and audio segments. Existing approved videos are preserved; each render creates a reviewable version. No automatic approval or publishing.</p>
      <div className={styles.actions}><button disabled={!!busy} onClick={()=>setSelectedShorts(shortNumbers)}>Select all</button><button disabled={!!busy} onClick={()=>setSelectedShorts([])}>Clear selection</button></div>
      <div className={styles.actions}>{shortNumbers.map(slot=><label key={slot} style={{display:'inline-flex',alignItems:'center',gap:6}}><input type="checkbox" checked={effectiveShortSelection.includes(slot)} disabled={!!busy} onChange={e=>setSelectedShorts(previous=>e.target.checked?[...previous.filter(n=>n!==slot),slot]:previous.filter(n=>n!==slot))}/>Short {slot}</label>)}</div>
