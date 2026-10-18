@@ -737,9 +737,9 @@ async function renderShorts(body) {
       const highlight = body.creativeCandidate ? body.highlight : highlights[slot - 1];
       if(body.creativeCandidate && (!highlight || !Number.isFinite(highlight.startSeconds) || !Number.isFinite(highlight.endSeconds) || highlight.startSeconds<0 || highlight.endSeconds>durationSeconds || highlight.endSeconds-highlight.startSeconds<8 || highlight.endSeconds-highlight.startSeconds>60))throw Error("Invalid Short timing.");
       const clipDuration = Math.max(8, Math.min(body.creativeCandidate ? 60 : 30, highlight.endSeconds - highlight.startSeconds));
-      const sceneCount = body.creativeCandidate ? 1 : clipDuration <= 16 ? 2 : 3;
+      const sceneCount = body.creativeCandidate ? downloadedVisuals.length : clipDuration <= 16 ? 2 : 3;
       const sceneDuration = clipDuration / sceneCount;
-      const sequence = Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[((slot - 1) * 2 + index) % downloadedVisuals.length]);
+      const sequence = body.creativeCandidate ? downloadedVisuals : Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[((slot - 1) * 2 + index) % downloadedVisuals.length]);
       const sceneFiles = [];
       for (let i = 0; i < sequence.length; i += 1) {
         sceneFiles.push(await renderShortScene(sequence[i], i, sceneDuration, tempDir, `short-${slot}`));
@@ -757,7 +757,7 @@ async function renderShorts(body) {
         startSeconds: highlight.startSeconds, endSeconds: highlight.startSeconds + clipDuration, durationSeconds: clipDuration,
         width: 1080, height: 1920, visualCount: sequence.length,
       });
-      console.log(`[${title}] Short ${slot}/6 rendered (${highlight.startSeconds.toFixed(1)}s–${(highlight.startSeconds + clipDuration).toFixed(1)}s).`);
+      console.log(`[${title}] Short ${slot} rendered (${highlight.startSeconds.toFixed(1)}s–${(highlight.startSeconds + clipDuration).toFixed(1)}s).`);
     }
     if(body.creativeCandidate)return generatedShorts;
     const manifest = await loadManifest();
