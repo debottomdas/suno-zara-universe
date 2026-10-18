@@ -28,6 +28,8 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const shortPreviewAudio=useRef<HTMLAudioElement|null>(null);
  const [previewShort,setPreviewShort]=useState<string|null>(null);
  const [previewPlaying,setPreviewPlaying]=useState(false);
+ const [capturingShort,setCapturingShort]=useState<string|null>(null);
+ const [captureStart,setCaptureStart]=useState<number|null>(null);
  function updateShortTiming(slotId:string,field:'start'|'end',value:number){
   setPlanDraft(previous=>{
    if(!previous)return previous;
@@ -37,20 +39,36 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  async function previewClip(t:Timing){
   const audio=shortPreviewAudio.current;if(!audio)return;
   if(previewPlaying&&previewShort===t.slotId){audio.pause();setPreviewPlaying(false);return;}
-  audio.pause();audio.currentTime=t.start;setPreviewShort(t.slotId);
+  audio.pause();setCapturingShort(null);setCaptureStart(null);audio.currentTime=t.start;setPreviewShort(t.slotId);
   try{await audio.play();setPreviewPlaying(true);}catch{setPreviewPlaying(false);setError('Audio preview could not start. Try the play button again.');}
+ }
+ function setStartWhileListening(t:Timing){
+  const audio=shortPreviewAudio.current;if(!audio)return;
+  const duration=w.analysis?.duration||0;
+  const position=Math.round(audio.currentTime*10)/10;
+  if(!Number.isFinite(position)||position>duration-8){setError('Choose a start at least 8 seconds before the song ends.');return;}
+  setCapturingShort(t.slotId);setCaptureStart(position);setPreviewShort(t.slotId);
+  // Keep playing the master song. End is selected when Stop & Set End is pressed.
+  setError('');setMessage(`Start marked at ${position.toFixed(1)}s for ${t.slotId.replace('short-','Short ')}. Press Stop & Set End to finish the clip.`);
+ }
+ async function listenToMaster(t:Timing){
+  const audio=shortPreviewAudio.current;if(!audio)return;
+  audio.pause();setCapturingShort(null);setCaptureStart(null);setPreviewShort(t.slotId);
+  try{await audio.play();setPreviewPlaying(true);}catch{setError('Could not play the master song.');}
  }
  function stopAndSetEnd(t:Timing){
   const audio=shortPreviewAudio.current;
   if(!audio||previewShort!==t.slotId)return;
   const position=Math.round(audio.currentTime*10)/10;
+  const start=capturingShort===t.slotId&&captureStart!==null?captureStart:t.start;
   audio.pause();setPreviewPlaying(false);
-  if(position<t.start+8||position>Math.min(t.start+60,w.analysis?.duration||0)){
-   setError('Stop point must be 8–60 seconds after this Short starts. Move the start handle or listen a little longer, then try again.');
+  if(position<start+8||position>Math.min(start+60,w.analysis?.duration||0)){
+   setError('The selected clip must be 8–60 seconds long. Resume playback or adjust the start/end handles.');
    return;
   }
-  updateShortTiming(t.slotId,'end',position);
-  setError('');setMessage(`${t.slotId.replace('short-','Short ')} ends at ${position.toFixed(1)}s. Save & approve the Video Plan to keep this selection.`);
+  setPlanDraft(previous=>previous?{...previous,shorts:previous.shorts.map(row=>row.slotId===t.slotId?{...row,start,end:position}:row)}:previous);
+  setCapturingShort(null);setCaptureStart(null);
+  setError('');setMessage(`${t.slotId.replace('short-','Short ')}: ${start.toFixed(1)}s–${position.toFixed(1)}s. Save & approve the Video Plan to keep this selection.`);
  }
  const audioKey=finalAudioKey(assets.audio);
  function accept(next:CreativeWorkspace){setW(next);setSceneDraft(next.scenePlan?JSON.stringify(next.scenePlan.scenes,null,2):'');setInstructions(next.instructions);setBible(next.bible);setPlanDraft(next.plan?{scenes:next.plan.scenes,shorts:next.plan.shorts}:null);}
@@ -295,11 +313,11 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     {primaryVisualAction}
    </>:<>
     {assets.audio?.url&&planDraft&&<section aria-label="Choose Short audio clips" className={styles.panel}>
-     <h3>1 · Choose song sections for Shorts</h3><p>All Shorts use the same master song. Drag either handle to select each clip; Shorts may overlap. Listen before saving. Changes to one Short do not move another.</p>
-     <audio ref={shortPreviewAudio} src={assets.audio.url} preload="metadata" controls onPause={()=>setPreviewPlaying(false)} onEnded={()=>setPreviewPlaying(false)} onTimeUpdate={e=>{const t=planDraft.shorts.find(x=>x.slotId===previewShort);if(t&&e.currentTarget.currentTime>=t.end){e.currentTarget.pause();e.currentTarget.currentTime=t.end;setPreviewPlaying(false);}}}/>
+     <h3>1 · Choose song sections for Shorts</h3><p>All Shorts use the same master song. Play the full song, press Set Start, then Stop & Set End; or drag either handle. Shorts may overlap. Listen before saving. Changes to one Short do not move another.</p>
+     <audio ref={shortPreviewAudio} src={assets.audio.url} preload="metadata" controls onPause={()=>setPreviewPlaying(false)} onEnded={()=>setPreviewPlaying(false)} onTimeUpdate={e=>{const t=planDraft.shorts.find(x=>x.slotId===previewShort);if(t&&capturingShort!==t.slotId&&e.currentTarget.currentTime>=t.end){e.currentTarget.pause();e.currentTarget.currentTime=t.end;setPreviewPlaying(false);}}}/>
      {planDraft.shorts.map(t=>{const duration=w.analysis?.duration||0;const length=Math.round((t.end-t.start)*10)/10;return <div key={t.slotId} style={{padding:'12px 0',borderBottom:'1px solid var(--border, #ccc)'}}>
       <strong>{t.slotId.replace('short-','Short ')} · {length.toFixed(1)}s</strong>
-      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={!assets.audio?.url||t.end<=t.start} onClick={()=>void previewClip(t)}>{previewPlaying&&previewShort===t.slotId?'Pause clip':'▶ Listen to selection'}</button><button type="button" disabled={!previewPlaying||previewShort!==t.slotId||!!busy} onClick={()=>stopAndSetEnd(t)}>■ Stop & Set End</button></div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={!!busy} onClick={()=>void listenToMaster(t)}>▶ Listen to full song</button><button type="button" disabled={!!busy||!previewPlaying} onClick={()=>setStartWhileListening(t)}>● Set Start</button><button type="button" disabled={!previewPlaying||previewShort!==t.slotId||!!busy} onClick={()=>stopAndSetEnd(t)}>■ Stop & Set End</button><button type="button" disabled={!assets.audio?.url||t.end<=t.start||!!busy} onClick={()=>void previewClip(t)}>{previewPlaying&&previewShort===t.slotId&&capturingShort!==t.slotId?'Pause clip':'▶ Preview selected clip'}</button></div>
       <div aria-label={`${t.slotId} draggable audio selection`} style={{position:'relative',height:46,margin:'14px 8px',touchAction:'none',userSelect:'none'}}>
        <div style={{position:'absolute',left:0,right:0,top:19,height:8,borderRadius:5,background:'#8886'}}/>
        <div style={{position:'absolute',top:19,height:8,left:`${100*t.start/duration}%`,width:`${100*(t.end-t.start)/duration}%`,background:'#16a34a',borderRadius:4,pointerEvents:'none'}}/>
