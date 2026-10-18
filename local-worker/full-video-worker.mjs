@@ -132,6 +132,20 @@ function romanticPreset(raw){
  const clamp=(n,min,max,fallback)=>Number.isFinite(Number(n))?Math.max(min,Math.min(max,Number(n))):fallback;
  return {warmth:clamp(raw.warmth,0,1,0.55),contrast:clamp(raw.contrast,0,1,0.25),softness:clamp(raw.softness,0,1,0.2),glow:clamp(raw.glow,0,1,0.45),vignette:clamp(raw.vignette,0,1,0.4),atmosphere:clamp(raw.atmosphere,0,1,0.25)};
 }
+function lightLeakFilter(scene,duration){
+ const p=romanticPreset(scene.cinematic);
+ if(!p||scene.cinematic?.overlay!=='golden-light-leak')return '';
+ const intensity=Math.max(0,Math.min(1,Number(scene.cinematic.overlayIntensity??0.7)));
+ if(intensity<=0)return '';
+ // Per-frame moving, feathered amber illumination. geq uses frame index N at 30 fps.
+ // Works for either orientation, does not require downloading overlay assets.
+ const alpha=(0.58*intensity).toFixed(3);
+ const cx="(0.12+0.78*(0.5+0.5*sin(N/75)))*W";
+ const cy="(0.15+0.15*sin(N/110))*H";
+ const radial=`exp(-pow((X-(${cx}))/(0.42*W),2)-pow((Y-(${cy}))/(0.67*H),2))`;
+ const a=`255*${alpha}*${radial}`;
+ return `format=rgba,geq=r='min(255,r(X,Y)+110*${alpha}*${radial})':g='min(255,g(X,Y)+57*${alpha}*${radial})':b='min(255,b(X,Y)+8*${alpha}*${radial})':a='255',format=yuv420p`;
+}
 function withTransition(filter,duration,scene,complex=false){
  let result=filter;
  const preset=romanticPreset(scene.cinematic);
@@ -146,6 +160,8 @@ function withTransition(filter,duration,scene,complex=false){
 
   result=complex?result.replace(/\[v\]\s*$/,`[gradeInput];[gradeInput]${grade}[v]`):`${result},${grade}`;
  }
+ const leak=lightLeakFilter(scene,duration);
+ if(leak)result=complex?result.replace(/\\[v\\]\\s*$/,`[lightInput];[lightInput]${leak}[v]`):`${result},${leak}`;
  if(scene.transition!=='fade')return result;
  const fade=fadeFilter(duration);
  return complex?result.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${result},${fade}`;
