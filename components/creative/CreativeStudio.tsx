@@ -17,6 +17,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const [cueContext,setCueContext]=useState<LyricCueContext|null>(null);
  const [w,setW]=useState<CreativeWorkspace>(emptyWorkspace);const [videos,setVideos]=useState<Videos>({versions:[],approved:{},keys:{}});
  const [videosReady,setVideosReady]=useState(false),[workerError,setWorkerError]=useState('');const [bulkFiles,setBulkFiles]=useState<{file:File;slot:number;prefix:string}[]>([]),[bulkIssue,setBulkIssue]=useState(''),[bulkProgress,setBulkProgress]=useState('');
+ const [imageBatch,setImageBatch]=useState<{file:File;slotId:string}[]>([]),[imageBatchError,setImageBatchError]=useState(''),[imageBatchProgress,setImageBatchProgress]=useState('');
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
  const operation=useRef(false),active=useRef(true);
  const [batchProgress,setBatchProgress]=useState<{action:string;complete:number;total:number}|null>(null),[batchNeedsReload,setBatchNeedsReload]=useState(false);
@@ -162,6 +163,50 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   <button className={styles.primary} disabled={!!busy||!!w.pending||batchNeedsReload||(!needsDirection&&!batch.ready&&(!!workerError||!videosReady))} onClick={()=>void (needsDirection?resolveDirection():needsScenePlan?run(scenePlanLabel,w.scenePlan?approveScenes:prepareScenes):generateOrReview())}>{needsDirection?directionLabel:needsScenePlan?scenePlanLabel:batch.missing.length?`Generate ${batch.missing.length} Missing Visuals`:batch.label}</button>
  </section>;
 
+ function selectImageBatch(files:FileList|null){
+  setImageBatchError('');setImageBatchProgress('');
+  if(!files)return;
+  const selected=Array.from(files);
+  if(selected.some(f=>!['image/jpeg','image/png','image/webp'].includes(f.type)||!f.size||f.size>100*1024*1024)){setImageBatchError('Choose non-empty JPG, PNG or WebP images under 100 MB each.');setImageBatch([]);return;}
+  const slots=w.slots.filter(slot=>['scene','short','cover','thumbnail'].includes(slot.kind));
+  if(!slots.length){setImageBatchError('Prepare your visual workspace before importing images.');return;}
+  const assignments=selected.map((file,i)=>{
+   const stem=file.name.toLowerCase();
+   const match=stem.match(/(?:scene|landscape|short|vertical)[-_ ]*0*(\d+)/);
+   const kind=/(?:short|vertical)/.test(stem)?'short':/(?:scene|landscape)/.test(stem)?'scene':/thumbnail|thumb/.test(stem)?'thumbnail':/cover|artwork/.test(stem)?'cover':'';
+   const numbered=match?slots.find(slot=>slot.kind===kind&&slot.number===Number(match[1])):undefined;
+   return {file,slotId:numbered?.id||slots[i%slots.length].id};
+  });
+  setImageBatch(assignments);
+ }
+ async function importImageBatch(){
+  if(!imageBatch.length)return;
+  const ids=imageBatch.map(x=>x.slotId);
+  if(new Set(ids).size!==ids.length){setImageBatchError('Assign each image to a different slot for this batch. Import additional versions separately.');return;}
+  if(!window.confirm('Import '+imageBatch.length+' images into this project? Existing approvals will be preserved.'))return;
+  await run('Importing images',async()=>{
+   for(let i=0;i<imageBatch.length;i++){
+    const item=imageBatch[i];setImageBatchProgress('Uploading image '+(i+1)+' of '+imageBatch.length+': '+item.file.name);
+    try{
+     const current=(await json('/api/creative-workspace?projectId='+encodeURIComponent(projectId))).workspace as CreativeWorkspace;
+     if(!current.slots.some(x=>x.id===item.slotId))throw Error('Visual slot no longer exists: '+item.slotId);
+     const prepared=await post('/api/creative-workspace',{projectId,revision:current.revision,action:'prepare-upload',slotId:item.slotId,mimeType:item.file.type,size:item.file.size});
+     if(prepared.localMode){const response=await fetch(prepared.upload.uploadUrl,{method:'PUT',headers:{'Content-Type':item.file.type},body:item.file});const data=await response.json();if(!response.ok)throw Error(data.error||'Image upload failed.');}
+     else{const {error}=await createClient().storage.from(prepared.upload.bucket).uploadToSignedUrl(prepared.upload.storagePath,prepared.upload.token,item.file,{contentType:item.file.type});if(error)throw Error(error.message);}
+     const saved=await post('/api/creative-workspace',{projectId,revision:current.revision,action:'register-upload',slotId:item.slotId,storagePath:prepared.upload.storagePath});
+     accept(saved.workspace);
+    }catch(e){setImageBatchProgress('Stopped after '+i+' image(s). Previously uploaded images remain saved.');throw e;}
+   }
+   setImageBatchProgress('Imported '+imageBatch.length+' images. Review and approve individually.');setImageBatch([]);onRefresh();
+  });
+ }
+ const imageBulkUpload=<section className={styles.panel} aria-label="Bulk image upload">
+  <h3>Import multiple images</h3><p>Select JPG, PNG or WebP images, then assign each image to a scene, Short, cover or thumbnail. Nothing is approved automatically.</p>
+  <label className={styles.file}>Choose images<input type="file" multiple accept="image/jpeg,image/png,image/webp" disabled={!!busy} onChange={e=>{selectImageBatch(e.currentTarget.files);e.currentTarget.value='';}}/></label>
+  {imageBatchError&&<p role="alert" className={styles.error}>{imageBatchError}</p>}
+  {imageBatch.length>0&&<><ul>{imageBatch.map((item,i)=><li key={i}>{item.file.name} — <select aria-label={'Assign '+item.file.name} value={item.slotId} disabled={!!busy} onChange={e=>setImageBatch(current=>current.map((x,j)=>i===j?{...x,slotId:e.target.value}:x))}>{w.slots.filter(slot=>['scene','short','cover','thumbnail'].includes(slot.kind)).map(slot=><option key={slot.id} value={slot.id}>{slot.label}</option>)}</select></li>)}</ul><button disabled={!!busy} onClick={()=>void importImageBatch()}>Import {imageBatch.length} images</button></>}
+  {imageBatchProgress&&<p role="status">{imageBatchProgress}</p>}
+ </section>;
  function selectBulk(files:FileList|null){setBulkIssue('');setBulkProgress('');if(!files)return;const parsed:{file:File;slot:number;prefix:string}[]=[];const problems:string[]=[];const seen=new Set<number>();for(const file of Array.from(files)){const m=file.name.match(/^(.+?)\s*[-_–—]\s*(full[\s_-]*video|short[\s_-]*0?[1-6])\.(mp4|mov)$/i);if(!m){problems.push('Unrecognised name: '+file.name);continue;}const slot=/^full/i.test(m[2])?0:Number(m[2].match(/[1-6]/)?.[0]);if(seen.has(slot)){problems.push('Duplicate slot: '+file.name);continue;}seen.add(slot);parsed.push({file,slot,prefix:m[1].trim()});}const prefixes=new Set(parsed.map(x=>x.prefix.toLocaleLowerCase().replace(/[^\p{L}\p{N}]/gu,'')));if(prefixes.size>1)problems.push('Different song-name prefixes. Select files for one song only.');if(problems.length){setBulkFiles([]);setBulkIssue(problems.join(' · '));return;}setBulkFiles(parsed.sort((a,b)=>a.slot-b.slot));}
  async function importBulk(){if(!bulkFiles.length)return;if(!window.confirm('Import '+bulkFiles.length+' video(s) to selected song "'+title+'"? Existing approvals remain unchanged.'))return;await run('Importing finished videos',async()=>{for(let i=0;i<bulkFiles.length;i++){const item=bulkFiles[i];setBulkProgress('Uploading '+(i+1)+' of '+bulkFiles.length+': '+item.file.name);try{await uploadVideo(item.slot,item.file);}catch(e){setBulkProgress('Stopped after '+i+' uploads. Earlier files remain saved.');throw e;}}setBulkProgress('Imported '+bulkFiles.length+' videos. Review and approve below.');setBulkFiles([]);});}
  const bulkUpload=stage==='Video & Shorts'?<section className={styles.panel} aria-label="Bulk upload finished videos"><h3>Upload Finished Videos — All at Once</h3><p>No audio, visuals or cloud login required. Selected song: <strong>{title}</strong>.</p><p>Use <code>Song Name - Full Video.mp4</code> and <code>Song Name - Short 01.mp4</code> through <code>Short 06.mp4</code>.</p><label className={styles.file}>Choose multiple videos<input type="file" multiple accept=".mp4,.mov,video/mp4,video/quicktime" disabled={!!busy} onChange={e=>{selectBulk(e.currentTarget.files);e.currentTarget.value='';}}/></label>{bulkIssue&&<p role="alert" className={styles.error}>{bulkIssue}</p>}{bulkFiles.length>0&&<><p>Review assignments:</p><ul>{bulkFiles.map(x=><li key={x.slot}>{x.slot?'Short '+x.slot:'Full Video'} — {x.file.name}</li>)}</ul><button disabled={!!busy||!!workerError||!videosReady} onClick={()=>void importBulk()}>Import {bulkFiles.length} video(s)</button></>}{bulkProgress&&<p role="status">{bulkProgress}</p>}<p>Files create new local versions; no automatic approval, scheduling or publishing.</p></section>:null;
@@ -187,6 +232,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     </section>
     <p>{requiredVisualsReady?'✓ Required visual assets approved':'Review the visuals needed for missing outputs, cover and thumbnail.'} Scenes follow suggested song sections; add scenes as needed.</p>
     <button onClick={()=>setShowCompleted(v=>!v)}>{showCompleted?'Show only missing work':'Show completed visuals to replace'}</button><button disabled={!!busy} onClick={()=>void run('Adding scene',()=>change('add-scene'))}>Add landscape scene</button>
+    {imageBulkUpload}
     <div>{(['scene','short','artwork'] as const).map(group=><section key={group}><h3>{group==='scene'?'Your Music Video Scenes':group==='short'?'Your 6 Short Visuals':'Cover Artwork & YouTube Thumbnail'}</h3><div className={styles.grid}>{(showCompleted?w.slots:requiredSlots).filter(slot=>group==='artwork'?['cover','thumbnail'].includes(slot.kind):slot.kind===group).map(slot=><VisualCard key={slot.id} slot={slot} allSlots={w.slots} legacy={[...assets.images,...assets.artwork.map(a=>({...a,existingArtwork:true}))]} busy={!!busy} canGenerate={!!w.scenePlan?.reviewed&&!!w.bible&&w.bible===w.approvedBible&&!dirtyDirection} onPrompt={prompt=>run('Saving prompt',()=>change('prompt',{slotId:slot.id,prompt}))} onUpload={file=>run('Uploading image',()=>uploadImage(slot,file))} onAction={(action,extra)=>run(action==='generate'?'Generating image':'Saving visual',()=>change(action,{slotId:slot.id,...extra}))}/>)}</div></section>)}</div>
     {primaryVisualAction}
    </>:<>
