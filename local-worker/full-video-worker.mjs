@@ -127,7 +127,26 @@ async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir
  args.push('-c:a',codec==='aac'?'copy':'aac',...(codec==='aac'?[]:['-b:a','192k']),'-t',String(duration),'-shortest','-movflags','+faststart',output);await run(ffmpegPath,args);
  return {masterSha256:createHash('sha256').update(await readFile(audioFile)).digest('hex'),audioMode:codec==='aac'?'original-aac-copy':'single-aac-encode',finishing:finishing?{subtitles:finishing.subtitles,lyrics:finishing.lyrics,reviewed:finishing.reviewed,cueCount:finishing.cues.filter(c=>c.end>offset&&c.start<offset+duration).length,lyricsSha256:createHash('sha256').update(finishing.lyrics).digest('hex'),channelId:finishing.channelId,dnaRevision:finishing.dnaRevision,brandAlignment:finishing.brandAlignment,brandText:finishing.brandText,transition:finishing.transition}:null};
 }
-function withTransition(filter,duration,scene,complex=false){if(scene.transition!=='fade')return filter;const fade=fadeFilter(duration);return complex?filter.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${filter},${fade}`;}
+function romanticPreset(raw){
+ if(!raw||raw.mode!=='romantic')return null;
+ const clamp=(n,min,max,fallback)=>Number.isFinite(Number(n))?Math.max(min,Math.min(max,Number(n))):fallback;
+ return {warmth:clamp(raw.warmth,0,1,0.55),contrast:clamp(raw.contrast,0,1,0.25),softness:clamp(raw.softness,0,1,0.2)};
+}
+function withTransition(filter,duration,scene,complex=false){
+ let result=filter;
+ const preset=romanticPreset(scene.cinematic);
+ if(preset){
+  const contrast=(1+preset.contrast*0.15).toFixed(3);
+  const saturation=(1+preset.warmth*0.12).toFixed(3);
+  const red=(1+preset.warmth*0.055).toFixed(3);
+  const blue=(1-preset.warmth*0.065).toFixed(3);
+  const grade=`eq=contrast=${contrast}:saturation=${saturation},colorbalance=rs=${(preset.warmth*0.045).toFixed(3)}:bs=${(-preset.warmth*0.04).toFixed(3)},unsharp=5:5:${(0.5-preset.softness*0.55).toFixed(3)}:5:5:0`;
+  result=complex?result.replace(/\[v\]\s*$/,`[gradeInput];[gradeInput]${grade}[v]`):`${result},${grade}`;
+ }
+ if(scene.transition!=='fade')return result;
+ const fade=fadeFilter(duration);
+ return complex?result.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${result},${fade}`;
+}
 
 function normalizeVisuals(body) {
   const supplied = Array.isArray(body.visuals)
@@ -300,7 +319,7 @@ async function renderFullVideo(body) {
     for (let i = 0; i < visuals.length; i += 1) {
       downloadedVisuals.push({
         ...visuals[i],
-        transition:body.finishing?.transition,
+        transition:body.finishing?.transition, cinematic:body.cinematic,
         file: await download(visuals[i].url, `visual-${i + 1}`, tempDir),
       });
     }
@@ -731,7 +750,7 @@ async function renderShorts(body) {
     const audioFile = await download(audioUrl, "audio", tempDir);
     const downloadedVisuals = [];
     for (let i = 0; i < visuals.length; i += 1) {
-      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
+      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, cinematic:body.cinematic, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
     }
     const shortsFolder = path.join(ROOT, "Music", safeName(title), "Shorts");
     await mkdir(shortsFolder, { recursive: true });
