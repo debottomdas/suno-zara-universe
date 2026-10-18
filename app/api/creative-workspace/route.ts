@@ -72,6 +72,24 @@ export async function POST(req:Request){
    const duration=Number(body.duration);if(!Number.isFinite(duration)||duration<8||duration>3600)throw Error('Choose final audio between 8 seconds and 60 minutes.');
    if(w.slots.length)throw Error('Workspace already exists. Existing versions are preserved.');
    w.slots=makeSlots(duration,song.lyrics||'');w.audioKey=text(body.audioKey);w.instructions=text(body.instructions);
+  }else if(action==='short-count'){
+   const count=Number(body.count);
+   if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
+   if(!w.slots.length)throw Error('Prepare the visual workspace before choosing Shorts.');
+   const existing=w.slots.filter(slot=>slot.kind==='short');
+   if(count<existing.length){
+    const removed=existing.filter(slot=>slot.number>count);
+    if(removed.some(slot=>slot.candidates.length>0||slot.approvedId))throw Error('Cannot remove Shorts with saved images or approvals. Preserve those assets and use publishing selection instead.');
+   }
+   const newSlots=makeSlots(w.analysis?.duration||180,song.lyrics||'',count).filter(slot=>slot.kind==='short');
+   const previous=new Map(existing.map(slot=>[slot.id,slot]));
+   w.slots=[...w.slots.filter(slot=>slot.kind!=='short'),...newSlots.map(slot=>previous.get(slot.id)||slot)];
+   if(w.plan){
+    const byId=new Map(w.plan.shorts.map(t=>[t.slotId,t]));
+    const proposed=w.analysis?proposePlan(w.slots,w.analysis,song.lyrics||'').shorts:[];
+    w.plan={...w.plan,shorts:newSlots.map(slot=>byId.get(slot.id)||proposed.find(t=>t.slotId===slot.id)!).filter(Boolean),approved:false};
+   }
+   // Any change in the slot set requires renewed review; retain all existing candidates and video versions.
   }else if(action==='direction'){
    if(w.instructions!==text(body.instructions))delete w.approvedBible;w.instructions=text(body.instructions);w.bible=text(body.bible);if(body.approve===true){if(!w.bible)throw Error('Write or propose a visual direction first.');w.approvedBible=w.bible;}
   }else if(action==='propose-direction'){
