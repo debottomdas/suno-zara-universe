@@ -18,6 +18,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const [w,setW]=useState<CreativeWorkspace>(emptyWorkspace);const [videos,setVideos]=useState<Videos>({versions:[],approved:{},keys:{}});
  const [videosReady,setVideosReady]=useState(false),[workerError,setWorkerError]=useState('');const [bulkFiles,setBulkFiles]=useState<{file:File;slot:number;prefix:string}[]>([]),[bulkIssue,setBulkIssue]=useState(''),[bulkProgress,setBulkProgress]=useState('');
  const [imageBatch,setImageBatch]=useState<{file:File;slotId:string}[]>([]),[imageBatchError,setImageBatchError]=useState(''),[imageBatchProgress,setImageBatchProgress]=useState('');
+ const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
  const operation=useRef(false),active=useRef(true);
  const [batchProgress,setBatchProgress]=useState<{action:string;complete:number;total:number}|null>(null),[batchNeedsReload,setBatchNeedsReload]=useState(false);
@@ -120,7 +121,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  }
  const [videoProgress,setVideoProgress]=useState<{complete:number;total:number}|null>(null);
  const [videoNeedsReload,setVideoNeedsReload]=useState(false);
- const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
+
  const blocker=videoState.missing.find(o=>o.blocker)?.blocker;
  async function createMissingVideos(){await run('Creating your videos',async()=>{
   try{
