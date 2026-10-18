@@ -143,8 +143,7 @@ function lightLeakFilter(scene,duration){
  const cx="(0.12+0.78*(0.5+0.5*sin(N/75)))*W";
  const cy="(0.15+0.15*sin(N/110))*H";
  const radial=`exp(-pow((X-(${cx}))/(0.42*W),2)-pow((Y-(${cy}))/(0.67*H),2))`;
- const a=`255*${alpha}*${radial}`;
- return `format=rgba,geq=r='min(255,r(X,Y)+110*${alpha}*${radial})':g='min(255,g(X,Y)+57*${alpha}*${radial})':b='min(255,b(X,Y)+8*${alpha}*${radial})':a='255',format=yuv420p`;
+ return `format=gbrp,geq=r='min(255,r(X,Y)+110*${alpha}*${radial})':g='min(255,g(X,Y)+57*${alpha}*${radial})':b='min(255,b(X,Y)+8*${alpha}*${radial})':a='255',format=yuv420p`;
 }
 function withTransition(filter,duration,scene,complex=false){
  let result=filter;
