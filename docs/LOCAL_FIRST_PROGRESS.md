@@ -9,7 +9,8 @@ Updated 2026-10-18. Working branch: `feature/local-first-no-signin-audit`. Draft
 - Bulk image import: implemented in `components/creative/CreativeStudio.tsx` at `f99eefea`. Multi-file JPG/PNG/WebP selection, editable assignment to scene/short/cover/thumbnail, sequential registration, progress, existing approval preservation. Build/test pending. Import requires prepared visual slots. Multiple files assigned to the same slot in a single batch are rejected to prevent unintended replacement.
 - P3 local rendering: incomplete verification/integration; existing worker supports render paths but currently six Shorts are assumed.
 - P4 publishing: incomplete; current UI and validation assume six approved Shorts.
-- Flexible Shorts 1–10 and subset publishing: NOT implemented. Must update model, plan validation, renderer, UI, social metadata, scheduler and receipts consistently.
+- Flexible Shorts 1–10: IN PROGRESS. Creative slot generation and timing validation updated in `utils/creative/model.ts` at `9a8a7b9`; default six retained. UI, persisted count configuration, render worker, social metadata, scheduler, selected-only publishing and focused tests remain incomplete. Do not treat this as user-ready.
+- Selected-only publishing: NOT implemented; current publishing paths still assume all six.
 - Final integration test: pending.
 
 ## Safety
