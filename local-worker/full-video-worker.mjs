@@ -76,7 +76,11 @@ function extensionFor(contentType, fallback = ".bin") {
   return fallback;
 }
 async function download(url, basename, dir) {
-  const response = await fetch(url, { redirect: "follow" });
+  // Creative assets in local mode use browser-relative /api/media URLs. Node fetch requires an absolute URL.
+  const mediaUrl = typeof url === "string" && url.startsWith("/api/media/")
+    ? new URL(url, "http://127.0.0.1:3000").href
+    : url;
+  const response = await fetch(mediaUrl, { redirect: "follow" });
   if (!response.ok) throw new Error(`Could not fetch media (${response.status}) from ${url}`);
   const ext = extensionFor(response.headers.get("content-type"));
   const file = path.join(dir, `${basename}${ext}`);
