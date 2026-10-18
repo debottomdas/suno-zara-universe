@@ -81,6 +81,8 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const {complete,approvedCount}=videoState;
  const configuredShortCount=w.slots.filter(slot=>slot.kind==='short').length||6;
  const outputNames=outputNamesFor(w);
+ const shortNumbers=w.slots.filter(slot=>slot.kind==='short').map(slot=>slot.number).sort((a,b)=>a-b);
+ const effectiveShortSelection=selectedShorts.filter(n=>shortNumbers.includes(n));
  const requiredSlots=requiredVisualSlots(w,assets,videos);
  const batch=visualBatchState(w,requiredSlots);
  const requiredVisualsReady=batch.ready;
@@ -114,6 +116,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  }
  const [videoProgress,setVideoProgress]=useState<{complete:number;total:number}|null>(null);
  const [videoNeedsReload,setVideoNeedsReload]=useState(false);
+ const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
  const blocker=videoState.missing.find(o=>o.blocker)?.blocker;
  async function createMissingVideos(){await run('Creating your videos',async()=>{
   try{
@@ -128,6 +131,26 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
    }
    if(active.current)setMessage('Your videos are ready to review. Play each video, change any exceptions, then approve reviewed videos.');
   }catch(e){setVideoNeedsReload(true);throw e;}finally{if(active.current){setVideoProgress(null);onRefresh();}}
+ });}
+ async function renderSelectedShorts(slots:number[]){await run('Rendering selected Shorts',async()=>{
+  const chosen=[...new Set(slots)].filter(slot=>shortNumbers.includes(slot)).sort((a,b)=>a-b);
+  if(!chosen.length)throw Error('Select at least one Short.');
+  if(!videosReady||workerError)throw Error('Connect the local video worker before rendering.');
+  if(dirtyPlan)throw Error('Save and approve the current timing plan before rendering.');
+  const problems=chosen.map(slot=>({slot,issue:renderPrerequisite(w,assets.audio,slot,dirtyPlan)})).filter(x=>x.issue);
+  if(problems.length)throw Error(problems.map(x=>`Short ${x.slot}: ${x.issue!.message}`).join(' | '));
+  setVideoProgress({complete:0,total:chosen.length});
+  const failures:string[]=[];
+  try{
+   for(let i=0;i<chosen.length;i++){
+    if(!active.current)break;
+    const slot=chosen[i];
+    try{await render(slot);}catch(e){failures.push(`Short ${slot}: ${e instanceof Error?e.message:'Render failed'}`);}
+    if(active.current)setVideoProgress({complete:i+1,total:chosen.length});
+   }
+   if(failures.length)throw Error(`Completed ${chosen.length-failures.length}/${chosen.length} Shorts. Saved results are preserved. ${failures.join(' | ')}`);
+   setMessage(`Rendered ${chosen.length} Short(s). Preview and approve each individually; nothing was published.`);
+  }finally{if(active.current){setVideoProgress(null);await loadVideos();onRefresh();}}
  });}
  async function approveReviewedVideos(){await run('Approving reviewed videos',async()=>{
   await sync(w);const fresh=await loadVideos();
@@ -239,6 +262,12 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     <div>{(['scene','short','artwork'] as const).map(group=><section key={group}><h3>{group==='scene'?'Your Music Video Scenes':group==='short'?`Your ${configuredShortCount} Short Visuals`:'Cover Artwork & YouTube Thumbnail'}</h3><div className={styles.grid}>{(showCompleted?w.slots:requiredSlots).filter(slot=>group==='artwork'?['cover','thumbnail'].includes(slot.kind):slot.kind===group).map(slot=><VisualCard key={slot.id} slot={slot} allSlots={w.slots} legacy={[...assets.images,...assets.artwork.map(a=>({...a,existingArtwork:true}))]} busy={!!busy} canGenerate={!!w.scenePlan?.reviewed&&!!w.bible&&w.bible===w.approvedBible&&!dirtyDirection} onPrompt={prompt=>run('Saving prompt',()=>change('prompt',{slotId:slot.id,prompt}))} onUpload={file=>run('Uploading image',()=>uploadImage(slot,file))} onAction={(action,extra)=>run(action==='generate'?'Generating image':'Saving visual',()=>change(action,{slotId:slot.id,...extra}))}/>)}</div></section>)}</div>
     {primaryVisualAction}
    </>:<>
+    <section className={styles.panel} aria-label="Shorts batch production"><h3>Produce Shorts · individually or together</h3><p>Select which Shorts to render from their approved images and audio segments. Existing approved videos are preserved; each render creates a reviewable version. No automatic approval or publishing.</p>
+     <div className={styles.actions}><button disabled={!!busy} onClick={()=>setSelectedShorts(shortNumbers)}>Select all</button><button disabled={!!busy} onClick={()=>setSelectedShorts([])}>Clear selection</button></div>
+     <div className={styles.actions}>{shortNumbers.map(slot=><label key={slot} style={{display:'inline-flex',alignItems:'center',gap:6}}><input type="checkbox" checked={effectiveShortSelection.includes(slot)} disabled={!!busy} onChange={e=>setSelectedShorts(previous=>e.target.checked?[...previous.filter(n=>n!==slot),slot]:previous.filter(n=>n!==slot))}/>Short {slot}</label>)}</div>
+     <div className={styles.actions}><button className={styles.primary} disabled={!!busy||!videosReady||!!workerError||!effectiveShortSelection.length} onClick={()=>void renderSelectedShorts(effectiveShortSelection)}>Render {effectiveShortSelection.length||'selected'} Shorts</button></div>
+     {videoProgress&&<p role="status">Rendering… {videoProgress.complete} of {videoProgress.total} completed</p>}
+    </section>
     {primaryVideoAction}
     <section className={styles.panel}><p>Upload your own missing videos below, or create them from final audio and approved song visuals.</p><h3>{w.plan?.approved?'Your Video Plan is Ready ✓':'Your Video Plan'}</h3><p>{w.plan?.scenes.length||0} scenes · {Math.floor((w.analysis?.duration||0)/60)}:{String(Math.round((w.analysis?.duration||0)%60)).padStart(2,"0")} · {configuredShortCount} Shorts</p><details open={!w.plan?.approved||undefined}><summary>Preview plan</summary><ol>{w.plan?.scenes.map(t=><li key={t.slotId}>{t.label} · {t.start.toFixed(1)}–{t.end.toFixed(1)} seconds</li>)}</ol><ol>{w.plan?.shorts.map(t=><li key={t.slotId}>{t.slotId} · {t.start.toFixed(1)}–{t.end.toFixed(1)} seconds</li>)}</ol><p>Section labels guide the story; they are not precise lyric alignment.</p></details><details><summary>Adjust plan</summary><p>Energy measurements suggest useful audio moments. Labelled lyrics provide section names, not precise alignment. Listen and edit every timing. Motion uses gentle pan and zoom; no text or branding is added over the clean opening.</p>
     {assets.audio?.url&&<audio controls src={assets.audio.url} preload="metadata"/>}<button disabled={!!busy||!assets.audio?.url} onClick={()=>void run('Analysing audio',analyse)}>Analyse audio & propose timings</button>
