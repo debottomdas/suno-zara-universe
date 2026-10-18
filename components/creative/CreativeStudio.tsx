@@ -25,6 +25,21 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  useEffect(()=>{active.current=true;return()=>{active.current=false;};},[]);
  const [sceneDraft,setSceneDraft]=useState('');
  const [showCompleted,setShowCompleted]=useState(false);const [instructions,setInstructions]=useState(''),[bible,setBible]=useState('');const [planDraft,setPlanDraft]=useState<{scenes:Timing[];shorts:Timing[]}|null>(null);
+ const shortPreviewAudio=useRef<HTMLAudioElement|null>(null);
+ const [previewShort,setPreviewShort]=useState<string|null>(null);
+ const [previewPlaying,setPreviewPlaying]=useState(false);
+ function updateShortTiming(slotId:string,field:'start'|'end',value:number){
+  setPlanDraft(previous=>{
+   if(!previous)return previous;
+   return {...previous,shorts:previous.shorts.map(t=>t.slotId===slotId?{...t,[field]:Math.round(value*10)/10}:t)};
+  });
+ }
+ async function previewClip(t:Timing){
+  const audio=shortPreviewAudio.current;if(!audio)return;
+  if(previewPlaying&&previewShort===t.slotId){audio.pause();setPreviewPlaying(false);return;}
+  audio.pause();audio.currentTime=t.start;setPreviewShort(t.slotId);
+  try{await audio.play();setPreviewPlaying(true);}catch{setPreviewPlaying(false);setError('Audio preview could not start. Try the play button again.');}
+ }
  const audioKey=finalAudioKey(assets.audio);
  function accept(next:CreativeWorkspace){setW(next);setSceneDraft(next.scenePlan?JSON.stringify(next.scenePlan.scenes,null,2):'');setInstructions(next.instructions);setBible(next.bible);setPlanDraft(next.plan?{scenes:next.plan.scenes,shorts:next.plan.shorts}:null);}
  async function loadVideos(){try{const v=await json(`${WORKER}/creative/status?projectId=${encodeURIComponent(projectId)}`);setVideos(v);setVideosReady(true);setWorkerError('');return v as Videos;}catch(e){setWorkerError(e instanceof Error?e.message:'Local video worker unavailable.');throw e;}}
@@ -281,6 +296,26 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     {primaryVideoAction}
     <section className={styles.panel}><p>Upload your own missing videos below, or create them from final audio and approved song visuals.</p><h3>{w.plan?.approved?'Your Video Plan is Ready ✓':'Your Video Plan'}</h3><p>{w.plan?.scenes.length||0} scenes · {Math.floor((w.analysis?.duration||0)/60)}:{String(Math.round((w.analysis?.duration||0)%60)).padStart(2,"0")} · {configuredShortCount} Shorts</p><details open={!w.plan?.approved||undefined}><summary>Preview plan</summary><ol>{w.plan?.scenes.map(t=><li key={t.slotId}>{t.label} · {t.start.toFixed(1)}–{t.end.toFixed(1)} seconds</li>)}</ol><ol>{w.plan?.shorts.map(t=><li key={t.slotId}>{t.slotId} · {t.start.toFixed(1)}–{t.end.toFixed(1)} seconds</li>)}</ol><p>Section labels guide the story; they are not precise lyric alignment.</p></details><details><summary>Adjust plan</summary><p>Energy measurements suggest useful audio moments. Labelled lyrics provide section names, not precise alignment. Listen and edit every timing. Motion uses gentle pan and zoom; no text or branding is added over the clean opening.</p>
     {assets.audio?.url&&<audio controls src={assets.audio.url} preload="metadata"/>}<button disabled={!!busy||!assets.audio?.url} onClick={()=>void run('Analysing audio',analyse)}>Analyse audio & propose timings</button>
+    {assets.audio?.url&&planDraft&&<section aria-label="Choose Short audio clips" className={styles.panel}>
+     <h4>Choose audio for each Short</h4><p>Listen to the exact section, adjust the start and end handles, then save and approve the Video Plan below. Each Short has its own clip.</p>
+     <audio ref={shortPreviewAudio} src={assets.audio.url} preload="metadata" controls onPause={()=>setPreviewPlaying(false)} onEnded={()=>setPreviewPlaying(false)} onTimeUpdate={e=>{const t=planDraft.shorts.find(x=>x.slotId===previewShort);if(t&&e.currentTarget.currentTime>=t.end){e.currentTarget.pause();e.currentTarget.currentTime=t.end;setPreviewPlaying(false);}}}/>
+     {planDraft.shorts.map(t=>{const duration=w.analysis?.duration||0;const length=Math.round((t.end-t.start)*10)/10;return <div key={t.slotId} style={{padding:'12px 0',borderBottom:'1px solid var(--border, #ccc)'}}>
+      <strong>{t.slotId.replace('short-','Short ')} · {length.toFixed(1)}s</strong>
+      <div><button type="button" disabled={!assets.audio?.url||t.end<=t.start} onClick={()=>void previewClip(t)}>{previewPlaying&&previewShort===t.slotId?'Pause clip':'▶ Listen to selection'}</button></div>
+      <label style={{display:'block'}}>Start: {t.start.toFixed(1)}s
+       <input type="range" min={0} max={Math.max(0,duration-8)} step={0.1} value={t.start} aria-label={`${t.slotId} start handle`} onChange={e=>{const start=Number(e.target.value);updateShortTiming(t.slotId,'start',Math.min(start,t.end-8));}} style={{width:'100%'}}/>
+      </label>
+      <label style={{display:'block'}}>End: {t.end.toFixed(1)}s
+       <input type="range" min={Math.min(duration,t.start+8)} max={Math.min(duration,t.start+60)} step={0.1} value={t.end} aria-label={`${t.slotId} end handle`} onChange={e=>updateShortTiming(t.slotId,'end',Number(e.target.value))} style={{width:'100%'}}/>
+      </label>
+      <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+       <label>Start (s) <input type="number" min={0} max={Math.max(0,t.end-8)} step={0.1} value={t.start} onChange={e=>updateShortTiming(t.slotId,'start',Number(e.target.value))}/></label>
+       <label>End (s) <input type="number" min={t.start+8} max={Math.min(duration,t.start+60)} step={0.1} value={t.end} onChange={e=>updateShortTiming(t.slotId,'end',Number(e.target.value))}/></label>
+      </div>
+     </div>;})}
+     <div className={styles.actions}><button disabled={!!busy||!dirtyPlan} onClick={()=>void run('Saving Short clips',()=>change('plan',{...planDraft,approve:false}))}>Save clip selections</button><button disabled={!!busy} onClick={()=>void run('Approving Short clips',()=>change('plan',{...planDraft,approve:true}))}>Save & approve Video Plan</button></div>
+     {dirtyPlan&&<p role="status">Unsaved timing changes. Rendering is blocked until you save and approve the updated plan.</p>}
+    </section>}
     {planDraft&&<><p>{w.plan?.approved?'✓ Plan approved':'Plan awaiting review'} · {w.analysis?.duration.toFixed(1)} seconds</p>{(['scenes','shorts'] as const).map(kind=><fieldset key={kind}><legend>{kind==='scenes'?'Full video scene sequence':`${configuredShortCount} Short audio segments`}</legend>{planDraft[kind].map((t,i)=><div key={t.slotId} className={styles.timing}><label>{t.slotId}<input aria-label={`${t.slotId} section label`} value={t.label} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,label:e.target.value}:r)})}/></label><label>Start (seconds)<input type="number" step="0.1" value={t.start} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,start:Number(e.target.value)}:r)})}/></label><label>End (seconds)<input type="number" step="0.1" value={t.end} onChange={e=>setPlanDraft({...planDraft,[kind]:planDraft[kind].map((r,j)=>j===i?{...r,end:Number(e.target.value)}:r)})}/></label></div>)}</fieldset>)}<div className={styles.actions}><button disabled={!!busy} onClick={()=>void run('Saving timings',()=>change('plan',{...planDraft,approve:false}))}>Save plan</button><button disabled={!!busy} onClick={()=>void run('Approving plan',()=>change('plan',{...planDraft,approve:true}))}>Approve Video Plan</button></div></>}
     </details><p>Finished video uploads can be reviewed and approved independently of this render plan.</p></section>
     <section aria-label="Subtitle choice"><h3>Add subtitles to video</h3>
