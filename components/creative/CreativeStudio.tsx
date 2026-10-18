@@ -31,7 +31,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  function updateShortTiming(slotId:string,field:'start'|'end',value:number){
   setPlanDraft(previous=>{
    if(!previous)return previous;
-   return {...previous,shorts:previous.shorts.map(t=>t.slotId===slotId?{...t,[field]:Math.round(value*10)/10}:t)};
+   return {...previous,shorts:previous.shorts.map(t=>{if(t.slotId!==slotId||!Number.isFinite(value))return t;const duration=w.analysis?.duration||0;const rounded=Math.round(value*10)/10;if(field==='start'){const start=Math.max(0,Math.min(rounded,t.end-8,duration-8));return {...t,start,end:Math.min(t.end,start+60)};}const end=Math.min(duration,Math.max(t.start+8,Math.min(rounded,t.start+60)));return {...t,end};})};
   });
  }
  async function previewClip(t:Timing){
