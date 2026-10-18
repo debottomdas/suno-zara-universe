@@ -1,11 +1,11 @@
 // Version records are append-only. Only explicit approval changes the existing
 // generated/uploaded pointers consumed by the established publishing pipeline.
-export function outputName(slot) {if(!Number.isInteger(slot)||slot<0||slot>6)throw Error('Choose full video or Short 1–6.');return slot===0?'full':`short-${slot}`;}
+export function outputName(slot) {if(!Number.isInteger(slot)||slot<0||slot>10)throw Error('Choose full video or Short 1–10.');return slot===0?'full':`short-${slot}`;}
 export function syncDependencies(project,keys) {
  project.creative ||= {versions:[],approved:{},keys:{}};
- for(let slot=0;slot<=6;slot++){
+ for(let slot=0;slot<=10;slot++){
   const name=outputName(slot),approved=project.creative.versions.find(v=>v.id===project.creative.approved[name]);
-  if(approved&&approved.source==='generated'&&approved.dependencyKey!==keys[name]){
+  if(approved&&approved.source==='generated'&&Object.prototype.hasOwnProperty.call(keys,name)&&approved.dependencyKey!==keys[name]){
    delete project.creative.approved[name];
    if(slot===0)project.approvedFullVideoSource=null;else {project.approvedShortSources||={};delete project.approvedShortSources[String(slot)];}
   }
