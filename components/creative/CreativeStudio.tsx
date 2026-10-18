@@ -40,6 +40,18 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
   audio.pause();audio.currentTime=t.start;setPreviewShort(t.slotId);
   try{await audio.play();setPreviewPlaying(true);}catch{setPreviewPlaying(false);setError('Audio preview could not start. Try the play button again.');}
  }
+ function stopAndSetEnd(t:Timing){
+  const audio=shortPreviewAudio.current;
+  if(!audio||previewShort!==t.slotId)return;
+  const position=Math.round(audio.currentTime*10)/10;
+  audio.pause();setPreviewPlaying(false);
+  if(position<t.start+8||position>Math.min(t.start+60,w.analysis?.duration||0)){
+   setError('Stop point must be 8–60 seconds after this Short starts. Move the start handle or listen a little longer, then try again.');
+   return;
+  }
+  updateShortTiming(t.slotId,'end',position);
+  setError('');setMessage(`${t.slotId.replace('short-','Short ')} ends at ${position.toFixed(1)}s. Save & approve the Video Plan to keep this selection.`);
+ }
  const audioKey=finalAudioKey(assets.audio);
  function accept(next:CreativeWorkspace){setW(next);setSceneDraft(next.scenePlan?JSON.stringify(next.scenePlan.scenes,null,2):'');setInstructions(next.instructions);setBible(next.bible);setPlanDraft(next.plan?{scenes:next.plan.scenes,shorts:next.plan.shorts}:null);}
  async function loadVideos(){try{const v=await json(`${WORKER}/creative/status?projectId=${encodeURIComponent(projectId)}`);setVideos(v);setVideosReady(true);setWorkerError('');return v as Videos;}catch(e){setWorkerError(e instanceof Error?e.message:'Local video worker unavailable.');throw e;}}
@@ -287,7 +299,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
      <audio ref={shortPreviewAudio} src={assets.audio.url} preload="metadata" controls onPause={()=>setPreviewPlaying(false)} onEnded={()=>setPreviewPlaying(false)} onTimeUpdate={e=>{const t=planDraft.shorts.find(x=>x.slotId===previewShort);if(t&&e.currentTarget.currentTime>=t.end){e.currentTarget.pause();e.currentTarget.currentTime=t.end;setPreviewPlaying(false);}}}/>
      {planDraft.shorts.map(t=>{const duration=w.analysis?.duration||0;const length=Math.round((t.end-t.start)*10)/10;return <div key={t.slotId} style={{padding:'12px 0',borderBottom:'1px solid var(--border, #ccc)'}}>
       <strong>{t.slotId.replace('short-','Short ')} · {length.toFixed(1)}s</strong>
-      <div><button type="button" disabled={!assets.audio?.url||t.end<=t.start} onClick={()=>void previewClip(t)}>{previewPlaying&&previewShort===t.slotId?'Pause clip':'▶ Listen to selection'}</button></div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" disabled={!assets.audio?.url||t.end<=t.start} onClick={()=>void previewClip(t)}>{previewPlaying&&previewShort===t.slotId?'Pause clip':'▶ Listen to selection'}</button><button type="button" disabled={!previewPlaying||previewShort!==t.slotId||!!busy} onClick={()=>stopAndSetEnd(t)}>■ Stop & Set End</button></div>
       <div aria-label={`${t.slotId} draggable audio selection`} style={{position:'relative',height:46,margin:'14px 8px',touchAction:'none',userSelect:'none'}}>
        <div style={{position:'absolute',left:0,right:0,top:19,height:8,borderRadius:5,background:'#8886'}}/>
        <div style={{position:'absolute',top:19,height:8,left:`${100*t.start/duration}%`,width:`${100*(t.end-t.start)/duration}%`,background:'#16a34a',borderRadius:4,pointerEvents:'none'}}/>
