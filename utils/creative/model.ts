@@ -58,7 +58,8 @@ export function finalAudioKey(audio?:{id?:string;storagePath?:string;updatedAt?:
 }
 export type VideoVersion={id:string;slot:number;source:string;dependencyKey:string};
 export type VideoInventory={versions:VideoVersion[];approved:Record<string,string>};
-export const outputNames=['full',...Array.from({length:6},(_,i)=>`short-${i+1}`)];
+export const outputNames=['full',...Array.from({length:10},(_,i)=>`short-${i+1}`)];
+export const workspaceOutputNames=(w:CreativeWorkspace)=>['full',...w.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number).map(s=>s.id)];
 export function currentVideo(w:CreativeWorkspace,v:VideoVersion,audioKey:string){return v.source==='uploaded'||v.dependencyKey===outputKey(w,v.slot,audioKey);}
 export function suppliedOutput(w:CreativeWorkspace,assets:any,slot:number,videos?:VideoInventory){
  const inventory=videos||assets.creativeVideos;
@@ -84,7 +85,7 @@ export function renderPrerequisite(w:CreativeWorkspace,audio:any,slot:number,dir
 }
 export function videoReadiness(w:CreativeWorkspace,assets:any,videos:VideoInventory,dirtyPlan=false){
  const audioKey=finalAudioKey(assets.audio);
- const outputs=outputNames.map((name,slot)=>{
+ const outputs=workspaceOutputNames(w).map((name,slot)=>{
   const approved=suppliedOutput(w,assets,slot,videos);
   const candidate=videos.versions.filter(v=>v.slot===slot&&currentVideo(w,v,audioKey)).at(-1);
   return {name,slot,approved,candidate,blocker:!approved&&!candidate?renderPrerequisite(w,assets.audio,slot,dirtyPlan):null};
@@ -95,7 +96,7 @@ export function videoReadiness(w:CreativeWorkspace,assets:any,videos:VideoInvent
 // A failed read is unknown, not removal of the master. Refresh only writes real changes.
 export function dependencySyncKeys(w:CreativeWorkspace|undefined,audioResponse:any,videos:{keys?:Record<string,string>}|null){
  if(!audioResponse||!w?.slots.length||!videos)return null;
- const keys=Object.fromEntries(outputNames.map((name,slot)=>[name,outputKey(w,slot,finalAudioKey(audioResponse.asset))]));
+ const keys=Object.fromEntries(workspaceOutputNames(w).map((name,slot)=>[name,outputKey(w,slot,finalAudioKey(audioResponse.asset))]));
  return Object.entries(keys).some(([name,key])=>videos.keys?.[name]!==key)?keys:null;
 }
 
