@@ -9,11 +9,12 @@ export type AudioAnalysis = {duration:number; energy:Array<{time:number; rms:num
 export type CreativeWorkspace = {subtitleContext?:{identity:VisualIdentity;cueContext:LyricCueContext};lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
 export const emptyWorkspace = ():CreativeWorkspace=>({revision:0,instructions:'',bible:'',slots:[]});
 export function lyricSections(lyrics:string) {return [...lyrics.matchAll(/^\s*\[([^\]]+)\]/gm)].map(m=>m[1]);}
-export function makeSlots(duration:number,lyrics:string):VisualSlot[] {
+export function makeSlots(duration:number,lyrics:string,shortCount=6):VisualSlot[] {
+ if(!Number.isInteger(shortCount)||shortCount<1||shortCount>10)throw Error('Choose between 1 and 10 Shorts.');
  const sections=lyricSections(lyrics);const count=Math.max(1,Math.min(24,Math.max(sections.length,Math.ceil(duration/30))));
  return [
   ...Array.from({length:count},(_,i)=>({kind:'scene' as const,id:`scene-${i+1}`,number:i+1,label:sections[i]||`Scene ${i+1}`})),
-  ...Array.from({length:6},(_,i)=>({kind:'short' as const,id:`short-${i+1}`,number:i+1,label:`Short ${i+1}`})),
+  ...Array.from({length:shortCount},(_,i)=>({kind:'short' as const,id:`short-${i+1}`,number:i+1,label:`Short ${i+1}`})),
   {kind:'cover' as const,id:'cover',number:1,label:'Cover artwork'}, {kind:'thumbnail' as const,id:'thumbnail',number:1,label:'YouTube thumbnail'},
  ].map(s=>({...s,prompt:`${s.label}: a distinct cinematic moment inspired by the song.`,candidates:[]}));
 }
@@ -22,7 +23,7 @@ export function proposePlan(slots:VisualSlot[],analysis:AudioAnalysis,lyrics:str
  const length=Math.min(22,duration); const maxStart=Math.max(0,duration-length);
  const boundaries=[0];for(let i=1;i<scenes.length;i++){const expected=duration*i/scenes.length,radius=Math.min(8,duration/scenes.length/4);const quiet=energy.filter(e=>Math.abs(e.time-expected)<=radius&&e.time>boundaries[i-1]+1).sort((a,b)=>a.rms-b.rms)[0];boundaries.push(Math.round((quiet?.time??expected)*100)/100);}boundaries.push(duration);
  return {approved:false,scenes:scenes.map((s,i)=>({slotId:s.id,start:boundaries[i],end:boundaries[i+1],label:labels[i]||s.label})),shorts:slots.filter(s=>s.kind==='short').map((s,i)=>{
-  const anchor=maxStart*i/5;const radius=maxStart/12;
+  const count=slots.filter(s=>s.kind==='short').length;const anchor=maxStart*i/Math.max(1,count-1);const radius=maxStart/Math.max(2,count*2);
   const best=energy.filter(x=>Math.abs(x.time-anchor)<=radius&&x.time<=maxStart).sort((a,b)=>b.rms-a.rms)[0];
   const start=Math.round((best?.time??anchor)*100)/100;
   return {slotId:s.id,start,end:Math.min(duration,start+length),label:`Energy suggestion ${i+1} — review by listening`};
@@ -31,7 +32,8 @@ export function proposePlan(slots:VisualSlot[],analysis:AudioAnalysis,lyrics:str
 export function validatePlan(w:CreativeWorkspace) {
  if(!w.plan||!w.analysis||!(w.analysis.duration>0))throw Error('Analyse the final audio and create a plan first.');
  const scenes=w.slots.filter(s=>s.kind==='scene');
- if(w.plan.scenes.length!==scenes.length||w.plan.shorts.length!==6)throw Error('Plan needs every scene and exactly six Shorts.');
+ const shorts=w.slots.filter(s=>s.kind==='short');
+ if(shorts.length<1||shorts.length>10||w.plan.scenes.length!==scenes.length||w.plan.shorts.length!==shorts.length)throw Error('Plan needs every scene and each configured Short (1–10).');
  for(const [kind,rows] of [['scene',w.plan.scenes],['short',w.plan.shorts]] as const){
   if(new Set(rows.map(r=>r.slotId)).size!==rows.length)throw Error('Each slot must appear once.');
   rows.forEach((r,i)=>{
@@ -43,7 +45,7 @@ export function validatePlan(w:CreativeWorkspace) {
  if(Math.abs(w.plan.scenes.at(-1)!.end-w.analysis.duration)>.05)throw Error('Full-video plan must cover the complete song.');
 }
 export function approvedCandidate(s:VisualSlot){return s.candidates.find(c=>c.id===s.approvedId);}
-export function visualsComplete(w:CreativeWorkspace){return w.slots.length>0&&w.slots.filter(s=>s.kind==='short').length===6&&w.slots.every(s=>!!approvedCandidate(s));}
+export function visualsComplete(w:CreativeWorkspace){const count=w.slots.filter(s=>s.kind==='short').length;return count>=1&&count<=10&&w.slots.every(s=>!!approvedCandidate(s));}
 // Stable dependency keys exclude signed URLs, draft prompts and unrelated slots.
 export function outputKey(w:CreativeWorkspace,slot:number,audioKey:string) {
  const timings=slot===0?w.plan?.scenes:w.plan?.shorts.filter(t=>t.slotId===`short-${slot}`);
