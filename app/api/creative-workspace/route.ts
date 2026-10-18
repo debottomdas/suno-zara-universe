@@ -72,6 +72,16 @@ export async function POST(req:Request){
    const duration=Number(body.duration);if(!Number.isFinite(duration)||duration<8||duration>3600)throw Error('Choose final audio between 8 seconds and 60 minutes.');
    if(w.slots.length)throw Error('Workspace already exists. Existing versions are preserved.');
    w.slots=makeSlots(duration,song.lyrics||'');w.audioKey=text(body.audioKey);w.instructions=text(body.instructions);
+  }else if(action==='short-image-sequence'){
+   const slotId=text(body.slotId);
+   if(!w.slots.some(slot=>slot.kind==='short'&&slot.id===slotId))throw Error('Choose a configured Short.');
+   const ids=body.candidateIds;
+   if(!Array.isArray(ids)||ids.length<1||ids.length>20||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 20 images in order.');
+   for(const id of ids){
+    const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));
+    if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');
+   }
+   w.shortImageSequences={...(w.shortImageSequences||{}),[slotId]:ids};
   }else if(action==='short-count'){
    const count=Number(body.count);
    if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
