@@ -24,3 +24,8 @@ Implement configurable 1–10 Shorts with default six, independent timing/visual
 - `7db14d9`: creative readiness and dependency-sync keys use configured Short slots.
 - `0ed6839`: 1–10 Shorts selector and dynamic creative video cards in CreativeStudio.
 - **Not yet tested**: build, live Mac run, local worker sync and full end-to-end. **Not complete**: YouTube/Buffer selected-only publishing, release readiness, social metadata and scheduling; current publisher still hard-codes six. Do not merge/deploy or treat flexible Shorts as production-ready.
+
+## Shorts batch production (2026-10-18)
+- `be0286f`: Video & Shorts UI now supports selecting individual, multiple or all configured Shorts and rendering sequentially, with progress, per-slot error collection and saved-version review. No automatic approval/publishing.
+- **Important gap**: current renderer uses one approved image per Short; configurable ordered multiple-image sequences per Short are **not implemented**. User explicitly requires this before publishing. Do not mark Shorts production complete until image-sequence model, UI, render inputs and worker behavior are integrated and tested.
+- No Mac build or integration tests run; verify TypeScript and worker on local Mac. Selective publishing remains deferred.
