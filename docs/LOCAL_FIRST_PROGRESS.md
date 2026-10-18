@@ -36,3 +36,10 @@ Implement configurable 1–10 Shorts with default six, independent timing/visual
 - `c50fef5`: per-Short image sequence editor (add/reorder/remove), renderer passes ordered image URLs.
 - `cf79c3c`: creative Short renderer consumes each supplied image in sequence with equal duration; existing non-creative Shorts behavior unchanged.
 - **Still unverified**: TypeScript build, local worker render, image URL hydration and persistence on Mac. Transitions currently follow worker/channel finishing settings; there is no per-cut transition editor. Do not claim end-to-end success until tests pass. Selected-only publishing still not implemented.
+
+## Verification attempt and blockers (2026-10-18)
+- Static source review found worker `/creative/sync` still enforced exactly seven keys. Fixed at `9161ccf` to allow full + 1–10 Shorts. Approved media request slot validation expanded to ten.
+- Worker `creative-versions.mjs` still capped slots at six. Fixed at `4f2baab` to allow Short 7–10 and avoid invalidating slots omitted from current dependency sync.
+- GitHub/Vercel combined status for latest commit was **pending**, not passing, when checked.
+- No direct access to user's Mac `~/Downloads/sunozara-universe`, local worker, source audio or uploaded image files from this environment. Thus **no npm build, real FFmpeg render, branding review, restart-persistence or batch test was executed**. User must run local commands or provide logs; do not claim verification complete.
+- Next verification: `git pull`, `npm run build`, `npm run universe`, local single 3-image Short render, 3-Short batch, approval and restart test. Do not publish.
