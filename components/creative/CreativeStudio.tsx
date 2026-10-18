@@ -21,6 +21,9 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  const [selectedShorts,setSelectedShorts]=useState<number[]>([]);
  const [cinematic,setCinematic]=useState<{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number}>({mode:'basic',warmth:0.55,contrast:0.25,softness:0.2});
  const [showStylePreview,setShowStylePreview]=useState(false);
+ useEffect(()=>{try{const raw=window.localStorage.getItem(`szu-cinematic-${projectId}`);if(raw){const parsed=JSON.parse(raw);if((parsed.mode==='basic'||parsed.mode==='romantic')&&['warmth','contrast','softness'].every(k=>typeof parsed[k]==='number'&&parsed[k]>=0&&parsed[k]<=1))setCinematic(parsed);}}catch{}},[projectId]);
+ function updateCinematic(next:{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number}){setCinematic(next);try{window.localStorage.setItem(`szu-cinematic-${projectId}`,JSON.stringify(next));}catch{}}
+
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
  const operation=useRef(false),active=useRef(true);
  const [batchProgress,setBatchProgress]=useState<{action:string;complete:number;total:number}|null>(null),[batchNeedsReload,setBatchNeedsReload]=useState(false);
@@ -340,9 +343,9 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
     </details>;})}</section>
     <section className={styles.panel} aria-label="Video cinematic direction">
       <h3>3 · Video direction</h3><p>Choose Basic (original renderer) or Romantic Cinematic. This affects new renders only; previously generated and approved videos remain available.</p>
-      <label>Video style <select value={cinematic.mode} disabled={!!busy} onChange={e=>setCinematic(p=>({...p,mode:e.target.value==='romantic'?'romantic':'basic'}))}><option value="basic">Basic · original</option><option value="romantic">Romantic Cinematic · warm and soft</option></select></label>
+      <label>Video style <select value={cinematic.mode} disabled={!!busy} onChange={e=>updateCinematic({...cinematic,mode:e.target.value==='romantic'?'romantic':'basic'})}><option value="basic">Basic · original</option><option value="romantic">Romantic Cinematic · warm and soft</option></select></label>
       {cinematic.mode==='romantic'&&<div>
-        {(['warmth','contrast','softness'] as const).map(key=><label key={key} style={{display:'block',margin:'10px 0'}}>{key[0].toUpperCase()+key.slice(1)} · {Math.round(cinematic[key]*100)}% <input aria-label={`Cinematic ${key}`} type="range" min={0} max={1} step={0.05} value={cinematic[key]} onChange={e=>setCinematic(p=>({...p,[key]:Number(e.target.value)}))} style={{width:'100%'}}/></label>)}
+        {(['warmth','contrast','softness'] as const).map(key=><label key={key} style={{display:'block',margin:'10px 0'}}>{key[0].toUpperCase()+key.slice(1)} · {Math.round(cinematic[key]*100)}% <input aria-label={`Cinematic ${key}`} type="range" min={0} max={1} step={0.05} value={cinematic[key]} onChange={e=>updateCinematic({...cinematic,[key]:Number(e.target.value)})} style={{width:'100%'}}/></label>)}
       </div>}
       <button type="button" onClick={()=>setShowStylePreview(p=>!p)}>{showStylePreview?'Hide':'Show'} style preview</button>
       {showStylePreview&&<div style={{display:'flex',gap:12,flexWrap:'wrap',marginTop:12}}>
