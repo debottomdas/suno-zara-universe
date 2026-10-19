@@ -13,7 +13,7 @@ type Videos={versions:Version[];approved:Record<string,string>;keys:Record<strin
 const outputNamesFor=(w:CreativeWorkspace)=>['full',...w.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number).map(s=>s.id)];
 async function json(url:string,options?:RequestInit){let r:Response;try{r=await fetch(url,options);}catch{throw Error(url.startsWith(WORKER)?'Your saved videos are temporarily unavailable. Reconnect and try again; your saved work and approvals are preserved.':'Cannot reach Universe. Check the connection and reload the saved workspace.');}const d=await r.json();if(!r.ok)throw Error(d.error||`Request failed (${r.status})`);return d;}
 const post=(url:string,body:unknown)=>json(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,busy}:{workspace:CreativeWorkspace;audioUrl:string;onSequence:(slot:number,ids:string[])=>Promise<void>;onUpload:(slotId:string,file:File)=>Promise<void>;busy:boolean}){
+function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUpload,busy}:{workspace:CreativeWorkspace;audioUrl:string;onSequence:(slot:number,ids:string[])=>Promise<void>;onUpload:(slotId:string,file:File)=>Promise<void>;onBulkUpload:(slot:number,files:File[])=>Promise<void>;busy:boolean}){
  const [slot,setSlot]=useState(0);
  const [clock,setClock]=useState(0);
  const [playing,setPlaying]=useState(false);
@@ -54,6 +54,10 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,busy}:{w
   </div>
   <div style={{marginTop:12}}>
    <h4>Timeline images</h4>
+   <label style={{display:'block',margin:'10px 0'}}>Upload all images together (PNG, JPG, WEBP; 20 MB each)
+    <input aria-label="Bulk upload timeline images" type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value='';if(files.length)void onBulkUpload(slot,files).catch(err=>setEditError(String(err)));}}/>
+   </label>
+   <p style={{fontSize:12}}>{slot===0?'For full video, files are assigned in selected order to consecutive scene slots. Review and approve each image before rendering.':'For Shorts, uploaded images are added to this Short’s sequence in selected order. Drag them into your preferred order afterwards.'}</p>
    <p>Drag Short images to reorder them, or use the move buttons. Upload a replacement to a full-video scene or Short image slot; uploaded images remain unapproved until reviewed.</p>
    {slot!==0&&<label>Add saved image <select disabled={busy||sequence.length>=20} value="" onChange={e=>{if(!e.target.value)return;void onSequence(slot,[...sequence,e.target.value]).catch(err=>setEditError(String(err)));}}><option value="">Choose an image…</option>{workspace.slots.filter(x=>x.kind==='scene'||x.kind==='short').flatMap(x=>x.candidates.map(c=><option key={c.id} value={c.id}>{x.label} · {c.id.slice(0,8)}</option>))}</select></label>}
    <div style={{display:'flex',gap:8,overflowX:'auto',padding:'10px 0'}}>
@@ -396,7 +400,27 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
      <div className={styles.actions}><button disabled={!!busy||!dirtyPlan} onClick={()=>void run('Saving Short clips',()=>change('plan',{...planDraft,approve:false}))}>Save clip selections</button><button disabled={!!busy} onClick={()=>void run('Approving Short clips',()=>change('plan',{...planDraft,approve:true}))}>Save & approve Video Plan</button></div>
      {dirtyPlan&&<p role="status">Unsaved timing changes. Rendering is blocked until you save and approve the updated plan.</p>}
     </section>}
-    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""} busy={!!busy} onSequence={async(slot,ids)=>{await run('Updating timeline images',()=>change('short-image-sequence',{slotId:`short-${slot}`,candidateIds:ids}));}} onUpload={async(slotId,file)=>{const target=w.slots.find(s=>s.id===slotId);if(!target)throw Error('Image slot not found');await run('Uploading timeline image',async()=>{await uploadImage(target,file);const fresh=await json(`/api/creative-workspace?projectId=${encodeURIComponent(projectId)}`);accept(fresh.workspace);onRefresh();});}}/>
+    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""} busy={!!busy} onSequence={async(slot,ids)=>{await run('Updating timeline images',()=>change('short-image-sequence',{slotId:`short-${slot}`,candidateIds:ids}));}} onBulkUpload={async(slot,files)=>{await run('Uploading timeline images',async()=>{
+  if(files.some(file=>!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size<=0||file.size>20*1024*1024))throw Error('Select PNG, JPG or WEBP files up to 20 MB each.');
+  const destinations=slot===0?w.slots.filter(s=>s.kind==='scene'):w.slots.filter(s=>s.id===`short-${slot}`);
+  if(!destinations.length)throw Error('No image destinations available.');
+  if(slot===0&&files.length>destinations.length)throw Error(`This full video has ${destinations.length} scene slots. Upload up to ${destinations.length} images per batch.`);
+  if(slot!==0&&files.length+(w.shortImageSequences?.[`short-${slot}`]?.length||0)>20)throw Error('A Short can contain at most 20 timeline images.');
+  let current=w;const uploadedIds:string[]=[];
+  for(let i=0;i<files.length;i++){
+   const file=files[i],target=destinations[slot===0?i:0];
+   const prepared=await post('/api/creative-workspace',{projectId,revision:current.revision,action:'prepare-upload',slotId:target.id,mimeType:file.type,size:file.size});
+   if(prepared.localMode){const response=await fetch(prepared.upload.uploadUrl,{method:'PUT',headers:{'Content-Type':file.type},body:file});if(!response.ok)throw Error(`Upload failed for ${file.name}`);}
+   else{const {error}=await createClient().storage.from(prepared.upload.bucket).uploadToSignedUrl(prepared.upload.storagePath,prepared.upload.token,file,{contentType:file.type});if(error)throw Error(error.message);}
+   const before=new Set(current.slots.find(s=>s.id===target.id)?.candidates.map(c=>c.id)||[]);
+   current=await command('register-upload',{slotId:target.id,storagePath:prepared.upload.storagePath},current.revision);
+   const added=current.slots.find(s=>s.id===target.id)?.candidates.find(c=>!before.has(c.id));
+   if(!added)throw Error(`Uploaded ${file.name}, but could not locate its saved image version.`);
+   uploadedIds.push(added.id);
+  }
+  if(slot!==0&&uploadedIds.length)current=await command('short-image-sequence',{slotId:`short-${slot}`,candidateIds:[...(current.shortImageSequences?.[`short-${slot}`]||[]),...uploadedIds]},current.revision);
+  await sync(current);onRefresh();setMessage(`${uploadedIds.length} images uploaded. ${slot===0?'Review and approve scene images.':'Drag to rearrange your Short images.'}`);
+ });}} onUpload={async(slotId,file)=>{const target=w.slots.find(s=>s.id===slotId);if(!target)throw Error('Image slot not found');await run('Uploading timeline image',async()=>{await uploadImage(target,file);const fresh=await json(`/api/creative-workspace?projectId=${encodeURIComponent(projectId)}`);accept(fresh.workspace);onRefresh();});}}/>
     <section className={styles.panel} aria-label="Short image sequences"><h3>2 · Choose images for each Short</h3><p>Add saved scene or Short images in playback order. Each image gets an equal share of the Short duration. Changes affect only that Short; previous video versions are preserved.</p>
     {shortNumbers.map(slot=>{const id=`short-${slot}`,ids=w.shortImageSequences?.[id]||[],candidates=w.slots.filter(s=>s.kind==='scene'||s.kind==='short').flatMap(s=>s.candidates.map((c,i)=>({id:c.id,label:`${s.label} · version ${i+1}`})));return <details key={id}><summary>Short {slot} · {ids.length?ids.length+' selected images':'Default approved image'}</summary>
       <ol>{ids.map((candidateId,index)=><li key={index}>{candidates.find(c=>c.id===candidateId)?.label||'Unavailable image'} <button disabled={!!busy||index===0} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index-1?ids[index]:i===index?ids[index-1]:x)}))}>↑</button><button disabled={!!busy||index===ids.length-1} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index+1?ids[index]:i===index?ids[index+1]:x)}))}>↓</button><button disabled={!!busy||ids.length===1} onClick={()=>void run('Removing image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.filter((_,i)=>i!==index)}))}>Remove</button></li>)}</ol>
