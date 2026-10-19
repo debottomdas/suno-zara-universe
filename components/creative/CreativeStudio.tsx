@@ -19,6 +19,9 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const [playing,setPlaying]=useState(false);
  const [dragIndex,setDragIndex]=useState<number|null>(null);
  const [editError,setEditError]=useState('');
+ const [dropActive,setDropActive]=useState(false);
+ const [dropNotice,setDropNotice]=useState('');
+ const dropDepth=useRef(0);
  const audio=useRef<HTMLAudioElement|null>(null);
  const duration=workspace.analysis?.duration||0;
  const shorts=workspace.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number);
@@ -30,6 +33,16 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const sequence=slot===0?workspace.fullImageSequence||[]:workspace.shortImageSequences?.[`short-${slot}`]||[];
  const segments=slot===0?chosen.map((t,i)=>({start:t.start,end:t.end,label:t.label,url:sequence.length?candidates.find(c=>c.id===sequence[i])?.url||'':approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''})):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
  const active=segments.find(x=>clock>=x.start&&clock<x.end)||segments[0];
+ function uploadDroppedFiles(files:File[]){
+  if(busy)return;
+  const images=files.filter(file=>['image/jpeg','image/png','image/webp'].includes(file.type));
+  if(images.length!==files.length){setEditError('Only JPG, PNG and WebP images can be dropped here.');return;}
+  if(!images.length)return;
+  const unique=images.filter((file,index)=>images.findIndex(other=>other.name===file.name&&other.size===file.size&&other.lastModified===file.lastModified)===index);
+  setEditError('');
+  setDropNotice(`Uploading ${unique.length} image${unique.length===1?'':'s'} to ${slot===0?'Full video':`Short ${slot}`}…`);
+  void onBulkUpload(slot,unique).then(()=>setDropNotice(`${unique.length} image${unique.length===1?'':'s'} uploaded. Arrange them below.`)).catch(error=>{setDropNotice('');setEditError(error instanceof Error?error.message:String(error));});
+ }
  function seek(t:number){const v=Math.max(rangeStart,Math.min(rangeEnd,t));setClock(v);if(audio.current)audio.current.currentTime=v;}
  useEffect(()=>{audio.current?.pause();setPlaying(false);setClock(slot===0?0:(workspace.plan?.shorts.find(t=>t.slotId===`short-${slot}`)?.start||0));},[slot,workspace.plan]);
  const stamp=(t:number)=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
@@ -54,9 +67,12 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
   </div>
   <div style={{marginTop:12}}>
    <h4>Timeline images</h4>
-   <label style={{display:'block',margin:'10px 0'}}>Upload all images together (PNG, JPG, WEBP; 20 MB each)
-    <input aria-label="Bulk upload timeline images" type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value='';if(files.length)void onBulkUpload(slot,files).catch(err=>setEditError(String(err)));}}/>
-   </label>
+   <div role="group" aria-label="Drop images to upload" onDragEnter={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();dropDepth.current+=1;setDropActive(true);}} onDragOver={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();e.dataTransfer.dropEffect=busy?'none':'copy';}} onDragLeave={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();dropDepth.current=Math.max(0,dropDepth.current-1);if(dropDepth.current===0)setDropActive(false);}} onDrop={e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();e.stopPropagation();dropDepth.current=0;setDropActive(false);uploadDroppedFiles(Array.from(e.dataTransfer.files));}} style={{border:dropActive?'3px dashed #8a65d6':'2px dashed #8290a3',background:dropActive?'rgba(138,101,214,.14)':'transparent',borderRadius:12,padding:20,textAlign:'center',margin:'12px 0'}}>
+    <strong>{dropActive?'Release to upload images':'Drag images here from Finder'}</strong>
+    <p style={{fontSize:12}}>Drop multiple JPG, PNG or WebP files (20 MB each) into {slot===0?'Full video':`Short ${slot}`}. You can still use the file picker.</p>
+    <label style={{display:'inline-block'}}>Choose images <input aria-label="Bulk upload timeline images" type="file" multiple accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const files=Array.from(e.currentTarget.files||[]);e.currentTarget.value='';uploadDroppedFiles(files);}}/></label>
+    {dropNotice&&<p role="status">{dropNotice}</p>}
+   </div>
    <p style={{fontSize:12}}>{slot===0?'For full video, files are assigned in selected order to consecutive scene slots. Review and approve each image before rendering.':'For Shorts, uploaded images are added to this Short’s sequence in selected order. Drag them into your preferred order afterwards.'}</p>
    <p>Drag Short images to reorder them, or use the move buttons. Upload a replacement to a full-video scene or Short image slot; uploaded images remain unapproved until reviewed.</p>
    {slot!==0&&<label>Add saved image <select disabled={busy||sequence.length>=20} value="" onChange={e=>{if(!e.target.value)return;void onSequence(slot,[...sequence,e.target.value]).catch(err=>setEditError(String(err)));}}><option value="">Choose an image…</option>{workspace.slots.filter(x=>x.kind==='scene'||x.kind==='short').flatMap(x=>x.candidates.map(c=><option key={c.id} value={c.id}>{x.label} · {c.id.slice(0,8)}</option>))}</select></label>}
