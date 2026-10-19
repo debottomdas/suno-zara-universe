@@ -79,13 +79,13 @@ export async function POST(req:Request){
    if(!Array.isArray(ids)||ids.length<1||ids.length>20||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 20 images in order.');
    for(const id of ids){
     const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));
-    if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');
+    if(!source||source.kind!=='short')throw Error('Choose portrait images from the Shorts library.');
    }
    w.shortImageSequences={...(w.shortImageSequences||{}),[slotId]:ids};
   }else if(action==='full-image-sequence'){
    const ids=body.candidateIds;
    if(!Array.isArray(ids)||ids.length<1||ids.length>100||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 100 timeline images.');
-   for(const id of ids){const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');}
+   for(const id of ids){const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));if(!source||source.kind!=='scene')throw Error('Choose landscape images from the Full Video library.');}
    const duration=w.analysis?.duration;
    if(!duration)throw Error('Analyse the final song before editing the timeline.');
    const proposed=body.durations;
@@ -93,6 +93,18 @@ export async function POST(req:Request){
    if(timings.length!==ids.length||timings.some(x=>!Number.isFinite(x)||x<0.25)||Math.abs(timings.reduce((a,b)=>a+b,0)-duration)>.05)throw Error('Timeline durations must cover the whole song with at least 0.25 seconds per image.');
    w.fullImageSequence=ids;
    w.fullImageDurations=timings;
+  }else if(action==='copy-to-image-library'){
+   const targetKind=body.targetKind;
+   if(targetKind!=='scene'&&targetKind!=='short')throw Error('Choose Full Video or Shorts as the destination.');
+   const source=w.slots.find(s=>s.candidates.some(c=>c.id===body.candidateId));
+   if(!source||(source.kind!=='scene'&&source.kind!=='short'))throw Error('Choose an image from the video libraries.');
+   if(source.kind===targetKind)throw Error('This image is already in the selected library.');
+   const target=w.slots.find(s=>s.kind===targetKind);
+   if(!target)throw Error('Destination library is not configured.');
+   const original=source.candidates.find(c=>c.id===body.candidateId)!;
+   const {data,error}=await db.storage.from(bucket).download(original.storagePath);
+   if(error||!data)throw Error('Original image unavailable.');
+   await addImage(Buffer.from(await data.arrayBuffer()),target,'derived',`Copied from ${source.kind} library`);
   }else if(action==='short-count'){
    const count=Number(body.count);
    if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
