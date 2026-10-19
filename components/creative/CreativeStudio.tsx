@@ -27,8 +27,8 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const rangeEnd=slot===0?duration:(chosen[0]?.end||duration);
  const span=Math.max(0.1,rangeEnd-rangeStart);
  const candidates=workspace.slots.flatMap(s=>s.candidates);
- const sequence=slot===0?[]:workspace.shortImageSequences?.[`short-${slot}`]||[];
- const segments=slot===0?chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''})):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
+ const sequence=slot===0?workspace.fullImageSequence||[]:workspace.shortImageSequences?.[`short-${slot}`]||[];
+ const segments=slot===0?chosen.map((t,i)=>({start:t.start,end:t.end,label:t.label,url:sequence.length?candidates.find(c=>c.id===sequence[i])?.url||'':approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''})):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
  const active=segments.find(x=>clock>=x.start&&clock<x.end)||segments[0];
  function seek(t:number){const v=Math.max(rangeStart,Math.min(rangeEnd,t));setClock(v);if(audio.current)audio.current.currentTime=v;}
  useEffect(()=>{audio.current?.pause();setPlaying(false);setClock(slot===0?0:(workspace.plan?.shorts.find(t=>t.slotId===`short-${slot}`)?.start||0));},[slot,workspace.plan]);
@@ -60,12 +60,13 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
    <p style={{fontSize:12}}>{slot===0?'For full video, files are assigned in selected order to consecutive scene slots. Review and approve each image before rendering.':'For Shorts, uploaded images are added to this Short’s sequence in selected order. Drag them into your preferred order afterwards.'}</p>
    <p>Drag Short images to reorder them, or use the move buttons. Upload a replacement to a full-video scene or Short image slot; uploaded images remain unapproved until reviewed.</p>
    {slot!==0&&<label>Add saved image <select disabled={busy||sequence.length>=20} value="" onChange={e=>{if(!e.target.value)return;void onSequence(slot,[...sequence,e.target.value]).catch(err=>setEditError(String(err)));}}><option value="">Choose an image…</option>{workspace.slots.filter(x=>x.kind==='scene'||x.kind==='short').flatMap(x=>x.candidates.map(c=><option key={c.id} value={c.id}>{x.label} · {c.id.slice(0,8)}</option>))}</select></label>}
+   {slot===0&&<button type="button" disabled={busy||workspace.slots.filter(s=>s.kind==='scene').some(s=>!approvedCandidate(s))} onClick={()=>{const ids=workspace.plan?.scenes.map(t=>approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.id||'')||[];if(ids.length)void onSequence(0,ids).catch(err=>setEditError(String(err)));}}>Enable full-video drag-and-drop using approved scene images</button>}
    <div style={{display:'flex',gap:8,overflowX:'auto',padding:'10px 0'}}>
-    {segments.map((part,i)=><div key={i} draggable={slot!==0&&sequence.length>1&&!busy} onDragStart={()=>setDragIndex(i)} onDragOver={e=>{if(slot!==0)e.preventDefault();}} onDrop={e=>{e.preventDefault();if(dragIndex===null||slot===0||dragIndex===i||!sequence.length)return;const next=[...sequence];const [moved]=next.splice(dragIndex,1);next.splice(i,0,moved);setDragIndex(null);void onSequence(slot,next).catch(err=>setEditError(String(err)));}} onDragEnd={()=>setDragIndex(null)} style={{minWidth:135,border:'1px solid #888',borderRadius:8,padding:8}}>
+    {segments.map((part,i)=><div key={i} draggable={sequence.length>1&&!busy} onDragStart={()=>setDragIndex(i)} onDragOver={e=>{if(sequence.length)e.preventDefault();}} onDrop={e=>{e.preventDefault();if(dragIndex===null||dragIndex===i||!sequence.length)return;const next=[...sequence];const [moved]=next.splice(dragIndex,1);next.splice(i,0,moved);setDragIndex(null);void onSequence(slot,next).catch(err=>setEditError(String(err)));}} onDragEnd={()=>setDragIndex(null)} style={{minWidth:135,border:'1px solid #888',borderRadius:8,padding:8}}>
       {part.url&&<img src={part.url} alt={part.label} style={{width:118,height:75,objectFit:'cover'}}/>}
       <div style={{fontSize:12}}>{part.label}</div>
       <div style={{fontSize:11}}>{stamp(part.start)}–{stamp(part.end)}</div>
-      {slot!==0&&sequence.length>0&&<div style={{display:'flex',gap:4}}>
+      {sequence.length>0&&<div style={{display:'flex',gap:4}}>
        <button type="button" disabled={busy||i===0} onClick={()=>{const next=[...sequence];[next[i-1],next[i]]=[next[i],next[i-1]];void onSequence(slot,next).catch(err=>setEditError(String(err)));}}>←</button>
        <button type="button" disabled={busy||i===sequence.length-1} onClick={()=>{const next=[...sequence];[next[i+1],next[i]]=[next[i],next[i+1]];void onSequence(slot,next).catch(err=>setEditError(String(err)));}}>→</button>
        <button type="button" disabled={busy||sequence.length===1} onClick={()=>void onSequence(slot,sequence.filter((_,j)=>j!==i)).catch(err=>setEditError(String(err)))}>Remove</button>
@@ -172,7 +173,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
    const prerequisite=renderPrerequisite(current,assets.audio,slot,dirtyPlan);if(prerequisite)throw Error(prerequisite.message);
   const timings=slot===0?w.plan!.scenes:w.plan!.shorts.filter(t=>t.slotId===`short-${slot}`);
   const selected=timings.map(t=>({t,s:w.slots.find(s=>s.id===t.slotId)!}));
-  const sequenceIds=slot?(w.shortImageSequences?.[`short-${slot}`]||[]):[];
+  const sequenceIds=slot?(w.shortImageSequences?.[`short-${slot}`]||[]):(w.fullImageSequence||[]);
   if(!sequenceIds.length&&selected.some(({s})=>!approvedCandidate(s)))throw Error('Approve the required visual first.');
   const orderedImages=sequenceIds.map(id=>w.slots.flatMap(s=>s.candidates).find(c=>c.id===id));
   if(sequenceIds.length&&orderedImages.some(c=>!c?.url))throw Error('A selected image is unavailable. Reload the workspace.');
@@ -182,7 +183,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
    for(const [key,value] of Object.entries(expectedSubtitles))if(JSON.stringify(finishing[key])!==JSON.stringify(value))throw Error('Subtitle inputs changed. Reload before rendering.');
    if(finishing.channelId!==(w.channelBranding as any)?.channelId||finishing.dnaRevision!==(w.channelBranding as any)?.dnaRevision)throw Error('Channel DNA changed. Reload before rendering.');
   await sync(current);
-  await post(`${WORKER}/creative/render`,{finishing,cinematic,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:sequenceIds.length?orderedImages.map((c,i)=>({url:c!.url,format:'vertical',mediaType:'image',imageNumber:i+1})):selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});
+  await post(`${WORKER}/creative/render`,{finishing,cinematic,projectId,title,slot,audioUrl:assets.audio?.url,durationSeconds:w.analysis!.duration,dependencyKey:outputKey(w,slot,audioKey),visuals:sequenceIds.length?orderedImages.map((c,i)=>({url:c!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:i+1})):selected.map(({s})=>({url:approvedCandidate(s)!.url,format:slot===0?'landscape':'vertical',mediaType:'image',imageNumber:s.number})),sceneDurations:timings.map(t=>t.end-t.start),highlight:slot?{startSeconds:timings[0].start,endSeconds:timings[0].end}:undefined});
   await loadVideos();setMessage('New video ready for review. Your previous approved version is preserved.');
  }
  async function uploadVideo(slot:number,file:File){
@@ -400,7 +401,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
      <div className={styles.actions}><button disabled={!!busy||!dirtyPlan} onClick={()=>void run('Saving Short clips',()=>change('plan',{...planDraft,approve:false}))}>Save clip selections</button><button disabled={!!busy} onClick={()=>void run('Approving Short clips',()=>change('plan',{...planDraft,approve:true}))}>Save & approve Video Plan</button></div>
      {dirtyPlan&&<p role="status">Unsaved timing changes. Rendering is blocked until you save and approve the updated plan.</p>}
     </section>}
-    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""} busy={!!busy} onSequence={async(slot,ids)=>{await run('Updating timeline images',()=>change('short-image-sequence',{slotId:`short-${slot}`,candidateIds:ids}));}} onBulkUpload={async(slot,files)=>{await run('Uploading timeline images',async()=>{
+    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""} busy={!!busy} onSequence={async(slot,ids)=>{await run('Updating timeline images',()=>change(slot===0?'full-image-sequence':'short-image-sequence',slot===0?{candidateIds:ids}:{slotId:`short-${slot}`,candidateIds:ids}));}} onBulkUpload={async(slot,files)=>{await run('Uploading timeline images',async()=>{
   if(files.some(file=>!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size<=0||file.size>20*1024*1024))throw Error('Select PNG, JPG or WEBP files up to 20 MB each.');
   const destinations=slot===0?w.slots.filter(s=>s.kind==='scene'):w.slots.filter(s=>s.id===`short-${slot}`);
   if(!destinations.length)throw Error('No image destinations available.');
@@ -418,8 +419,9 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
    if(!added)throw Error(`Uploaded ${file.name}, but could not locate its saved image version.`);
    uploadedIds.push(added.id);
   }
+  if(slot===0&&uploadedIds.length===destinations.length)current=await command('full-image-sequence',{candidateIds:uploadedIds},current.revision);
   if(slot!==0&&uploadedIds.length)current=await command('short-image-sequence',{slotId:`short-${slot}`,candidateIds:[...(current.shortImageSequences?.[`short-${slot}`]||[]),...uploadedIds]},current.revision);
-  await sync(current);onRefresh();setMessage(`${uploadedIds.length} images uploaded. ${slot===0?'Review and approve scene images.':'Drag to rearrange your Short images.'}`);
+  await sync(current);onRefresh();setMessage(`${uploadedIds.length} images uploaded. ${slot===0?'Drag to rearrange full-video images; review each scene before rendering.':'Drag to rearrange your Short images.'}`);
  });}} onUpload={async(slotId,file)=>{const target=w.slots.find(s=>s.id===slotId);if(!target)throw Error('Image slot not found');await run('Uploading timeline image',async()=>{await uploadImage(target,file);const fresh=await json(`/api/creative-workspace?projectId=${encodeURIComponent(projectId)}`);accept(fresh.workspace);onRefresh();});}}/>
     <section className={styles.panel} aria-label="Short image sequences"><h3>2 · Choose images for each Short</h3><p>Add saved scene or Short images in playback order. Each image gets an equal share of the Short duration. Changes affect only that Short; previous video versions are preserved.</p>
     {shortNumbers.map(slot=>{const id=`short-${slot}`,ids=w.shortImageSequences?.[id]||[],candidates=w.slots.filter(s=>s.kind==='scene'||s.kind==='short').flatMap(s=>s.candidates.map((c,i)=>({id:c.id,label:`${s.label} · version ${i+1}`})));return <details key={id}><summary>Short {slot} · {ids.length?ids.length+' selected images':'Default approved image'}</summary>
