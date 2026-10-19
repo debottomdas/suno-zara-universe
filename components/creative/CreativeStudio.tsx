@@ -13,6 +13,45 @@ type Videos={versions:Version[];approved:Record<string,string>;keys:Record<strin
 const outputNamesFor=(w:CreativeWorkspace)=>['full',...w.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number).map(s=>s.id)];
 async function json(url:string,options?:RequestInit){let r:Response;try{r=await fetch(url,options);}catch{throw Error(url.startsWith(WORKER)?'Your saved videos are temporarily unavailable. Reconnect and try again; your saved work and approvals are preserved.':'Cannot reach Universe. Check the connection and reload the saved workspace.');}const d=await r.json();if(!r.ok)throw Error(d.error||`Request failed (${r.status})`);return d;}
 const post=(url:string,body:unknown)=>json(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+function UnifiedTimelinePreview({workspace,audioUrl}:{workspace:CreativeWorkspace;audioUrl:string}){
+ const [slot,setSlot]=useState(0);
+ const [clock,setClock]=useState(0);
+ const [playing,setPlaying]=useState(false);
+ const audio=useRef<HTMLAudioElement|null>(null);
+ const duration=workspace.analysis?.duration||0;
+ const shorts=workspace.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number);
+ const chosen=slot===0?workspace.plan?.scenes||[]:(workspace.plan?.shorts||[]).filter(t=>t.slotId===`short-${slot}`);
+ const rangeStart=slot===0?0:(chosen[0]?.start||0);
+ const rangeEnd=slot===0?duration:(chosen[0]?.end||duration);
+ const span=Math.max(0.1,rangeEnd-rangeStart);
+ const candidates=workspace.slots.flatMap(s=>s.candidates);
+ const sequence=slot===0?[]:workspace.shortImageSequences?.[`short-${slot}`]||[];
+ const segments=slot===0?chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''})):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
+ const active=segments.find(x=>clock>=x.start&&clock<x.end)||segments[0];
+ function seek(t:number){const v=Math.max(rangeStart,Math.min(rangeEnd,t));setClock(v);if(audio.current)audio.current.currentTime=v;}
+ useEffect(()=>{audio.current?.pause();setPlaying(false);setClock(slot===0?0:(workspace.plan?.shorts.find(t=>t.slotId===`short-${slot}`)?.start||0));},[slot,workspace.plan]);
+ const stamp=(t:number)=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
+ if(!workspace.plan||!audioUrl)return null;
+ return <section className={styles.panel} aria-label="Unified full video and Shorts timeline">
+  <h3>Unified timeline · storyboard playback</h3>
+  <p>Play the song and follow the moving playhead. The image changes at scene boundaries. This is an audio-synchronised storyboard preview, not the rendered video; use the render review to check captions, motion and transitions.</p>
+  <label>Output <select value={slot} onChange={e=>setSlot(Number(e.target.value))}><option value={0}>Full video · 16:9</option>{shorts.map(x=><option key={x.id} value={x.number}>Short {x.number} · 9:16</option>)}</select></label>
+  <div style={{display:'flex',justifyContent:'center',background:'#14151b',padding:12,borderRadius:10,marginTop:12}}>
+   {active?.url?<img src={active.url} alt={active.label} style={{width:slot?'min(100%,220px)':'min(100%,600px)',aspectRatio:slot?'9 / 16':'16 / 9',objectFit:'cover',borderRadius:6}}/>:<div style={{color:'white',padding:40}}>No approved image for this scene yet</div>}
+  </div>
+  <audio ref={audio} src={audioUrl} preload="metadata" onTimeUpdate={e=>{const t=e.currentTarget.currentTime;setClock(t);if(slot!==0&&t>=rangeEnd){e.currentTarget.pause();setPlaying(false);}}} onEnded={()=>setPlaying(false)} onPause={()=>setPlaying(false)}/>
+  <div style={{display:'flex',alignItems:'center',gap:12,margin:'12px 0'}}>
+   <button type="button" onClick={async()=>{const a=audio.current;if(!a)return;if(!a.paused){a.pause();return;}if(a.currentTime<rangeStart||a.currentTime>=rangeEnd)seek(rangeStart);try{await a.play();setPlaying(true);}catch{setPlaying(false);}}}>{playing?'Pause':'Play'}</button>
+   <span>{stamp(clock)} / {stamp(rangeEnd)}</span>
+   <span style={{marginLeft:'auto'}}>Scene: {active?.label||'None'}</span>
+  </div>
+  <input aria-label="Scrub video timeline" type="range" min={rangeStart} max={rangeEnd} step={0.1} value={Math.max(rangeStart,Math.min(rangeEnd,clock))} onChange={e=>seek(Number(e.target.value))} style={{width:'100%'}}/>
+  <div style={{display:'flex',gap:2,width:'100%',minHeight:48,marginTop:8}}>
+   {segments.map((part,i)=><button key={i} type="button" title={`${part.label} · ${stamp(part.start)}–${stamp(part.end)}`} onClick={()=>seek(part.start)} style={{flex:Math.max(0.1,part.end-part.start),minWidth:0,padding:'6px 2px',overflow:'hidden',background:clock>=part.start&&clock<part.end?'#b8a2e8':'#9bb5ce',color:'#17202b',border:'1px solid #657f99',borderRadius:4,fontSize:11}}>{part.label}</button>)}
+  </div>
+  <p style={{fontSize:12}}>Timeline is linked to the saved scene plan and Short image sequences. Edit timings and image order using the existing controls below; playback updates after saving.</p>
+ </section>;
+}
 export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRefresh,onContinue,onNavigate}:{projectId:string;title:string;lyrics:string;stage:'Visuals'|'Video & Shorts';assets:Existing;onRefresh:()=>void;onContinue:()=>void;onNavigate:(stage:'Final Audio'|'Visuals')=>void}){
  const [cueContext,setCueContext]=useState<LyricCueContext|null>(null);
  const [w,setW]=useState<CreativeWorkspace>(emptyWorkspace);const [videos,setVideos]=useState<Videos>({versions:[],approved:{},keys:{}});
@@ -336,6 +375,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
      <div className={styles.actions}><button disabled={!!busy||!dirtyPlan} onClick={()=>void run('Saving Short clips',()=>change('plan',{...planDraft,approve:false}))}>Save clip selections</button><button disabled={!!busy} onClick={()=>void run('Approving Short clips',()=>change('plan',{...planDraft,approve:true}))}>Save & approve Video Plan</button></div>
      {dirtyPlan&&<p role="status">Unsaved timing changes. Rendering is blocked until you save and approve the updated plan.</p>}
     </section>}
+    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""}/>
     <section className={styles.panel} aria-label="Short image sequences"><h3>2 · Choose images for each Short</h3><p>Add saved scene or Short images in playback order. Each image gets an equal share of the Short duration. Changes affect only that Short; previous video versions are preserved.</p>
     {shortNumbers.map(slot=>{const id=`short-${slot}`,ids=w.shortImageSequences?.[id]||[],candidates=w.slots.filter(s=>s.kind==='scene'||s.kind==='short').flatMap(s=>s.candidates.map((c,i)=>({id:c.id,label:`${s.label} · version ${i+1}`})));return <details key={id}><summary>Short {slot} · {ids.length?ids.length+' selected images':'Default approved image'}</summary>
       <ol>{ids.map((candidateId,index)=><li key={index}>{candidates.find(c=>c.id===candidateId)?.label||'Unavailable image'} <button disabled={!!busy||index===0} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index-1?ids[index]:i===index?ids[index-1]:x)}))}>↑</button><button disabled={!!busy||index===ids.length-1} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index+1?ids[index]:i===index?ids[index+1]:x)}))}>↓</button><button disabled={!!busy||ids.length===1} onClick={()=>void run('Removing image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.filter((_,i)=>i!==index)}))}>Remove</button></li>)}</ol>
