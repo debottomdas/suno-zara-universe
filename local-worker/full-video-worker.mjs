@@ -197,6 +197,15 @@ function normalizeVisuals(body) {
   }).slice(0, 40);
 }
 
+function framedLandscapeImageFilter(sceneDuration,frame) {
+  const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
+  const x=Math.max(0,Math.min(100,Number(frame?.x)??50))/100;
+  const y=Math.max(0,Math.min(100,Number(frame?.y)??50))/100;
+  const width=Math.round(1920*zoom/2)*2;
+  const height=Math.round(1080*zoom/2)*2;
+  const fade=Math.min(.45,Math.max(.22,sceneDuration*.035));
+  return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},crop=1920:1080:(iw-ow)*${x.toFixed(4)}:(ih-oh)*${y.toFixed(4)},setsar=1,fps=30,format=yuv420p,fade=t=in:st=0:d=${fade.toFixed(3)},fade=t=out:st=${Math.max(0,sceneDuration-fade).toFixed(3)}:d=${fade.toFixed(3)}`;
+}
 function landscapeImageFilter(sceneDuration, motionIndex) {
   const d = Math.max(1, sceneDuration).toFixed(4);
   const motions = [
@@ -299,7 +308,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   } else {
     await run(ffmpegPath, [
       ...base,
-      "-vf", withTransition(landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
+      "-vf", withTransition(scene.frame?framedLandscapeImageFilter(sceneDuration,scene.frame):landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
       "-an",
       "-c:v", "libx264",
       "-preset", "veryfast",
