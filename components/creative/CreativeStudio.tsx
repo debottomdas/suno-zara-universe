@@ -22,6 +22,7 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const [editError,setEditError]=useState('');
  const [dropActive,setDropActive]=useState(false);
  const [dropNotice,setDropNotice]=useState('');
+ const [libraryOpen,setLibraryOpen]=useState(true);
  const dropDepth=useRef(0);
  const audio=useRef<HTMLAudioElement|null>(null);
  const duration=workspace.analysis?.duration||0;
@@ -76,7 +77,14 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
    {segments.map((part,i)=><button key={i} type="button" title={`${part.label} · ${stamp(part.start)}–${stamp(part.end)}`} onClick={()=>seek(part.start)} style={{flex:Math.max(0.1,part.end-part.start),minWidth:0,padding:'6px 2px',overflow:'hidden',background:clock>=part.start&&clock<part.end?'#b8a2e8':'#9bb5ce',color:'#17202b',border:'1px solid #657f99',borderRadius:4,fontSize:11}}>{part.label}</button>)}
   </div>
   <div style={{marginTop:12}}>
-   <h4>{slot===0?'Full Video Image Library · 16:9':'Shorts Image Library · 9:16'}</h4>
+   <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
+    <h4>{slot===0?'Full Video Image Library · 16:9':'Shorts Image Library · 9:16'}</h4>
+    <div style={{display:'flex',gap:8}}>
+     <button type="button" disabled={busy||!candidates.length} onClick={()=>{const additions=candidates.map(c=>c.id).filter(id=>!sequence.includes(id));const ids=[...sequence,...additions];if(ids.length>(slot===0?100:20)){setEditError('Too many images for this timeline.');return;}if(additions.length)void onSequence(slot,ids,slot===0?ids.map(()=>duration/ids.length):undefined).catch(err=>setEditError(String(err)));}}>Add All to Timeline</button>
+     <button type="button" aria-expanded={libraryOpen} onClick={()=>setLibraryOpen(x=>!x)}>{libraryOpen?'Hide Library':'Show Library'}</button>
+    </div>
+   </div>
+   {libraryOpen&&<>
    <div role="group" aria-label="Drop images to upload" onDragEnter={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();dropDepth.current+=1;setDropActive(true);}} onDragOver={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();e.dataTransfer.dropEffect=busy?'none':'copy';}} onDragLeave={e=>{if(!e.dataTransfer.types.includes('Files'))return;e.preventDefault();dropDepth.current=Math.max(0,dropDepth.current-1);if(dropDepth.current===0)setDropActive(false);}} onDrop={e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();e.stopPropagation();dropDepth.current=0;setDropActive(false);uploadDroppedFiles(Array.from(e.dataTransfer.files));}} style={{border:dropActive?'3px dashed #8a65d6':'2px dashed #8290a3',background:dropActive?'rgba(138,101,214,.14)':'transparent',borderRadius:12,padding:20,textAlign:'center',margin:'12px 0'}}>
     <strong>{dropActive?'Release to upload images':'Drag images here from Finder'}</strong>
     <p style={{fontSize:12}}>Drop multiple JPG, PNG or WebP files (20 MB each) into {slot===0?'Full video':`Short ${slot}`}. You can still use the file picker.</p>
@@ -92,6 +100,7 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
     <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{workspace.slots.filter(x=>x.kind===(slot===0?'short':'scene')).flatMap(x=>x.candidates).map(c=><button type="button" key={c.id} disabled={busy} onClick={()=>void onCopy(c.id,slot===0?'scene':'short').catch(err=>setEditError(String(err)))}><img src={c.url} alt="Copy to current library" style={{width:64,height:64,objectFit:'cover'}}/></button>)}</div>
    </details>
    {slot!==0&&<label>Add saved image <select disabled={busy||sequence.length>=20} value="" onChange={e=>{if(!e.target.value)return;void onSequence(slot,[...sequence,e.target.value]).catch(err=>setEditError(String(err)));}}><option value="">Choose an image…</option>{workspace.slots.filter(x=>x.kind==='scene'||x.kind==='short').flatMap(x=>x.candidates.map(c=><option key={c.id} value={c.id}>{x.label} · {c.id.slice(0,8)}</option>))}</select></label>}
+   </>}
    {slot===0&&<button type="button" disabled={busy||workspace.slots.filter(s=>s.kind==='scene').some(s=>!approvedCandidate(s))} onClick={()=>{const ids=workspace.plan?.scenes.map(t=>approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.id||'')||[];if(ids.length)void onSequence(0,ids).catch(err=>setEditError(String(err)));}}>Enable full-video drag-and-drop using approved scene images</button>}
    <div style={{display:'flex',gap:8,overflowX:'auto',padding:'10px 0'}}>
     {segments.map((part,i)=><div key={i} draggable={sequence.length>1&&!busy} onDragStart={()=>setDragIndex(i)} onDragOver={e=>{if(sequence.length)e.preventDefault();}} onDrop={e=>{e.preventDefault();if(dragIndex===null||dragIndex===i||!sequence.length)return;const next=[...sequence];const [moved]=next.splice(dragIndex,1);next.splice(i,0,moved);setDragIndex(null);void onSequence(slot,next,slot===0?(()=>{const d=[...fullDurations];const [m]=d.splice(dragIndex,1);d.splice(i,0,m);return d;})():undefined).catch(err=>setEditError(String(err)));}} onDragEnd={()=>setDragIndex(null)} style={{minWidth:135,border:'1px solid #888',borderRadius:8,padding:8}}>
