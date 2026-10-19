@@ -85,7 +85,7 @@ export async function POST(req:Request){
   }else if(action==='full-image-sequence'){
    const ids=body.candidateIds;
    if(!Array.isArray(ids)||ids.length<1||ids.length>100||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 100 timeline images.');
-   for(const id of ids){const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));if(!source||source.kind!=='scene')throw Error('Choose landscape images from the Full Video library.');}
+   for(const id of ids){const matches=w.slots.filter(slot=>slot.candidates.some(candidate=>candidate.id===id));const valid=matches.some(slot=>slot.kind==='scene'&&slot.candidates.some(candidate=>candidate.id===id));if(!valid)throw Error(`Full Video image ${id.slice(0,8)} is not saved in a landscape scene slot. Refresh the editor and try again.`);}
    const duration=w.analysis?.duration;
    if(!duration)throw Error('Analyse the final song before editing the timeline.');
    const proposed=body.durations;
