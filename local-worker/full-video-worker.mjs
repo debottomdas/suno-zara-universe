@@ -197,6 +197,22 @@ function normalizeVisuals(body) {
   }).slice(0, 40);
 }
 
+function cinematicLandscapeImageFilter(sceneDuration,index,frame,raw){
+ const intensity=Math.max(0,Math.min(1,Number(raw?.intensity??0.45)));
+ const movement=raw?.motion==='static'?0:raw?.motion==='dynamic'?0.16:0.075;
+ const extra=movement*intensity;
+ const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
+ const width=Math.ceil(1920*zoom*(1+extra)/2)*2;
+ const height=Math.ceil(1080*zoom*(1+extra)/2)*2;
+ const px=Math.max(0,Math.min(1,Number(frame?.x??50)/100));
+ const py=Math.max(0,Math.min(1,Number(frame?.y??50)/100));
+ const t=`min(1,max(0,t/${Math.max(.25,sceneDuration).toFixed(3)}))`;
+ const motion=raw?.motion==='static'?0:1;
+ const shift=(index%4===0?1:index%4===1?-1:index%4===2?.65:-.65)*motion*.35*intensity;
+ const startX=Math.max(0,Math.min(1,px-shift/2)),endX=Math.max(0,Math.min(1,px+shift/2));
+ const startY=Math.max(0,Math.min(1,py-(index%2?.12:-.12)*intensity)),endY=Math.max(0,Math.min(1,py+(index%2?.12:-.12)*intensity));
+ return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},crop=1920:1080:(iw-ow)*(${startX.toFixed(4)}+(${(endX-startX).toFixed(4)})*${t}):(ih-oh)*(${startY.toFixed(4)}+(${(endY-startY).toFixed(4)})*${t}),setsar=1,fps=30,format=yuv420p`;
+}
 function framedLandscapeImageFilter(sceneDuration,frame) {
   const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
   const x=Math.max(0,Math.min(100,Number(frame?.x ?? 50)))/100;
@@ -308,7 +324,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   } else {
     await run(ffmpegPath, [
       ...base,
-      "-vf", withTransition(scene.frame?framedLandscapeImageFilter(sceneDuration,scene.frame):landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
+      "-vf", withTransition(scene.cinematic?.v2?cinematicLandscapeImageFilter(sceneDuration,index,scene.frame,scene.cinematic.v2):scene.frame?framedLandscapeImageFilter(sceneDuration,scene.frame):landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
       "-an",
       "-c:v", "libx264",
       "-preset", "veryfast",
@@ -368,6 +384,29 @@ async function renderFullVideo(body) {
       sceneFiles.push(await renderScene(sequence[index], index, planned ? planned[index] : sceneDuration, tempDir));
     }
 
+    // Cinematic V2: overlapping dissolves. Scene lengths are extended before rendering
+    // in a future timing pass; for now preserve the exact user timeline by applying
+    // transitions to the existing scene durations and restoring the master length.
+    const v2=body.cinematic?.v2;
+    const wantsDissolve=v2?.enabled&&v2.transition!=='cut'&&sceneFiles.length>1;
+    let cinematicVideo=null;
+    if(wantsDissolve){
+      const overlap=Math.min(0.45,Math.max(0.12,Number(v2.transitionSeconds)||0.35));
+      const lengths=sequence.map((_,i)=>planned?planned[i]:sceneDuration);
+      if(lengths.every(d=>d>overlap+0.3)){
+        const inputs=sceneFiles.flatMap(file=>['-i',file]);
+        let previous='[0:v]',elapsed=lengths[0];
+        const filters=[];
+        for(let i=1;i<sceneFiles.length;i++){
+          const out=`[mix${i}]`;
+          const transition=v2.transition==='mixed'&&i%4===0?'fadeblack':'fade';
+          filters.push(`${previous}[${i}:v]xfade=transition=${transition}:duration=${overlap.toFixed(3)}:offset=${(elapsed-overlap).toFixed(3)}${out}`);
+          previous=out;elapsed+=lengths[i]-overlap;
+        }
+        cinematicVideo=path.join(tempDir,'cinematic-dissolve.mp4');
+        await run(ffmpegPath,['-y',...inputs,'-filter_complex',filters.join(';'),'-map',previous,'-an','-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-r','30',cinematicVideo]);
+      }
+    }
     const concatFile = path.join(tempDir, "scenes.ffconcat");
     await writeFile(concatFile, ["ffconcat version 1.0", ...sceneFiles.map((file) => `file '${ffconcatEscape(file)}'`)].join("\n") + "\n");
 
@@ -379,7 +418,7 @@ async function renderFullVideo(body) {
     const filename = `${safeName(title)}-Full-Video${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
     const output = path.join(songFolder, filename);
 
-    const finish=await finishMux(silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
+    const finish=await finishMux(cinematicVideo||silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
 
     const generatedFullVideo = {
       ...finish,
