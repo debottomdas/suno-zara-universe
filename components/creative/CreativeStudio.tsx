@@ -23,6 +23,8 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const [dropActive,setDropActive]=useState(false);
  const [dropNotice,setDropNotice]=useState('');
  const [libraryOpen,setLibraryOpen]=useState(true);
+ const [resizePreview,setResizePreview]=useState<number[]|null>(null);
+ const resizeRef=useRef<{index:number;startX:number;width:number;durations:number[]}|null>(null);
  const dropDepth=useRef(0);
  const audio=useRef<HTMLAudioElement|null>(null);
  const duration=workspace.analysis?.duration||0;
@@ -36,7 +38,8 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const candidates=librarySlots.flatMap(s=>s.candidates);
  const sequence=slot===0?workspace.fullImageSequence||[]:workspace.shortImageSequences?.[`short-${slot}`]||[];
  const fullDurations=workspace.fullImageDurations?.length===sequence.length?workspace.fullImageDurations:sequence.map(()=>duration/Math.max(1,sequence.length));
- const segments=slot===0?(sequence.length?sequence.map((id,i)=>({start:fullDurations.slice(0,i).reduce((a,b)=>a+b,0),end:fullDurations.slice(0,i+1).reduce((a,b)=>a+b,0),label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}))):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
+ const shownDurations=slot===0&&resizePreview?.length===sequence.length?resizePreview:fullDurations;
+ const segments=slot===0?(sequence.length?sequence.map((id,i)=>({start:shownDurations.slice(0,i).reduce((a,b)=>a+b,0),end:shownDurations.slice(0,i+1).reduce((a,b)=>a+b,0),label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}))):sequence.length?sequence.map((id,i)=>({start:rangeStart+i*span/sequence.length,end:rangeStart+(i+1)*span/sequence.length,label:`Image ${i+1}`,url:candidates.find(c=>c.id===id)?.url||''})):chosen.map(t=>({start:t.start,end:t.end,label:t.label,url:approvedCandidate(workspace.slots.find(s=>s.id===t.slotId)!)?.url||''}));
  const active=segments.find(x=>clock>=x.start&&clock<x.end)||segments[0];
  function uploadDroppedFiles(files:File[]){
   if(busy)return;
@@ -73,8 +76,15 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
   </div>
   <input aria-label="Scrub video timeline" type="range" min={rangeStart} max={rangeEnd} step={0.1} value={Math.max(rangeStart,Math.min(rangeEnd,clock))} onChange={e=>seek(Number(e.target.value))} style={{width:'100%'}}/>
   {editError&&<p role="alert" style={{color:'#b33'}}>{editError}</p>}
-  <div style={{display:'flex',gap:2,width:'100%',minHeight:48,marginTop:8}}> 
-   {segments.map((part,i)=><button key={i} type="button" title={`${part.label} · ${stamp(part.start)}–${stamp(part.end)}`} onClick={()=>seek(part.start)} style={{flex:Math.max(0.1,part.end-part.start),minWidth:0,padding:'6px 2px',overflow:'hidden',background:clock>=part.start&&clock<part.end?'#b8a2e8':'#9bb5ce',color:'#17202b',border:'1px solid #657f99',borderRadius:4,fontSize:11}}>{part.label}</button>)}
+  <div style={{position:'relative',display:'flex',width:'100%',minHeight:74,marginTop:8,borderRadius:6,background:'#e5e5e5'}} aria-label="Visual image timeline">
+   {segments.map((part,i)=><div key={i} style={{position:'relative',minWidth:0,flex:`${Math.max(.25,part.end-part.start)} 1 0`,border:'1px solid #aaa'}}>
+    <button type="button" title={`${part.label}: ${stamp(part.start)}–${stamp(part.end)}`} onClick={()=>seek(part.start)} style={{width:'100%',height:74,padding:2,overflow:'hidden',border:0,background:'transparent'}}>
+     {part.url&&<img src={part.url} alt="" style={{width:'100%',height:49,objectFit:'cover'}}/>}
+     <span style={{fontSize:10}}>{i+1} · {(part.end-part.start).toFixed(1)}s</span>
+    </button>
+    {slot===0&&sequence.length>1&&i<segments.length-1&&<div role="separator" aria-label={`Resize after image ${i+1}`} tabIndex={0} onKeyDown={e=>{if(e.key!=='ArrowLeft'&&e.key!=='ArrowRight')return;e.preventDefault();const d=[...fullDurations],delta=e.key==='ArrowRight'?.5:-.5;if(d[i]+delta<.25||d[i+1]-delta<.25)return;d[i]+=delta;d[i+1]-=delta;void onSequence(0,sequence,d).catch(err=>setEditError(String(err)));}} onPointerDown={e=>{if(busy)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);resizeRef.current={index:i,startX:e.clientX,width:e.currentTarget.parentElement?.parentElement?.clientWidth||1,durations:[...fullDurations]};}} onPointerMove={e=>{const r=resizeRef.current;if(!r||r.index!==i)return;const d=[...r.durations],delta=(e.clientX-r.startX)/r.width*duration;d[i]=Math.max(.25,Math.min(r.durations[i]+r.durations[i+1]-.25,r.durations[i]+delta));d[i+1]=r.durations[i]+r.durations[i+1]-d[i];setResizePreview(d);}} onPointerUp={e=>{const r=resizeRef.current;if(!r||r.index!==i)return;const d=[...r.durations],delta=(e.clientX-r.startX)/r.width*duration;d[i]=Math.max(.25,Math.min(r.durations[i]+r.durations[i+1]-.25,r.durations[i]+delta));d[i+1]=r.durations[i]+r.durations[i+1]-d[i];resizeRef.current=null;setResizePreview(null);if(Math.abs(d[i]-r.durations[i])>.01)void onSequence(0,sequence,d).catch(err=>setEditError(String(err)));}} onPointerCancel={()=>{resizeRef.current=null;setResizePreview(null);}} style={{position:'absolute',right:-5,top:0,bottom:0,width:10,background:'#7157c8',cursor:'col-resize',zIndex:3,touchAction:'none'}}/>}
+   </div>)}
+   <div aria-hidden="true" style={{position:'absolute',left:`${Math.max(0,Math.min(100,(clock-rangeStart)/span*100))}%`,top:0,bottom:0,width:2,background:'#ed3636',pointerEvents:'none',zIndex:4}}/>
   </div>
   <div style={{marginTop:12}}>
    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
