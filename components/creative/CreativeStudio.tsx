@@ -14,7 +14,8 @@ const outputNamesFor=(w:CreativeWorkspace)=>['full',...w.slots.filter(s=>s.kind=
 async function json(url:string,options?:RequestInit){let r:Response;try{r=await fetch(url,options);}catch{throw Error(url.startsWith(WORKER)?'Your saved videos are temporarily unavailable. Reconnect and try again; your saved work and approvals are preserved.':'Cannot reach Universe. Check the connection and reload the saved workspace.');}const d=await r.json();if(!r.ok)throw Error(d.error||`Request failed (${r.status})`);return d;}
 const post=(url:string,body:unknown)=>json(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUpload,busy}:{workspace:CreativeWorkspace;audioUrl:string;onSequence:(slot:number,ids:string[],durations?:number[])=>Promise<void>;onUpload:(slotId:string,file:File)=>Promise<void>;onBulkUpload:(slot:number,files:File[])=>Promise<void>;busy:boolean}){
- const [slot,setSlot]=useState(0);
+ const [slot,setSlot]=useState(1);
+ const [lastShort,setLastShort]=useState(1);
  const [clock,setClock]=useState(0);
  const [playing,setPlaying]=useState(false);
  const [dragIndex,setDragIndex]=useState<number|null>(null);
@@ -49,9 +50,15 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
  const stamp=(t:number)=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
  if(!workspace.plan||!audioUrl)return null;
  return <section className={styles.panel} aria-label="Unified full video and Shorts timeline">
-  <h3>Unified timeline · storyboard playback</h3>
-  <p>Play the song and follow the moving playhead. The image changes at scene boundaries. This is an audio-synchronised storyboard preview, not the rendered video; use the render review to check captions, motion and transitions.</p>
-  <label>Output <select value={slot} onChange={e=>setSlot(Number(e.target.value))}><option value={0}>Full video · 16:9</option>{shorts.map(x=><option key={x.id} value={x.number}>Short {x.number} · 9:16</option>)}</select></label>
+  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:12,marginBottom:12}}>
+   <h2 style={{margin:0,fontSize:28}}>Video Editor</h2>
+   <div role="group" aria-label="Video editor format" style={{display:'flex',background:'#eee',borderRadius:40,padding:4,gap:4}}>
+    <button type="button" aria-pressed={slot!==0} onClick={()=>setSlot(shorts.some(x=>x.number===lastShort)?lastShort:(shorts[0]?.number||1))} style={{border:0,borderRadius:30,padding:'10px 20px',fontSize:17,background:slot!==0?'white':'transparent',color:slot!==0?'#111':'#666',fontWeight:slot!==0?700:400}}>Short · 9:16</button>
+    <button type="button" aria-pressed={slot===0} onClick={()=>{if(slot!==0)setLastShort(slot);setSlot(0);}} style={{border:0,borderRadius:30,padding:'10px 20px',fontSize:17,background:slot===0?'white':'transparent',color:slot===0?'#111':'#666',fontWeight:slot===0?700:400}}>Full · 16:9</button>
+   </div>
+  </div>
+  <p>{slot===0?'Full video · Landscape image library and full-song timeline':'Shorts · Portrait image library and Short timeline'}. Preview follows the song playhead; rendered transitions and captions are reviewed after rendering.</p>
+  {slot!==0&&<label>Choose Short <select value={slot} onChange={e=>{const n=Number(e.target.value);setLastShort(n);setSlot(n);}}>{shorts.map(x=><option key={x.id} value={x.number}>Short {x.number}</option>)}</select></label>}
   <div style={{display:'flex',justifyContent:'center',background:'#14151b',padding:12,borderRadius:10,marginTop:12}}>
    {active?.url?<img src={active.url} alt={active.label} style={{width:slot?'min(100%,220px)':'min(100%,600px)',aspectRatio:slot?'9 / 16':'16 / 9',objectFit:'cover',borderRadius:6}}/>:<div style={{color:'white',padding:40}}>No approved image for this scene yet</div>}
   </div>
