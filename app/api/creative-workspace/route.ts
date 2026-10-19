@@ -84,10 +84,15 @@ export async function POST(req:Request){
    w.shortImageSequences={...(w.shortImageSequences||{}),[slotId]:ids};
   }else if(action==='full-image-sequence'){
    const ids=body.candidateIds;
-   const scenes=w.slots.filter(s=>s.kind==='scene');
-   if(!Array.isArray(ids)||ids.length!==scenes.length||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)throw Error(`Choose exactly ${scenes.length} distinct images for the full-video scenes.`);
+   if(!Array.isArray(ids)||ids.length<1||ids.length>100||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 100 timeline images.');
    for(const id of ids){const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');}
+   const duration=w.analysis?.duration;
+   if(!duration)throw Error('Analyse the final song before editing the timeline.');
+   const proposed=body.durations;
+   const timings=Array.isArray(proposed)?proposed.map(Number):Array.from({length:ids.length},()=>duration/ids.length);
+   if(timings.length!==ids.length||timings.some(x=>!Number.isFinite(x)||x<0.25)||Math.abs(timings.reduce((a,b)=>a+b,0)-duration)>.05)throw Error('Timeline durations must cover the whole song with at least 0.25 seconds per image.');
    w.fullImageSequence=ids;
+   w.fullImageDurations=timings;
   }else if(action==='short-count'){
    const count=Number(body.count);
    if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
