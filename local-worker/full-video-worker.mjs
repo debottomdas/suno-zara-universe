@@ -153,13 +153,13 @@ function withTransition(filter,duration,scene,complex=false){
   const saturation=(1+preset.warmth*0.12).toFixed(3);
   const glow=(preset.glow*0.045).toFixed(4);
   const vignette=(Math.PI/2*(0.05+preset.vignette*0.43)).toFixed(4);
-  const grain=scene.cinematic?.v2?.enabled?0:Math.round(preset.atmosphere*14);
+  const grain=0; // Avoid expensive per-frame grain at full-HD resolution.
   // Animated light breathing is intentionally subtle; avoid hiding faces or captions.
   const grade=`eq=contrast=${contrast}:saturation=${saturation}:brightness='${glow}*(0.65+0.35*sin(0.65*t))':eval=frame,colorbalance=rs=${(preset.warmth*0.045).toFixed(3)}:bs=${(-preset.warmth*0.04).toFixed(3)},vignette=angle=${vignette}${grain?`,noise=alls=${grain}:allf=t+u`:''}`;
 
   result=complex?result.replace(/\[v\]\s*$/,`[gradeInput];[gradeInput]${grade}[v]`):`${result},${grade}`;
  }
- const leak=scene.cinematic?.v2?.enabled?'':lightLeakFilter(scene,duration);
+ const leak=''; // Disable CPU-heavy geq light leaks in all rendering modes.
  if(leak)result=complex?result.replace(/\\[v\\]\\s*$/,`[lightInput];[lightInput]${leak}[v]`):`${result},${leak}`;
  if(scene.transition!=='fade')return result;
  const fade=fadeFilter(duration);
