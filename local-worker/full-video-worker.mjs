@@ -378,21 +378,27 @@ async function renderFullVideo(body) {
 
     console.log(`[${title}] Rendering ${sceneCount} scenes from ${downloadedVisuals.length} distinct visual assets.`);
 
+    const v2Settings=body.cinematic?.v2;
+    const dissolveOverlap=v2Settings?.enabled&&v2Settings.transition!=='cut'&&sequence.length>1
+      ?Math.min(.45,Math.max(.12,Number(v2Settings.transitionSeconds)||.35)):0;
+    const nominalDurations=sequence.map((_,i)=>planned?planned[i]:sceneDuration);
+    const canDissolve=dissolveOverlap>0&&nominalDurations.every(d=>d>dissolveOverlap+.3);
+    const renderDurations=nominalDurations.map((d,i)=>d+(canDissolve&&i<sequence.length-1?dissolveOverlap:0));
     const sceneFiles = [];
     for (let index = 0; index < sequence.length; index += 1) {
       console.log(`[${title}] Scene ${index + 1}/${sequence.length} (${sequence[index].mediaType})`);
-      sceneFiles.push(await renderScene(sequence[index], index, planned ? planned[index] : sceneDuration, tempDir));
+      sceneFiles.push(await renderScene(sequence[index], index, renderDurations[index], tempDir));
     }
 
     // Cinematic V2: overlapping dissolves. Scene lengths are extended before rendering
     // in a future timing pass; for now preserve the exact user timeline by applying
     // transitions to the existing scene durations and restoring the master length.
     const v2=body.cinematic?.v2;
-    const wantsDissolve=v2?.enabled&&v2.transition!=='cut'&&sceneFiles.length>1;
+    const wantsDissolve=canDissolve;
     let cinematicVideo=null;
     if(wantsDissolve){
-      const overlap=Math.min(0.45,Math.max(0.12,Number(v2.transitionSeconds)||0.35));
-      const lengths=sequence.map((_,i)=>planned?planned[i]:sceneDuration);
+      const overlap=dissolveOverlap;
+      const lengths=renderDurations;
       if(lengths.every(d=>d>overlap+0.3)){
         const inputs=sceneFiles.flatMap(file=>['-i',file]);
         let previous='[0:v]',elapsed=lengths[0];
