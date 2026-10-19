@@ -199,8 +199,8 @@ function normalizeVisuals(body) {
 
 function framedLandscapeImageFilter(sceneDuration,frame) {
   const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
-  const x=Math.max(0,Math.min(100,Number(frame?.x)??50))/100;
-  const y=Math.max(0,Math.min(100,Number(frame?.y)??50))/100;
+  const x=Math.max(0,Math.min(100,Number(frame?.x ?? 50)))/100;
+  const y=Math.max(0,Math.min(100,Number(frame?.y ?? 50)))/100;
   const width=Math.round(1920*zoom/2)*2;
   const height=Math.round(1080*zoom/2)*2;
   const fade=Math.min(.45,Math.max(.22,sceneDuration*.035));
