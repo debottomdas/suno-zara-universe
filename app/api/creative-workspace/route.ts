@@ -82,6 +82,12 @@ export async function POST(req:Request){
     if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');
    }
    w.shortImageSequences={...(w.shortImageSequences||{}),[slotId]:ids};
+  }else if(action==='full-image-sequence'){
+   const ids=body.candidateIds;
+   const scenes=w.slots.filter(s=>s.kind==='scene');
+   if(!Array.isArray(ids)||ids.length!==scenes.length||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)throw Error(`Choose exactly ${scenes.length} distinct images for the full-video scenes.`);
+   for(const id of ids){const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));if(!source||source.kind==='cover'||source.kind==='thumbnail')throw Error('Choose saved scene or Short images only.');}
+   w.fullImageSequence=ids;
   }else if(action==='short-count'){
    const count=Number(body.count);
    if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
