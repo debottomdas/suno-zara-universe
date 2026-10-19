@@ -6,7 +6,7 @@ export type Candidate = {visualProduction?:{channelId:string;dnaRevision:number|
 export type VisualSlot = {id:string; kind:AssetKind; number:number; label:string; prompt:string; candidates:Candidate[]; approvedId?:string};
 export type Timing = {slotId:string; start:number; end:number; label:string};
 export type AudioAnalysis = {duration:number; energy:Array<{time:number; rms:number}>; sourceKey:string};
-export type CreativeWorkspace = {shortImageSequences?:Record<string,string[]>;fullImageSequence?:string[];subtitleContext?:{identity:VisualIdentity;cueContext:LyricCueContext};lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
+export type CreativeWorkspace = {shortImageSequences?:Record<string,string[]>;fullImageSequence?:string[];fullImageDurations?:number[];subtitleContext?:{identity:VisualIdentity;cueContext:LyricCueContext};lyricCueReview?:LyricCueReview;subtitlesEnabled?:boolean;scenePlan?:ScenePlan;channelBranding?:unknown;pending?:{id:string;startedAt:string;action:string};revision:number; instructions:string; bible:string; approvedBible?:string; slots:VisualSlot[]; analysis?:AudioAnalysis; plan?:{scenes:Timing[]; shorts:Timing[]; approved:boolean}; audioKey?:string};
 export const emptyWorkspace = ():CreativeWorkspace=>({revision:0,instructions:'',bible:'',slots:[]});
 export function lyricSections(lyrics:string) {return [...lyrics.matchAll(/^\s*\[([^\]]+)\]/gm)].map(m=>m[1]);}
 export function makeSlots(duration:number,lyrics:string,shortCount=6):VisualSlot[] {
@@ -49,7 +49,7 @@ export function visualsComplete(w:CreativeWorkspace){const count=w.slots.filter(
 // Stable dependency keys exclude signed URLs, draft prompts and unrelated slots.
 export function outputKey(w:CreativeWorkspace,slot:number,audioKey:string) {
  const timings=slot===0?w.plan?.scenes:w.plan?.shorts.filter(t=>t.slotId===`short-${slot}`);
- return JSON.stringify({...(subtitleOutputDependency(w,slot)?{lyricSubtitles:subtitleOutputDependency(w,slot)}:{}),...(w.channelBranding?{channelBranding:w.channelBranding}:{}),audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[],...(slot?{imageSequence:(w.shortImageSequences?.[`short-${slot}`]||[]).map(id=>({id,slotId:w.slots.find(s=>s.candidates.some(c=>c.id===id))?.id}))}:{fullImageSequence:(w.fullImageSequence||[]).map(id=>({id,slotId:w.slots.find(s=>s.candidates.some(c=>c.id===id))?.id}))})});
+ return JSON.stringify({...(subtitleOutputDependency(w,slot)?{lyricSubtitles:subtitleOutputDependency(w,slot)}:{}),...(w.channelBranding?{channelBranding:w.channelBranding}:{}),audio:audioKey,kind:slot===0?'full':`short-${slot}`,timings:timings?.map(t=>({start:t.start,end:t.end,id:t.slotId,visual:w.slots.find(s=>s.id===t.slotId)?.approvedId}))||[],...(slot?{imageSequence:(w.shortImageSequences?.[`short-${slot}`]||[]).map(id=>({id,slotId:w.slots.find(s=>s.candidates.some(c=>c.id===id))?.id}))}:{fullImageSequence:(w.fullImageSequence||[]).map((id,i)=>({id,duration:w.fullImageDurations?.[i],slotId:w.slots.find(s=>s.candidates.some(c=>c.id===id))?.id}))})});
 }
 
 // Keep the existing key format: saved plans and immutable render versions use it.
@@ -80,7 +80,7 @@ export function renderPrerequisite(w:CreativeWorkspace,audio:any,slot:number,dir
  if(!w.plan.approved)return {kind:'plan',message:'Review and approve the Video Plan before creating videos.'};
  const timings=slot===0?w.plan.scenes:w.plan.shorts.filter(t=>t.slotId===`short-${slot}`);
  const sequence=slot?w.shortImageSequences?.[`short-${slot}`]:w.fullImageSequence;
- if(slot===0&&sequence?.length&&sequence.length!==timings.length)return {kind:'visual',message:'Full-video image sequence must match the number of scenes.'};
+ if(slot===0&&sequence?.length&&(!w.fullImageDurations||w.fullImageDurations.length!==sequence.length||w.fullImageDurations.some(x=>!Number.isFinite(x)||x<0.25)||Math.abs(w.fullImageDurations.reduce((a,b)=>a+b,0)-(w.analysis?.duration||0))>.05))return {kind:'visual',message:'Full-video image durations must cover the entire song.'};
  if(sequence?.length){for(const id of sequence){const source=w.slots.find(s=>s.candidates.some(c=>c.id===id));if(!source||!source.candidates.some(c=>c.id===id&&!!c.url))return {kind:'visual',message:'A selected Short image is missing or unavailable. Review the image sequence.'};}}
  const missing=sequence?.length?undefined:timings.find(t=>{const s=w.slots.find(s=>s.id===t.slotId);return !s||!approvedCandidate(s);});
  if(missing)return {kind:'visual',message:`Approve ${w.slots.find(s=>s.id===missing.slotId)?.label||missing.slotId} before creating ${slot?`Short ${slot}`:'the full video'}.`};
