@@ -13,10 +13,12 @@ type Videos={versions:Version[];approved:Record<string,string>;keys:Record<strin
 const outputNamesFor=(w:CreativeWorkspace)=>['full',...w.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number).map(s=>s.id)];
 async function json(url:string,options?:RequestInit){let r:Response;try{r=await fetch(url,options);}catch{throw Error(url.startsWith(WORKER)?'Your saved videos are temporarily unavailable. Reconnect and try again; your saved work and approvals are preserved.':'Cannot reach Universe. Check the connection and reload the saved workspace.');}const d=await r.json();if(!r.ok)throw Error(d.error||`Request failed (${r.status})`);return d;}
 const post=(url:string,body:unknown)=>json(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-function UnifiedTimelinePreview({workspace,audioUrl}:{workspace:CreativeWorkspace;audioUrl:string}){
+function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,busy}:{workspace:CreativeWorkspace;audioUrl:string;onSequence:(slot:number,ids:string[])=>Promise<void>;onUpload:(slotId:string,file:File)=>Promise<void>;busy:boolean}){
  const [slot,setSlot]=useState(0);
  const [clock,setClock]=useState(0);
  const [playing,setPlaying]=useState(false);
+ const [dragIndex,setDragIndex]=useState<number|null>(null);
+ const [editError,setEditError]=useState('');
  const audio=useRef<HTMLAudioElement|null>(null);
  const duration=workspace.analysis?.duration||0;
  const shorts=workspace.slots.filter(s=>s.kind==='short').sort((a,b)=>a.number-b.number);
@@ -46,8 +48,27 @@ function UnifiedTimelinePreview({workspace,audioUrl}:{workspace:CreativeWorkspac
    <span style={{marginLeft:'auto'}}>Scene: {active?.label||'None'}</span>
   </div>
   <input aria-label="Scrub video timeline" type="range" min={rangeStart} max={rangeEnd} step={0.1} value={Math.max(rangeStart,Math.min(rangeEnd,clock))} onChange={e=>seek(Number(e.target.value))} style={{width:'100%'}}/>
-  <div style={{display:'flex',gap:2,width:'100%',minHeight:48,marginTop:8}}>
+  {editError&&<p role="alert" style={{color:'#b33'}}>{editError}</p>}
+  <div style={{display:'flex',gap:2,width:'100%',minHeight:48,marginTop:8}}> 
    {segments.map((part,i)=><button key={i} type="button" title={`${part.label} · ${stamp(part.start)}–${stamp(part.end)}`} onClick={()=>seek(part.start)} style={{flex:Math.max(0.1,part.end-part.start),minWidth:0,padding:'6px 2px',overflow:'hidden',background:clock>=part.start&&clock<part.end?'#b8a2e8':'#9bb5ce',color:'#17202b',border:'1px solid #657f99',borderRadius:4,fontSize:11}}>{part.label}</button>)}
+  </div>
+  <div style={{marginTop:12}}>
+   <h4>Timeline images</h4>
+   <p>Drag Short images to reorder them, or use the move buttons. Upload a replacement to a full-video scene or Short image slot; uploaded images remain unapproved until reviewed.</p>
+   {slot!==0&&<label>Add saved image <select disabled={busy||sequence.length>=20} value="" onChange={e=>{if(!e.target.value)return;void onSequence(slot,[...sequence,e.target.value]).catch(err=>setEditError(String(err)));}}><option value="">Choose an image…</option>{workspace.slots.filter(x=>x.kind==='scene'||x.kind==='short').flatMap(x=>x.candidates.map(c=><option key={c.id} value={c.id}>{x.label} · {c.id.slice(0,8)}</option>))}</select></label>}
+   <div style={{display:'flex',gap:8,overflowX:'auto',padding:'10px 0'}}>
+    {segments.map((part,i)=><div key={i} draggable={slot!==0&&sequence.length>1&&!busy} onDragStart={()=>setDragIndex(i)} onDragOver={e=>{if(slot!==0)e.preventDefault();}} onDrop={e=>{e.preventDefault();if(dragIndex===null||slot===0||dragIndex===i||!sequence.length)return;const next=[...sequence];const [moved]=next.splice(dragIndex,1);next.splice(i,0,moved);setDragIndex(null);void onSequence(slot,next).catch(err=>setEditError(String(err)));}} onDragEnd={()=>setDragIndex(null)} style={{minWidth:135,border:'1px solid #888',borderRadius:8,padding:8}}>
+      {part.url&&<img src={part.url} alt={part.label} style={{width:118,height:75,objectFit:'cover'}}/>}
+      <div style={{fontSize:12}}>{part.label}</div>
+      <div style={{fontSize:11}}>{stamp(part.start)}–{stamp(part.end)}</div>
+      {slot!==0&&sequence.length>0&&<div style={{display:'flex',gap:4}}>
+       <button type="button" disabled={busy||i===0} onClick={()=>{const next=[...sequence];[next[i-1],next[i]]=[next[i],next[i-1]];void onSequence(slot,next).catch(err=>setEditError(String(err)));}}>←</button>
+       <button type="button" disabled={busy||i===sequence.length-1} onClick={()=>{const next=[...sequence];[next[i+1],next[i]]=[next[i],next[i+1]];void onSequence(slot,next).catch(err=>setEditError(String(err)));}}>→</button>
+       <button type="button" disabled={busy||sequence.length===1} onClick={()=>void onSequence(slot,sequence.filter((_,j)=>j!==i)).catch(err=>setEditError(String(err)))}>Remove</button>
+      </div>}
+      {(()=>{const sourceSlot=slot===0?workspace.slots.find(x=>x.id===chosen[i]?.slotId):workspace.slots.find(x=>x.candidates.some(c=>c.id===sequence[i]))||workspace.slots.find(x=>x.id===`short-${slot}`);return sourceSlot?<label style={{display:'block',fontSize:11,marginTop:6}}>Upload image<input aria-label={`Upload image for ${part.label}`} type="file" accept="image/png,image/jpeg,image/webp" disabled={busy} onChange={e=>{const file=e.currentTarget.files?.[0];e.currentTarget.value='';if(file)void onUpload(sourceSlot.id,file).catch(err=>setEditError(String(err)));}}/></label>:null;})()}
+     </div>)}
+   </div>
   </div>
   <p style={{fontSize:12}}>Timeline is linked to the saved scene plan and Short image sequences. Edit timings and image order using the existing controls below; playback updates after saving.</p>
  </section>;
@@ -375,7 +396,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
      <div className={styles.actions}><button disabled={!!busy||!dirtyPlan} onClick={()=>void run('Saving Short clips',()=>change('plan',{...planDraft,approve:false}))}>Save clip selections</button><button disabled={!!busy} onClick={()=>void run('Approving Short clips',()=>change('plan',{...planDraft,approve:true}))}>Save & approve Video Plan</button></div>
      {dirtyPlan&&<p role="status">Unsaved timing changes. Rendering is blocked until you save and approve the updated plan.</p>}
     </section>}
-    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""}/>
+    <UnifiedTimelinePreview workspace={w} audioUrl={assets.audio?.url||""} busy={!!busy} onSequence={async(slot,ids)=>{await run('Updating timeline images',()=>change('short-image-sequence',{slotId:`short-${slot}`,candidateIds:ids}));}} onUpload={async(slotId,file)=>{const target=w.slots.find(s=>s.id===slotId);if(!target)throw Error('Image slot not found');await run('Uploading timeline image',async()=>{await uploadImage(target,file);const fresh=await json(`/api/creative-workspace?projectId=${encodeURIComponent(projectId)}`);accept(fresh.workspace);onRefresh();});}}/>
     <section className={styles.panel} aria-label="Short image sequences"><h3>2 · Choose images for each Short</h3><p>Add saved scene or Short images in playback order. Each image gets an equal share of the Short duration. Changes affect only that Short; previous video versions are preserved.</p>
     {shortNumbers.map(slot=>{const id=`short-${slot}`,ids=w.shortImageSequences?.[id]||[],candidates=w.slots.filter(s=>s.kind==='scene'||s.kind==='short').flatMap(s=>s.candidates.map((c,i)=>({id:c.id,label:`${s.label} · version ${i+1}`})));return <details key={id}><summary>Short {slot} · {ids.length?ids.length+' selected images':'Default approved image'}</summary>
       <ol>{ids.map((candidateId,index)=><li key={index}>{candidates.find(c=>c.id===candidateId)?.label||'Unavailable image'} <button disabled={!!busy||index===0} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index-1?ids[index]:i===index?ids[index-1]:x)}))}>↑</button><button disabled={!!busy||index===ids.length-1} onClick={()=>void run('Moving image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.map((x,i)=>i===index+1?ids[index]:i===index?ids[index+1]:x)}))}>↓</button><button disabled={!!busy||ids.length===1} onClick={()=>void run('Removing image',()=>change('short-image-sequence',{slotId:id,candidateIds:ids.filter((_,i)=>i!==index)}))}>Remove</button></li>)}</ol>
