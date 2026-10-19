@@ -90,7 +90,7 @@ function UnifiedTimelinePreview({workspace,audioUrl,onSequence,onUpload,onBulkUp
    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,flexWrap:'wrap'}}>
     <h4>{slot===0?'Full Video Image Library · 16:9':'Shorts Image Library · 9:16'}</h4>
     <div style={{display:'flex',gap:8}}>
-     <button type="button" disabled={busy||!candidates.length} onClick={()=>{const additions=candidates.map(c=>c.id).filter(id=>!sequence.includes(id));const ids=[...sequence,...additions];if(ids.length>(slot===0?100:20)){setEditError('Too many images for this timeline.');return;}if(additions.length)void onSequence(slot,ids,slot===0?ids.map(()=>duration/ids.length):undefined).catch(err=>setEditError(String(err)));}}>Add All to Timeline</button>
+     <button type="button" disabled={busy||!candidates.length} onClick={()=>{const validIds=new Set(candidates.map(c=>c.id));const retained=sequence.filter(id=>validIds.has(id));const additions=candidates.map(c=>c.id).filter(id=>!retained.includes(id));const ids=[...retained,...additions];if(ids.length>(slot===0?100:20)){setEditError('Too many images for this timeline.');return;}if(additions.length||retained.length!==sequence.length)void onSequence(slot,ids,slot===0?ids.map(()=>duration/ids.length):undefined).catch(err=>setEditError(String(err)));}}>Add All to Timeline</button>
      <button type="button" aria-expanded={libraryOpen} onClick={()=>setLibraryOpen(x=>!x)}>{libraryOpen?'Hide Library':'Show Library'}</button>
     </div>
    </div>
