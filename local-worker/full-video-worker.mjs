@@ -1128,9 +1128,9 @@ async function creativeRequest(req,res,url){
   // Legacy recovery disabled: older shared folders do not prove song ownership.
   if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
   if(url.pathname==="/creative/social")return json(res,200,{pack:p.localSocialPack||null,source:"local",cloudSync:false});
-  if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).filter(v=>!v.recoveredFromLegacy && (!v.projectId || v.projectId===projectId)).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
+  if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).filter(v=>!v.recoveredFromLegacy && v.projectId===projectId && (v.source!=="generated" || (v.dependencyKey && v.dependencyKey!=="legacy-unverified"))).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
   if(url.pathname==="/creative/file"){
-   const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id") && !v.recoveredFromLegacy && (!v.projectId || v.projectId===projectId));if(!v)return json(res,404,{error:"Version not found."});
+   const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id") && !v.recoveredFromLegacy && v.projectId===projectId && (v.source!=="generated" || (v.dependencyKey && v.dependencyKey!=="legacy-unverified")));if(!v)return json(res,404,{error:"Version not found."});
    const info=await stat(v.filePath);cors(res);if(url.searchParams.get("download")==="1")res.setHeader("Content-Disposition",`attachment; filename="${safeFilename(v.filename||path.basename(v.filePath))}"`);res.setHeader("Content-Type","video/mp4");res.setHeader("Accept-Ranges","bytes");
    const match=/^bytes=(\d+)-(\d*)$/.exec(req.headers.range||"");const start=match?Number(match[1]):0,end=match?.[2]?Number(match[2]):info.size-1;
    if(start>end||end>=info.size){res.statusCode=416;return res.end();}
