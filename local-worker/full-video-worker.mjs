@@ -420,9 +420,10 @@ async function renderFullVideo(body) {
     const silentVideo = path.join(tempDir, "silent-video.mp4");
     await run(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", concatFile, "-c", "copy", silentVideo]);
 
-    const songFolder = path.join(ROOT, "Music", safeName(title), "Videos");
+    // New renders are isolated by immutable project ID; legacy media stays untouched.
+    const songFolder = path.join(ROOT, "Music", "Projects", safeName(projectId), "Videos");
     await mkdir(songFolder, { recursive: true });
-    const filename = `${safeName(title)}-Full-Video${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
+    const filename = `${safeName(projectId)}-Full-Video-${jobId}.mp4`;
     const output = path.join(songFolder, filename);
 
     const finish=await finishMux(cinematicVideo||silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
@@ -434,6 +435,7 @@ async function renderFullVideo(body) {
       filename,
       filePath: output,
       source: "generated",
+      provenance: {projectId, audioUrl, sourceVisuals: visuals.map(v=>({id:v.id||null,url:v.url||null,mediaType:v.mediaType||"image"})), renderJobId:jobId},
       generatedAt: new Date().toISOString(),
       durationSeconds,
       imageCount: downloadedVisuals.filter((item) => item.mediaType === "image").length,
@@ -1177,7 +1179,7 @@ async function creativeRequest(req,res,url){
   }
   if(url.pathname==="/creative/render"){
    if(!body.dependencyKey)throw Error("Review the video plan first.");
-   const item=slot===0?await renderFullVideo({...body,creativeCandidate:true}):(await renderShorts({...body,creativeCandidate:true}))[0];
+   const item=slot===0?await renderFullVideo({...body,projectId:id,creativeCandidate:true}):(await renderShorts({...body,projectId:id,creativeCandidate:true}))[0];
    const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,body.dependencyKey,randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
   }
   if(upload){
