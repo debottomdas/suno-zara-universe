@@ -159,7 +159,7 @@ export default function CreativeStudio({projectId,title,lyrics,stage,assets,onRe
  function updateCinematicV2(patch:Partial<typeof cinematicV2>){setCinematicV2(prev=>{const next={...prev,...patch};try{window.localStorage.setItem(`szu-cinematic-v2-${projectId}`,JSON.stringify(next));}catch{}return next;});}
  const [showStylePreview,setShowStylePreview]=useState(false);
  useEffect(()=>{try{const raw=window.localStorage.getItem(`szu-cinematic-${projectId}`);if(raw){const parsed=JSON.parse(raw);if((parsed.mode==='basic'||parsed.mode==='romantic')&&['warmth','contrast','softness'].every(k=>typeof parsed[k]==='number'&&parsed[k]>=0&&parsed[k]<=1))setCinematic({glow:0.45,vignette:0.4,atmosphere:0.25,overlay:'none',overlayIntensity:0.7,...parsed});}}catch{}},[projectId]);
- function updateCinematic(next:{mode:'basic'|'romantic';warmth:number;contrast:number;softness:number;glow:number;vignette:number;atmosphere:number}){setCinematic(next);try{window.localStorage.setItem(`szu-cinematic-${projectId}`,JSON.stringify(next));}catch{}}
+ function updateCinematic(next:typeof cinematic){setCinematic(next);try{window.localStorage.setItem(`szu-cinematic-${projectId}`,JSON.stringify(next));}catch{}}
 
  const [loaded,setLoaded]=useState(false),[busy,setBusy]=useState(''),[error,setError]=useState(''),[message,setMessage]=useState('');
  const operation=useRef(false),active=useRef(true);
