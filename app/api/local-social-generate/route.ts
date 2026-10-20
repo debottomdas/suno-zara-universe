@@ -21,6 +21,31 @@ export async function POST(request:Request){
   const engine=clean(body.engine,20),title=clean(body.title,200),channel=clean(body.channel,120),language=clean(body.language,60),lyrics=clean(body.lyrics,7000),idea=clean(body.idea,1000);
   if(!title)return NextResponse.json({error:'A saved song title is required.'},{status:400});
   if(!['instant','ollama','gpt'].includes(engine))return NextResponse.json({error:'Unknown generator.'},{status:400});
+  if(body.structuredStep===true){
+   const slot=Number(body.slot);
+   if(!Number.isInteger(slot)||slot<0||slot>6)return NextResponse.json({error:'Invalid release slot.'},{status:400});
+   const bn=/bangla|bengali|বাংলা|^bn$/i.test(language+' '+channel);
+   const base=instant(title,language,channel,idea);
+   const index=slot===0?0:slot-1;
+   const shortCaption=base.youtube_shorts.split('\n\n')[index]||base.youtube_shorts;
+   const fallback={video:{title:(title+(slot?' | Short '+slot:' | '+channel)).slice(0,100),description:slot?shortCaption:base.youtube_full,tags:[title,channel].filter(Boolean),hashtags:bn?['#SunoZaraBangla','#বাংলাগান']:['#SunoZara','#OriginalMusic'],pinnedComment:'',credits:'',categoryId:'10' as const,language:language||'',thumbnailAssetId:null},instagram:base.instagram,facebook:base.facebook,tiktok:base.tiktok};
+   if(engine==='instant')return NextResponse.json({slot,result:fallback});
+   const languageName=bn?'natural Kolkata Bengali, primarily Bengali script':'natural Hindi, primarily Devanagari script';
+   const prompt=`Return ONLY a JSON object with video:{title,description,tags (array),hashtags (array),pinnedComment,credits} and instagram,facebook,tiktok (strings). Write ${languageName}. This is ${slot?'Short '+slot+' of 6':'the FULL music video'} for original song ${title}, channel ${channel}. Distinct, compelling and accurate. Use only known facts. No invented lyrics, artists, credits, visual content, URLs, release dates, or claims. Credits empty string unless explicitly provided. YouTube title max 100 characters, description max 5000. Short-specific hook ${slot}; make it distinctive without pretending to know the actual clip. Include Bengali CTA and relevant hashtags. Source context: ${idea.slice(0,400)}; lyrics: ${lyrics.slice(0,2000)}.`;
+   let raw='';
+   if(engine==='ollama'){
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),120000);
+    try{const r=await fetch('http://127.0.0.1:11434/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'qwen3:4b',stream:false,think:false,format:'json',options:{num_predict:850},messages:[{role:'user',content:prompt}]}),signal:controller.signal});const d=await r.json();if(!r.ok)throw Error(d.error||'Ollama unavailable');raw=d.message?.content||'';}finally{clearTimeout(timer);}
+   }else{
+    if(!process.env.OPENAI_API_KEY)throw Error('OPENAI_API_KEY is not configured.');
+    const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY});const r=await client.responses.create({model:process.env.SOCIAL_COPY_OPENAI_MODEL||'gpt-4.1-mini',input:prompt,text:{format:{type:'json_object'}}});raw=r.output_text;
+   }
+   const parsed=JSON.parse(raw);
+   if(!parsed.video||typeof parsed.video.title!=='string'||!parsed.video.title.trim()||typeof parsed.video.description!=='string'||!parsed.video.description.trim()||!Array.isArray(parsed.video.tags)||!Array.isArray(parsed.video.hashtags))throw Error('Incomplete metadata for slot '+slot);
+   const video={...fallback.video,...parsed.video,title:parsed.video.title.slice(0,100),description:parsed.video.description.slice(0,5000),credits:'',categoryId:'10',language:language||'',thumbnailAssetId:null};
+   const result={video,instagram:typeof parsed.instagram==='string'?parsed.instagram:fallback.instagram,facebook:typeof parsed.facebook==='string'?parsed.facebook:fallback.facebook,tiktok:typeof parsed.tiktok==='string'?parsed.tiktok:fallback.tiktok};
+   return NextResponse.json({slot,result});
+  }
   if(body.structured===true){
    const projectId=clean(body.projectId,100),channelId=clean(body.channelId,100);
    if(!projectId||!channelId)return NextResponse.json({error:'Project and channel are required.'},{status:400});
