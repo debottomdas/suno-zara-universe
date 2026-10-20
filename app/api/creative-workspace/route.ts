@@ -72,13 +72,65 @@ export async function POST(req:Request){
    const duration=Number(body.duration);if(!Number.isFinite(duration)||duration<8||duration>3600)throw Error('Choose final audio between 8 seconds and 60 minutes.');
    if(w.slots.length)throw Error('Workspace already exists. Existing versions are preserved.');
    w.slots=makeSlots(duration,song.lyrics||'');w.audioKey=text(body.audioKey);w.instructions=text(body.instructions);
+  }else if(action==='short-image-sequence'){
+   const slotId=text(body.slotId);
+   if(!w.slots.some(slot=>slot.kind==='short'&&slot.id===slotId))throw Error('Choose a configured Short.');
+   const ids=body.candidateIds;
+   if(!Array.isArray(ids)||ids.length<1||ids.length>20||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 20 images in order.');
+   for(const id of ids){
+    const source=w.slots.find(slot=>slot.candidates.some(candidate=>candidate.id===id));
+    if(!source||source.kind!=='short')throw Error('Choose portrait images from the Shorts library.');
+   }
+   w.shortImageSequences={...(w.shortImageSequences||{}),[slotId]:ids};
+  }else if(action==='full-image-sequence'){
+   const ids=body.candidateIds;
+   if(!Array.isArray(ids)||ids.length<1||ids.length>100||ids.some(id=>typeof id!=='string'))throw Error('Choose between 1 and 100 timeline images.');
+   for(const id of ids){const matches=w.slots.filter(slot=>slot.candidates.some(candidate=>candidate.id===id));const valid=matches.some(slot=>slot.kind==='scene'&&slot.candidates.some(candidate=>candidate.id===id));if(!valid)throw Error(`Full Video image ${id.slice(0,8)} is not saved in a landscape scene slot. Refresh the editor and try again.`);}
+   const duration=w.analysis?.duration;
+   if(!duration)throw Error('Analyse the final song before editing the timeline.');
+   const proposed=body.durations;
+   const timings=Array.isArray(proposed)?proposed.map(Number):Array.from({length:ids.length},()=>duration/ids.length);
+   if(timings.length!==ids.length||timings.some(x=>!Number.isFinite(x)||x<0.25)||Math.abs(timings.reduce((a,b)=>a+b,0)-duration)>.05)throw Error('Timeline durations must cover the whole song with at least 0.25 seconds per image.');
+   w.fullImageSequence=ids;
+   w.fullImageDurations=timings;
+  }else if(action==='copy-to-image-library'){
+   const targetKind=body.targetKind;
+   if(targetKind!=='scene'&&targetKind!=='short')throw Error('Choose Full Video or Shorts as the destination.');
+   const source=w.slots.find(s=>s.candidates.some(c=>c.id===body.candidateId));
+   if(!source||(source.kind!=='scene'&&source.kind!=='short'))throw Error('Choose an image from the video libraries.');
+   if(source.kind===targetKind)throw Error('This image is already in the selected library.');
+   const target=w.slots.find(s=>s.kind===targetKind);
+   if(!target)throw Error('Destination library is not configured.');
+   const original=source.candidates.find(c=>c.id===body.candidateId)!;
+   const {data,error}=await db.storage.from(bucket).download(original.storagePath);
+   if(error||!data)throw Error('Original image unavailable.');
+   await addImage(Buffer.from(await data.arrayBuffer()),target,'derived',`Copied from ${source.kind} library`);
+  }else if(action==='short-count'){
+   const count=Number(body.count);
+   if(!Number.isInteger(count)||count<1||count>10)throw Error('Choose between 1 and 10 Shorts.');
+   if(!w.slots.length)throw Error('Prepare the visual workspace before choosing Shorts.');
+   const existing=w.slots.filter(slot=>slot.kind==='short');
+   if(count<existing.length){
+    const removed=existing.filter(slot=>slot.number>count);
+    if(removed.some(slot=>slot.candidates.length>0||slot.approvedId))throw Error('Cannot remove Shorts with saved images or approvals. Preserve those assets and use publishing selection instead.');
+   }
+   const newSlots=makeSlots(w.analysis?.duration||180,song.lyrics||'',count).filter(slot=>slot.kind==='short');
+   const previous=new Map(existing.map(slot=>[slot.id,slot]));
+   w.slots=[...w.slots.filter(slot=>slot.kind!=='short'),...newSlots.map(slot=>previous.get(slot.id)||slot)];
+   if(w.plan){
+    const byId=new Map(w.plan.shorts.map(t=>[t.slotId,t]));
+    const proposed=w.analysis?proposePlan(w.slots,w.analysis,song.lyrics||'').shorts:[];
+    w.plan={...w.plan,shorts:newSlots.map(slot=>byId.get(slot.id)||proposed.find(t=>t.slotId===slot.id)!).filter(Boolean),approved:false};
+   }
+   // Any change in the slot set requires renewed review; retain all existing candidates and video versions.
   }else if(action==='direction'){
    if(w.instructions!==text(body.instructions))delete w.approvedBible;w.instructions=text(body.instructions);w.bible=text(body.bible);if(body.approve===true){if(!w.bible)throw Error('Write or propose a visual direction first.');w.approvedBible=w.bible;}
   }else if(action==='propose-direction'){
+   const ai=new OpenAI({apiKey:process.env.OPENAI_API_KEY,maxRetries:0});
    const dna=c.dna;
    // Reserve this revision before a paid call; concurrent submissions cannot both spend.
    w.pending={id:crypto.randomUUID(),startedAt:new Date().toISOString(),action};await save();c.row={revision:w.revision};
-   const started=Date.now();const ai=new OpenAI({apiKey:process.env.OPENAI_API_KEY,maxRetries:0});
+   const started=Date.now();
    const out=await ai.responses.create({model:'gpt-5.6-luna',input:`${channelInstructions(dna,'visual')}\nPropose an editable visual direction / Character and World Bible for this song. Cover story, consistent characters/appearance, wardrobe, locations, mood, palette, lighting, cinematography, realism, continuity and things to avoid. User direction is optional; blank means decide. No image generation. Do not claim precise audio/lyric alignment. Song: ${song.title}\nCreator context: ${song.idea || "Not supplied"}\nLanguage: ${song.language}\nMood: ${song.mood || "Not supplied"}\nMusical direction: ${song.genre || "Not supplied"}\nLyrics (optional): ${song.lyrics || "Not supplied"}\nInstructions: ${w.instructions}\nAudio duration/energy summary: ${JSON.stringify(w.analysis||{})}\nCreate a specific scene prompt for every supplied slot, with distinct narrative beats and consistent characters. Return strict JSON only with bible and scenes: {"bible":"editable prose","scenes":[{"slotId":"id","beat":"distinct narrative beat","state":"present","location":"concrete location","characters":["Bible identity"],"action":"concrete physical action","composition":"materially distinct composition","evidence":[{"source":"lyrics","quote":"exact lyric excerpt"}]}]}. Do not repeat an opening scene across slots. Character Bible means continuity, not repeated staging. Every scene needs distinct action and beat; a camera-angle change alone is insufficient. Choose locations from the supplied lyrics/context/instructions. Every evidence quote must occur exactly in the supplied source. Required slots: ${JSON.stringify(w.slots.map(s=>({id:s.id,label:s.label,kind:s.kind})))}`});
    const {error}=await db.from('ai_usage_events').insert({user_id:user.id,channel_id:song.channel_id,song_id:song.id,feature:'visual-direction',provider:'openai',model:'gpt-5.6-luna',input_tokens:out.usage?.input_tokens,output_tokens:out.usage?.output_tokens,total_tokens:out.usage?.total_tokens,duration_ms:Date.now()-started,metadata:{usage:out.usage}});if(error)throw Error(`Direction generated, but usage logging failed: ${error.message}`);
    const proposed=JSON.parse(out.output_text.replace(/^```(?:json)?\s*|\s*```$/g,''));if(typeof proposed.bible!=='string'||!text(proposed.bible)||!Array.isArray(proposed.scenes))throw Error('Direction response was incomplete; do not automatically retry the paid request.');
@@ -87,8 +139,9 @@ export async function POST(req:Request){
   }else if(action==='plan-scenes'){
    if(!w.approvedBible||w.approvedBible!==w.bible)throw Error('Approve the current Character / World Bible before planning scenes.');
    if(body.confirmPaid!==true)throw Error('Confirm paid text planning; this does not generate images.');
+   const ai=new OpenAI({apiKey:process.env.OPENAI_API_KEY,maxRetries:0});
    const input=sceneInput(c);w.pending={id:crypto.randomUUID(),startedAt:new Date().toISOString(),action};await save();c.row={revision:w.revision};
-   const ai=new OpenAI({apiKey:process.env.OPENAI_API_KEY,maxRetries:0}),started=Date.now();
+   const started=Date.now();
    const out=await ai.responses.create({model:'gpt-5.6-luna',input:scenePlanInstructions(input,w.slots),text:{format:{type:'json_object'}}});
    const {error}=await db.from('ai_usage_events').insert({user_id:user.id,channel_id:song.channel_id,song_id:song.id,feature:'visual-scene-plan',provider:'openai',model:'gpt-5.6-luna',input_tokens:out.usage?.input_tokens,output_tokens:out.usage?.output_tokens,total_tokens:out.usage?.total_tokens,duration_ms:Date.now()-started,metadata:{usage:out.usage,dnaRevision:c.dna.dnaRevision}});if(error)throw Error('Scene plan generated but usage logging failed. Do not retry automatically.');
    w.scenePlan=makeScenePlan(input,w.slots,JSON.parse(out.output_text).scenes);delete w.pending;
@@ -105,10 +158,13 @@ export async function POST(req:Request){
    const n=Math.max(0,...w.slots.filter(s=>s.kind==='scene').map(s=>s.number))+1;w.slots.splice(w.slots.findIndex(s=>s.kind!=='scene'),0,{id:`scene-${n}`,kind:'scene',number:n,label:`Scene ${n}`,prompt:text(body.prompt)||`Scene ${n}: a distinct story beat.`,candidates:[]});if(w.analysis){const proposed=proposePlan(w.slots,w.analysis,song.lyrics||'');w.plan={...proposed,shorts:w.plan?.shorts||proposed.shorts};}
    }else if(action==='prepare-upload'){
    if(!slot||!['image/png','image/jpeg','image/webp'].includes(body.mimeType)||!Number.isFinite(body.size)||body.size<=0||body.size>20*1024*1024)throw Error('Choose a PNG, JPG or WEBP image up to 20 MB.');
-   const storagePath=`${user.id}/${song.id}/creative-incoming/${crypto.randomUUID()}`;const {data,error}=await db.storage.from(bucket).createSignedUploadUrl(storagePath);if(error||!data)throw Error('Could not prepare image upload.');return NextResponse.json({upload:{storagePath,token:data.token,bucket}});
+   const storagePath=`${user.id}/${song.id}/creative-incoming/${crypto.randomUUID()}`;const {data,error}=await db.storage.from(bucket).createSignedUploadUrl(storagePath);if(error||!data)throw Error('Could not prepare image upload.');return NextResponse.json({localMode:!!(db as unknown as {local?:boolean}).local,upload:{storagePath,token:data.token,bucket,uploadUrl:data.signedUrl}});
   }else if(action==='register-upload'){
    if(!slot||!String(body.storagePath).startsWith(`${user.id}/${song.id}/creative-incoming/`)||String(body.storagePath).includes('..'))throw Error('Invalid image upload.');
    const {data,error}=await db.storage.from(bucket).download(body.storagePath);if(error||!data||data.size>20*1024*1024)throw Error('Uploaded image unavailable or too large.');await addImage(Buffer.from(await data.arrayBuffer()),slot,'uploaded',slot.prompt);
+  }else if(action==='upload'||action==='import-file'){
+   const file=form?.get('file');if(!slot||!(file instanceof File)||!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size<=0||file.size>20*1024*1024)throw Error('Choose a PNG, JPG or WEBP image up to 20 MB.');
+   await addImage(Buffer.from(await file.arrayBuffer()),slot,'uploaded',slot.prompt);
   }else if(action==='derive'){
    if(!slot)throw Error('Unknown destination slot.');const original=w.slots.flatMap(s=>s.candidates).find(a=>a.id===body.candidateId);if(!original)throw Error('Choose an existing image version.');
    const {data,error}=await db.storage.from(bucket).download(original.storagePath);if(error||!data)throw Error('Source image unavailable.');await addImage(Buffer.from(await data.arrayBuffer()),slot,'derived',`Derived from ${original.id}; ${slot.prompt}`);
@@ -133,6 +189,7 @@ export async function POST(req:Request){
      if(existing)return await response(c);
     }
    }
+   new OpenAI({apiKey:process.env.OPENAI_API_KEY,maxRetries:0}); // Validate provider configuration before reserving the workspace.
    const input=sceneInput(c),scene=requireScenePlan(input,w,slot.id);
    if(slot.kind==='cover'||slot.kind==='thumbnail'){visualBranding(input.channel);brandAssets??=await visualBrandAssets(db,user.id,c.dna);}
    w.pending={id:crypto.randomUUID(),startedAt:new Date().toISOString(),action};await save();c.row={revision:w.revision};

@@ -1,3 +1,4 @@
+import {isLocalRequest,localMediaRequest} from '@/utils/local-first/media';
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
 import { MEDIA_BUCKET, buildMediaAssetResponse, cleanString, deleteAssetBacking, type StoredMediaAsset } from "@/utils/media-source";
@@ -11,6 +12,7 @@ function parseMediaKind(value:unknown){const v=cleanString(value);return MEDIA_K
 async function getOwnedSong(supabase:any,userId:string,projectId:string){const{data,error}=await supabase.from("songs").select("id, title").eq("id",projectId).eq("user_id",userId).single();return error?null:data;}
 
 export async function POST(request:Request){
+ if(isLocalRequest(request))return localMediaRequest(request);
   try{const supabase=await createClient();const{data:{user},error:authError}=await supabase.auth.getUser();if(authError||!user)return NextResponse.json({error:"You must be signed in."},{status:401});const body=await request.json();const action=cleanString(body.action),projectId=cleanString(body.projectId),mediaKind=parseMediaKind(body.mediaKind);if(!projectId)return NextResponse.json({error:"projectId is required."},{status:400});if(!mediaKind)return NextResponse.json({error:"mediaKind must be thumbnail or cover-art."},{status:400});const song=await getOwnedSong(supabase,user.id,projectId);if(!song)return NextResponse.json({error:"Song not found."},{status:404});
     if(action==="prepare"){
       const originalFilename=cleanString(body.originalFilename),mimeType=cleanString(body.mimeType),sizeBytes=Number(body.sizeBytes);if(!originalFilename||!IMAGE_MIME_TYPES.has(mimeType))return NextResponse.json({error:"Please choose a PNG, JPG or WEBP image."},{status:400});if(!Number.isFinite(sizeBytes)||sizeBytes<=0||sizeBytes>MAX_IMAGE_BYTES)return NextResponse.json({error:"Artwork files are currently limited to 20 MB in Supabase mode."},{status:400});const storagePath=`${user.id}/${song.id}/${mediaKind}/${crypto.randomUUID()}-${safeFilename(originalFilename)}`;const{data,error}=await supabase.storage.from(MEDIA_BUCKET).createSignedUploadUrl(storagePath);if(error||!data?.token)throw new Error(`Could not prepare artwork upload: ${error?.message||"No upload token returned"}`);return NextResponse.json({upload:{bucket:MEDIA_BUCKET,storagePath,token:data.token,originalFilename,mimeType,sizeBytes,mediaKind}});

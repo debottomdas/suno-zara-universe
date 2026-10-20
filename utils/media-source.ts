@@ -1,6 +1,8 @@
 import path from "node:path";
+import os from "node:os";
+import { realpathSync, existsSync } from "node:fs";
 import { createReadStream } from "node:fs";
-import { stat, unlink } from "node:fs/promises";
+import { stat, unlink, realpath, mkdir, copyFile, lstat } from "node:fs/promises";
 import { Readable } from "node:stream";
 
 export const MEDIA_BUCKET = "song-media";
@@ -39,7 +41,7 @@ export function safeFilename(filename: string) {
 }
 
 export function localMediaRoot() {
-  return path.resolve(process.cwd(), "local-media");
+  return path.resolve(process.env.SZU_WORKER_ROOT || path.join(os.homedir(), "Suno Zara Universe"));
 }
 
 export function mediaFolder(mediaKind: string) {
@@ -77,12 +79,33 @@ export function makeLocalRelativePath(
 
 export function resolveLocalPath(relativePath: string) {
   const root = localMediaRoot();
-  const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!relativePath || path.isAbsolute(relativePath) || relativePath.includes('\\') || relativePath.split('/').some(part=>part==='..'||part==='.'||!part)) throw new Error('Invalid local media path.');
+  const normalized = relativePath;
   const absolute = path.resolve(root, normalized);
   if (absolute !== root && !absolute.startsWith(`${root}${path.sep}`)) {
     throw new Error("Invalid local media path.");
   }
+  let ancestor = absolute;
+  while (!existsSync(ancestor) && ancestor !== root) ancestor = path.dirname(ancestor);
+  if (existsSync(root) && existsSync(ancestor)) {
+    const realRoot = realpathSync(root), realAncestor = realpathSync(ancestor);
+    if (realAncestor !== realRoot && !realAncestor.startsWith(`${realRoot}${path.sep}`)) throw new Error('Local media symlink leaves the Universe directory.');
+  }
   return absolute;
+}
+
+/** Copy referenced legacy media into the data root, preserving both reference and original. */
+export async function ensureLocalFile(relativePath: string) {
+  const destination = resolveLocalPath(relativePath);
+  try { await stat(destination); return destination; } catch (error: any) { if(error?.code !== 'ENOENT') throw error; }
+  const legacyRoot = path.resolve(process.cwd(), 'local-media');
+  const legacy = path.resolve(legacyRoot, relativePath);
+  if (!legacy.startsWith(legacyRoot + path.sep)) throw new Error('Invalid legacy media path.');
+  const actual = await realpath(legacy), actualRoot = await realpath(legacyRoot);
+  if (!actual.startsWith(actualRoot + path.sep) || !(await lstat(actual)).isFile()) throw new Error('Invalid legacy media file.');
+  await mkdir(path.dirname(destination), {recursive:true});
+  try { await copyFile(actual,destination,1); } catch(error:any) { if(error?.code!=='EEXIST')throw error; }
+  return destination;
 }
 
 export function storageProvider(asset: StoredMediaAsset): StorageProvider {
@@ -99,7 +122,7 @@ export async function buildMediaAssetResponse(
     if (!asset.local_path) {
       throw new Error(`Local media path is missing for ${asset.original_filename}.`);
     }
-    const absolute = resolveLocalPath(asset.local_path);
+    const absolute = await ensureLocalFile(asset.local_path);
     await stat(absolute);
     const baseUrl = `/api/media/local-file?assetId=${encodeURIComponent(asset.id)}`;
     return {
@@ -164,6 +187,7 @@ export async function buildMediaAssetResponse(
 }
 
 export async function deleteAssetBacking(supabase: any, asset: StoredMediaAsset) {
+  if (supabase?.local) return; // Local replacements retain their original backing files.
   const provider = storageProvider(asset);
   if (provider === "local") {
     if (!asset.local_path) return;
@@ -190,7 +214,7 @@ export async function openMediaAssetResponse(
     if (!asset.local_path) {
       throw new Error(`Local path is missing for ${asset.original_filename}.`);
     }
-    const absolute = resolveLocalPath(asset.local_path);
+    const absolute = await ensureLocalFile(asset.local_path);
     const info = await stat(absolute);
     const nodeStream = createReadStream(absolute);
     return new Response(Readable.toWeb(nodeStream) as any, {

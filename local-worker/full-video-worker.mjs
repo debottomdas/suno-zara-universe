@@ -76,7 +76,11 @@ function extensionFor(contentType, fallback = ".bin") {
   return fallback;
 }
 async function download(url, basename, dir) {
-  const response = await fetch(url, { redirect: "follow" });
+  // Creative assets in local mode use browser-relative /api/media URLs. Node fetch requires an absolute URL.
+  const mediaUrl = typeof url === "string" && url.startsWith("/api/media/")
+    ? new URL(url, "http://127.0.0.1:3000").href
+    : url;
+  const response = await fetch(mediaUrl, { redirect: "follow" });
   if (!response.ok) throw new Error(`Could not fetch media (${response.status}) from ${url}`);
   const ext = extensionFor(response.headers.get("content-type"));
   const file = path.join(dir, `${basename}${ext}`);
@@ -123,7 +127,44 @@ async function finishMux(silentVideo,audioFile,output,duration,finishing,tempDir
  args.push('-c:a',codec==='aac'?'copy':'aac',...(codec==='aac'?[]:['-b:a','192k']),'-t',String(duration),'-shortest','-movflags','+faststart',output);await run(ffmpegPath,args);
  return {masterSha256:createHash('sha256').update(await readFile(audioFile)).digest('hex'),audioMode:codec==='aac'?'original-aac-copy':'single-aac-encode',finishing:finishing?{subtitles:finishing.subtitles,lyrics:finishing.lyrics,reviewed:finishing.reviewed,cueCount:finishing.cues.filter(c=>c.end>offset&&c.start<offset+duration).length,lyricsSha256:createHash('sha256').update(finishing.lyrics).digest('hex'),channelId:finishing.channelId,dnaRevision:finishing.dnaRevision,brandAlignment:finishing.brandAlignment,brandText:finishing.brandText,transition:finishing.transition}:null};
 }
-function withTransition(filter,duration,scene,complex=false){if(scene.transition!=='fade')return filter;const fade=fadeFilter(duration);return complex?filter.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${filter},${fade}`;}
+function romanticPreset(raw){
+ if(!raw||raw.mode!=='romantic')return null;
+ const clamp=(n,min,max,fallback)=>Number.isFinite(Number(n))?Math.max(min,Math.min(max,Number(n))):fallback;
+ return {warmth:clamp(raw.warmth,0,1,0.55),contrast:clamp(raw.contrast,0,1,0.25),softness:clamp(raw.softness,0,1,0.2),glow:clamp(raw.glow,0,1,0.45),vignette:clamp(raw.vignette,0,1,0.4),atmosphere:clamp(raw.atmosphere,0,1,0.25)};
+}
+function lightLeakFilter(scene,duration){
+ const p=romanticPreset(scene.cinematic);
+ if(!p||scene.cinematic?.overlay!=='golden-light-leak')return '';
+ const intensity=Math.max(0,Math.min(1,Number(scene.cinematic.overlayIntensity??0.7)));
+ if(intensity<=0)return '';
+ // Per-frame moving, feathered amber illumination. geq uses frame index N at 30 fps.
+ // Works for either orientation, does not require downloading overlay assets.
+ const alpha=(0.58*intensity).toFixed(3);
+ const cx="(0.12+0.78*(0.5+0.5*sin(N/75)))*W";
+ const cy="(0.15+0.15*sin(N/110))*H";
+ const radial=`exp(-pow((X-(${cx}))/(0.42*W),2)-pow((Y-(${cy}))/(0.67*H),2))`;
+ return `format=gbrp,geq=r='min(255,r(X,Y)+110*${alpha}*${radial})':g='min(255,g(X,Y)+57*${alpha}*${radial})':b='min(255,b(X,Y)+8*${alpha}*${radial})':a='255',format=yuv420p`;
+}
+function withTransition(filter,duration,scene,complex=false){
+ let result=filter;
+ const preset=romanticPreset(scene.cinematic);
+ if(preset){
+  const contrast=(1+preset.contrast*0.15).toFixed(3);
+  const saturation=(1+preset.warmth*0.12).toFixed(3);
+  const glow=(preset.glow*0.045).toFixed(4);
+  const vignette=(Math.PI/2*(0.05+preset.vignette*0.43)).toFixed(4);
+  const grain=0; // Avoid expensive per-frame grain at full-HD resolution.
+  // Animated light breathing is intentionally subtle; avoid hiding faces or captions.
+  const grade=`eq=contrast=${contrast}:saturation=${saturation}:brightness='${glow}*(0.65+0.35*sin(0.65*t))':eval=frame,colorbalance=rs=${(preset.warmth*0.045).toFixed(3)}:bs=${(-preset.warmth*0.04).toFixed(3)},vignette=angle=${vignette}${grain?`,noise=alls=${grain}:allf=t+u`:''}`;
+
+  result=complex?result.replace(/\[v\]\s*$/,`[gradeInput];[gradeInput]${grade}[v]`):`${result},${grade}`;
+ }
+ const leak=''; // Disable CPU-heavy geq light leaks in all rendering modes.
+ if(leak)result=complex?result.replace(/\\[v\\]\\s*$/,`[lightInput];[lightInput]${leak}[v]`):`${result},${leak}`;
+ if(scene.transition!=='fade')return result;
+ const fade=fadeFilter(duration);
+ return complex?result.replace(/\[v\]\s*$/,`[transitionInput];[transitionInput]${fade}[v]`):`${result},${fade}`;
+}
 
 function normalizeVisuals(body) {
   const supplied = Array.isArray(body.visuals)
@@ -133,6 +174,7 @@ function normalizeVisuals(body) {
           format: String(item?.format || "landscape").toLowerCase() === "vertical" ? "vertical" : "landscape",
           mediaType: String(item?.mediaType || item?.type || "image").toLowerCase() === "video" ? "video" : "image",
           imageNumber: Number(item?.imageNumber) || index + 1,
+          frame: item?.frame && typeof item.frame === 'object' ? item.frame : undefined,
           label: String(item?.label || "").trim(),
         }))
         .filter((item) => item.url)
@@ -156,6 +198,31 @@ function normalizeVisuals(body) {
   }).slice(0, 40);
 }
 
+function cinematicLandscapeImageFilter(sceneDuration,index,frame,raw){
+ const intensity=Math.max(0,Math.min(1,Number(raw?.intensity??0.45)));
+ const movement=raw?.motion==='static'?0:raw?.motion==='dynamic'?0.16:0.075;
+ const extra=movement*intensity;
+ const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
+ const width=Math.ceil(1920*zoom*(1+extra)/2)*2;
+ const height=Math.ceil(1080*zoom*(1+extra)/2)*2;
+ const px=Math.max(0,Math.min(1,Number(frame?.x??50)/100));
+ const py=Math.max(0,Math.min(1,Number(frame?.y??50)/100));
+ const t=`min(1,max(0,t/${Math.max(.25,sceneDuration).toFixed(3)}))`;
+ const motion=raw?.motion==='static'?0:1;
+ const shift=(index%4===0?1:index%4===1?-1:index%4===2?.65:-.65)*motion*.35*intensity;
+ const startX=Math.max(0,Math.min(1,px-shift/2)),endX=Math.max(0,Math.min(1,px+shift/2));
+ const startY=Math.max(0,Math.min(1,py-(index%2?.12:-.12)*intensity)),endY=Math.max(0,Math.min(1,py+(index%2?.12:-.12)*intensity));
+ return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},crop=1920:1080:(iw-ow)*(${startX.toFixed(4)}+(${(endX-startX).toFixed(4)})*${t}):(ih-oh)*(${startY.toFixed(4)}+(${(endY-startY).toFixed(4)})*${t}),setsar=1,fps=30,format=yuv420p`;
+}
+function framedLandscapeImageFilter(sceneDuration,frame) {
+  const zoom=Math.max(1,Math.min(2,Number(frame?.zoom)||1));
+  const x=Math.max(0,Math.min(100,Number(frame?.x ?? 50)))/100;
+  const y=Math.max(0,Math.min(100,Number(frame?.y ?? 50)))/100;
+  const width=Math.round(1920*zoom/2)*2;
+  const height=Math.round(1080*zoom/2)*2;
+  const fade=Math.min(.45,Math.max(.22,sceneDuration*.035));
+  return `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},crop=1920:1080:(iw-ow)*${x.toFixed(4)}:(ih-oh)*${y.toFixed(4)},setsar=1,fps=30,format=yuv420p,fade=t=in:st=0:d=${fade.toFixed(3)},fade=t=out:st=${Math.max(0,sceneDuration-fade).toFixed(3)}:d=${fade.toFixed(3)}`;
+}
 function landscapeImageFilter(sceneDuration, motionIndex) {
   const d = Math.max(1, sceneDuration).toFixed(4);
   const motions = [
@@ -258,7 +325,7 @@ async function renderScene(scene, index, sceneDuration, tempDir) {
   } else {
     await run(ffmpegPath, [
       ...base,
-      "-vf", withTransition(landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
+      "-vf", withTransition(scene.cinematic?.v2?cinematicLandscapeImageFilter(sceneDuration,index,scene.frame,scene.cinematic.v2):scene.frame?framedLandscapeImageFilter(sceneDuration,scene.frame):landscapeImageFilter(sceneDuration, index),sceneDuration,scene,false),
       "-an",
       "-c:v", "libx264",
       "-preset", "veryfast",
@@ -296,7 +363,7 @@ async function renderFullVideo(body) {
     for (let i = 0; i < visuals.length; i += 1) {
       downloadedVisuals.push({
         ...visuals[i],
-        transition:body.finishing?.transition,
+        transition:body.finishing?.transition, cinematic:body.cinematic,
         file: await download(visuals[i].url, `visual-${i + 1}`, tempDir),
       });
     }
@@ -312,24 +379,54 @@ async function renderFullVideo(body) {
 
     console.log(`[${title}] Rendering ${sceneCount} scenes from ${downloadedVisuals.length} distinct visual assets.`);
 
+    const v2Settings=body.cinematic?.v2;
+    const dissolveOverlap=v2Settings?.enabled&&v2Settings.transition!=='cut'&&sequence.length>1
+      ?Math.min(.45,Math.max(.12,Number(v2Settings.transitionSeconds)||.35)):0;
+    const nominalDurations=sequence.map((_,i)=>planned?planned[i]:sceneDuration);
+    const canDissolve=dissolveOverlap>0&&nominalDurations.every(d=>d>dissolveOverlap+.3);
+    const renderDurations=nominalDurations.map((d,i)=>d+(canDissolve&&i<sequence.length-1?dissolveOverlap:0));
     const sceneFiles = [];
     for (let index = 0; index < sequence.length; index += 1) {
       console.log(`[${title}] Scene ${index + 1}/${sequence.length} (${sequence[index].mediaType})`);
-      sceneFiles.push(await renderScene(sequence[index], index, planned ? planned[index] : sceneDuration, tempDir));
+      sceneFiles.push(await renderScene(sequence[index], index, renderDurations[index], tempDir));
     }
 
+    // Cinematic V2: overlapping dissolves. Scene lengths are extended before rendering
+    // in a future timing pass; for now preserve the exact user timeline by applying
+    // transitions to the existing scene durations and restoring the master length.
+    const v2=body.cinematic?.v2;
+    const wantsDissolve=canDissolve;
+    let cinematicVideo=null;
+    if(wantsDissolve){
+      const overlap=dissolveOverlap;
+      const lengths=renderDurations;
+      if(lengths.every(d=>d>overlap+0.3)){
+        const inputs=sceneFiles.flatMap(file=>['-i',file]);
+        let previous='[0:v]',elapsed=lengths[0];
+        const filters=[];
+        for(let i=1;i<sceneFiles.length;i++){
+          const out=`[mix${i}]`;
+          const transition=v2.transition==='mixed'&&i%4===0?'fadeblack':'fade';
+          filters.push(`${previous}[${i}:v]xfade=transition=${transition}:duration=${overlap.toFixed(3)}:offset=${(elapsed-overlap).toFixed(3)}${out}`);
+          previous=out;elapsed+=lengths[i]-overlap;
+        }
+        cinematicVideo=path.join(tempDir,'cinematic-dissolve.mp4');
+        await run(ffmpegPath,['-y',...inputs,'-filter_complex',filters.join(';'),'-map',previous,'-an','-c:v','libx264','-preset','veryfast','-crf','21','-pix_fmt','yuv420p','-r','30',cinematicVideo]);
+      }
+    }
     const concatFile = path.join(tempDir, "scenes.ffconcat");
     await writeFile(concatFile, ["ffconcat version 1.0", ...sceneFiles.map((file) => `file '${ffconcatEscape(file)}'`)].join("\n") + "\n");
 
     const silentVideo = path.join(tempDir, "silent-video.mp4");
     await run(ffmpegPath, ["-y", "-f", "concat", "-safe", "0", "-i", concatFile, "-c", "copy", silentVideo]);
 
-    const songFolder = path.join(ROOT, "Music", safeName(title), "Videos");
+    // New renders are isolated by immutable project ID; legacy media stays untouched.
+    const songFolder = path.join(ROOT, "Music", "Projects", safeName(projectId), "Videos");
     await mkdir(songFolder, { recursive: true });
-    const filename = `${safeName(title)}-Full-Video${body.creativeCandidate ? "-"+jobId : ""}.mp4`;
+    const filename = `${safeName(projectId)}-Full-Video-${jobId}.mp4`;
     const output = path.join(songFolder, filename);
 
-    const finish=await finishMux(silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
+    const finish=await finishMux(cinematicVideo||silentVideo,audioFile,output,durationSeconds,body.finishing,tempDir);
 
     const generatedFullVideo = {
       ...finish,
@@ -338,6 +435,7 @@ async function renderFullVideo(body) {
       filename,
       filePath: output,
       source: "generated",
+      provenance: {projectId, audioUrl, sourceVisuals: visuals.map(v=>({id:v.id||null,url:v.url||null,mediaType:v.mediaType||"image"})), renderJobId:jobId},
       generatedAt: new Date().toISOString(),
       durationSeconds,
       imageCount: downloadedVisuals.filter((item) => item.mediaType === "image").length,
@@ -727,7 +825,7 @@ async function renderShorts(body) {
     const audioFile = await download(audioUrl, "audio", tempDir);
     const downloadedVisuals = [];
     for (let i = 0; i < visuals.length; i += 1) {
-      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
+      downloadedVisuals.push({ ...visuals[i], transition:body.finishing?.transition, cinematic:body.cinematic, file: await download(visuals[i].url, `short-visual-${i + 1}`, tempDir) });
     }
     const shortsFolder = path.join(ROOT, "Music", safeName(title), "Shorts");
     await mkdir(shortsFolder, { recursive: true });
@@ -737,9 +835,9 @@ async function renderShorts(body) {
       const highlight = body.creativeCandidate ? body.highlight : highlights[slot - 1];
       if(body.creativeCandidate && (!highlight || !Number.isFinite(highlight.startSeconds) || !Number.isFinite(highlight.endSeconds) || highlight.startSeconds<0 || highlight.endSeconds>durationSeconds || highlight.endSeconds-highlight.startSeconds<8 || highlight.endSeconds-highlight.startSeconds>60))throw Error("Invalid Short timing.");
       const clipDuration = Math.max(8, Math.min(body.creativeCandidate ? 60 : 30, highlight.endSeconds - highlight.startSeconds));
-      const sceneCount = body.creativeCandidate ? 1 : clipDuration <= 16 ? 2 : 3;
+      const sceneCount = body.creativeCandidate ? downloadedVisuals.length : clipDuration <= 16 ? 2 : 3;
       const sceneDuration = clipDuration / sceneCount;
-      const sequence = Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[((slot - 1) * 2 + index) % downloadedVisuals.length]);
+      const sequence = body.creativeCandidate ? downloadedVisuals : Array.from({ length: sceneCount }, (_, index) => downloadedVisuals[((slot - 1) * 2 + index) % downloadedVisuals.length]);
       const sceneFiles = [];
       for (let i = 0; i < sequence.length; i += 1) {
         sceneFiles.push(await renderShortScene(sequence[i], i, sceneDuration, tempDir, `short-${slot}`));
@@ -757,7 +855,7 @@ async function renderShorts(body) {
         startSeconds: highlight.startSeconds, endSeconds: highlight.startSeconds + clipDuration, durationSeconds: clipDuration,
         width: 1080, height: 1920, visualCount: sequence.length,
       });
-      console.log(`[${title}] Short ${slot}/6 rendered (${highlight.startSeconds.toFixed(1)}s–${(highlight.startSeconds + clipDuration).toFixed(1)}s).`);
+      console.log(`[${title}] Short ${slot} rendered (${highlight.startSeconds.toFixed(1)}s–${(highlight.startSeconds + clipDuration).toFixed(1)}s).`);
     }
     if(body.creativeCandidate)return generatedShorts;
     const manifest = await loadManifest();
@@ -1004,16 +1102,66 @@ async function approveShort(projectId, slot, source) {
 
 // V5.25 uses the same render functions and existing approved-video contract.
 let creativeBusy=false;
+async function recoverLegacyCreativeFullVideo(projectId,manifest,project){
+ // Only recover a render explicitly attributed to this project by the local manifest.
+ // Never sweep shared Music/song folders: different projects can have the same title.
+ const legacy=legacyGeneratedItem(project);
+ if(!legacy?.filePath || legacy.projectId && legacy.projectId!==projectId)return false;
+ const fullPath=path.resolve(legacy.filePath);
+ const versions=project.creative?.versions||[];
+ if(versions.some(v=>v.slot===0 && path.resolve(v.filePath)===fullPath))return false;
+ const info=await stat(fullPath).catch(()=>null);
+ if(!info?.isFile()||!info.size)return false;
+ const versionId=randomUUID();
+ const dir=path.join(ROOT,"CreativeVersions",safeName(projectId));
+ await mkdir(dir,{recursive:true});
+ const filePath=path.join(dir,versionId+".mp4");
+ await copyFile(fullPath,filePath);
+ addCandidate(project,{...legacy,filePath,source:"generated",recoveredFromLegacy:true,recoveredAt:new Date().toISOString()},0,"legacy-unverified",versionId);
+ await saveManifest(manifest);
+ console.log(`[creative] Recovered project ${projectId} legacy full video as a separate unapproved version.`);
+ return true;
+}
 function creativePublic(projectId,v){return {...v,filePath:undefined,fileUrl:`http://${HOST}:${PORT}/creative/file?projectId=${encodeURIComponent(projectId)}&id=${v.id}`};}
+const creativeHashCache=new Map();
+async function creativeContentHash(filename){
+ const info=await stat(filename);
+ const key=path.resolve(filename),stamp=info.size+":"+info.mtimeMs;
+ const cached=creativeHashCache.get(key);
+ if(cached?.stamp===stamp)return cached.hash;
+ const hash=createHash("sha256");
+ for await(const chunk of createReadStream(filename))hash.update(chunk);
+ const value=hash.digest("hex");
+ creativeHashCache.set(key,{stamp,hash:value});
+ return value;
+}
+async function creativeReviewGroups(projectId,versions){
+ const visible=versions.filter(v=>!v.recoveredFromLegacy && v.projectId===projectId && (v.source!=="generated" || (v.dependencyKey && v.dependencyKey!=="legacy-unverified")));
+ const confirmed=[],uncertain=[],seen=new Set();
+ // Keep all short versions as before; isolate uncertain full-video imports.
+ for(const v of visible.slice().reverse()){
+  if(v.slot!==0){confirmed.push(v);continue;}
+  let fingerprint;
+  try{fingerprint=await creativeContentHash(v.filePath);}
+  catch{fingerprint="missing:"+v.id;}
+  if(seen.has(fingerprint))continue;
+  seen.add(fingerprint);
+  if(v.source==="generated" && typeof v.dependencyKey==="string" && v.dependencyKey.startsWith("{"))confirmed.push(v);
+  else uncertain.push(v);
+ }
+ return {versions:confirmed.reverse(),uncertainVersions:uncertain.reverse()};
+}
 async function creativeRequest(req,res,url){
  const projectId=String(url.searchParams.get("projectId")||"");
  if(req.method==="GET"){
   const m=await loadManifest(),p=m.projects?.[projectId]||{};
+  // Legacy recovery disabled: older shared folders do not prove song ownership.
   if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
   if(url.pathname==="/creative/social")return json(res,200,{pack:p.localSocialPack||null,source:"local",cloudSync:false});
-  if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
+  if(url.pathname==="/creative/release-package")return json(res,200,{pack:p.localReleasePackage||null,source:"local",cloudSync:false});
+  if(url.pathname==="/creative/status"){const review=await creativeReviewGroups(projectId,p.creative?.versions||[]);return json(res,200,{versions:review.versions.map(v=>creativePublic(projectId,v)),uncertainVersions:review.uncertainVersions.map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});}
   if(url.pathname==="/creative/file"){
-   const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id"));if(!v)return json(res,404,{error:"Version not found."});
+   const v=p.creative?.versions?.find(v=>v.id===url.searchParams.get("id") && !v.recoveredFromLegacy && v.projectId===projectId && (v.source!=="generated" || (v.dependencyKey && v.dependencyKey!=="legacy-unverified")));if(!v)return json(res,404,{error:"Version not found."});
    const info=await stat(v.filePath);cors(res);if(url.searchParams.get("download")==="1")res.setHeader("Content-Disposition",`attachment; filename="${safeFilename(v.filename||path.basename(v.filePath))}"`);res.setHeader("Content-Type","video/mp4");res.setHeader("Accept-Ranges","bytes");
    const match=/^bytes=(\d+)-(\d*)$/.exec(req.headers.range||"");const start=match?Number(match[1]):0,end=match?.[2]?Number(match[2]):info.size-1;
    if(start>end||end>=info.size){res.statusCode=416;return res.end();}
@@ -1032,7 +1180,7 @@ async function creativeRequest(req,res,url){
   }
   if(url.pathname==="/creative/render"){
    if(!body.dependencyKey)throw Error("Review the video plan first.");
-   const item=slot===0?await renderFullVideo({...body,creativeCandidate:true}):(await renderShorts({...body,creativeCandidate:true}))[0];
+   const item=slot===0?await renderFullVideo({...body,projectId:id,creativeCandidate:true}):(await renderShorts({...body,projectId:id,creativeCandidate:true}))[0];
    const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,body.dependencyKey,randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
   }
   if(upload){
@@ -1044,6 +1192,17 @@ async function creativeRequest(req,res,url){
    const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};const v=addCandidate(p,item,slot,"supplied",randomUUID());await saveManifest(m);return json(res,200,{version:creativePublic(id,v)});
   }
   const m=await loadManifest();m.projects||={};const p=m.projects[id]||={};
+  if(url.pathname==="/creative/release-package"){
+   if(body.action!=="save")throw Error("Only draft saving is supported.");
+   const pack=body.pack;
+   if(!pack||pack.schemaVersion!==1||pack.projectId!==id||typeof pack.channelId!=="string"||!pack.channelId||pack.approved!==false||!pack.full||!Array.isArray(pack.shorts)||pack.shorts.length!==6||pack.shorts.some((v,i)=>v.slot!==i+1||!v.video))throw Error("Invalid project-scoped release package.");
+   if(p.localReleasePackage?.channelId&&p.localReleasePackage.channelId!==pack.channelId)throw Error("This package belongs to another channel.");
+   if((p.localReleasePackage?.updatedAt||null)!==(body.expectedUpdatedAt||null))return json(res,409,{error:"Release package changed. Reload before saving."});
+   const updatedAt=new Date().toISOString();
+   p.localReleasePackage={...pack,approved:false,updatedAt};
+   await saveManifest(m);
+   return json(res,200,{pack:p.localReleasePackage,cloudSync:false});
+  }
   if(url.pathname==="/creative/social"){
    if(body.action!=="save")throw Error("Choose a local Social copy save action.");
    if(!body.channelId||typeof body.channelId!=="string")throw Error("Channel required.");
@@ -1062,7 +1221,7 @@ async function creativeRequest(req,res,url){
    await saveManifest(m);
    return json(res,200,{pack:p.localSocialPack,cloudSync:false});
   }
-  if(url.pathname==="/creative/sync"){if(!body.keys||Object.keys(body.keys).length!==7)throw Error("Seven output dependency keys required.");syncDependencies(p,body.keys);}
+  if(url.pathname==="/creative/sync"){if(!body.keys||typeof body.keys!=="object"||Array.isArray(body.keys)||!Object.prototype.hasOwnProperty.call(body.keys,"full")||Object.keys(body.keys).length<2||Object.keys(body.keys).length>11||Object.keys(body.keys).some(k=>!/^short-(?:[1-9]|10)$/.test(k)&&k!=="full")||Object.values(body.keys).some(v=>typeof v!=="string"))throw Error("One full-video and 1–10 Short dependency keys required.");syncDependencies(p,body.keys);}
   else if(url.pathname==="/creative/approve"){const v=p.creative?.versions.find(v=>v.id===body.id);if(!v)throw Error("Version not found.");if(v.slot!==slot)throw Error("Choose a version belonging to this video.");await stat(v.filePath);approveCandidate(p,body.id);}
   else if(url.pathname==="/creative/adopt"){
    // Explicit user-reviewed finished-video adoption. Never rewrite the generated candidate.
@@ -1283,7 +1442,7 @@ const server = http.createServer(async (req, res) => {
       const projectId = url.searchParams.get("projectId") || "";
       const kind = url.searchParams.get("kind") === "full" ? "full" : "short";
       const slot = Number(url.searchParams.get("slot") || "1");
-      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > 6) return json(res, 400, { error: "Invalid approved media request." });
+      if (!/^[a-zA-Z0-9-]{1,100}$/.test(projectId) || !Number.isInteger(slot) || slot < 1 || slot > (kind==="full"?1:10)) return json(res, 400, { error: "Invalid approved media request." });
       const resolved = await resolveApprovedPublishingItem(projectId, kind, slot);
       const info = await stat(resolved.item.filePath);
       if (!info.isFile() || info.size < 1 || info.size > 100 * 1024 * 1024) return json(res, 413, { error: "Approved video must be under 100 MB." });

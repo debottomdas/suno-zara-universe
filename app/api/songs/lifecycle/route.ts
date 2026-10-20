@@ -38,6 +38,7 @@ export async function PATCH(request:Request){
         localMode:true
       });
     }
+    return NextResponse.json({error:"Project not found in the selected local channel."},{status:404});
   }
 
   const db=await createClient();

@@ -1,11 +1,14 @@
+import {resolveActiveChannelDNA} from '@/utils/channel-dna/server';
+import {channelInstructions} from '@/utils/channel-dna/instructions';
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 import { createClient } from "@/utils/supabase/server";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+  maxRetries: 0,
+}); }
 
 export async function POST(request: Request) {
   try {
@@ -74,10 +77,12 @@ export async function POST(request: Request) {
     /*
      * 3. Generate the three hooks.
      */
-    const response = await openai.responses.create({
+    const dna = await resolveActiveChannelDNA(supabase, user.id, channel.id);
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
 
-      instructions: `
+      instructions: `${channelInstructions(dna, 'music')}
+
 You are Suno Zara Universe Music Studio, an expert multilingual lyric-writing assistant.
 
 Create exactly 3 genuinely different song hooks.

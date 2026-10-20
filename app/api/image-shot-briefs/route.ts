@@ -4,9 +4,9 @@ import { NextResponse } from "next/server";
 import OpenAI from "openai";
 import { createClient } from "@/utils/supabase/server";
 
-const openai = new OpenAI({
+function aiClient() { return new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-});
+}); }
 
 type ImageFormat = "youtube" | "shorts";
 
@@ -279,7 +279,7 @@ Remove any repeated:
 The final set must be immediately distinguishable even when viewed as small thumbnails.
 `.trim();
 
-    const response = await openai.responses.create({
+    const response = await aiClient().responses.create({
       model: "gpt-5.6-luna",
       input: [
         {

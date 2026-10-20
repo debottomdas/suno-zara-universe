@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/utils/supabase/server";
+import { localModeAvailable, createLocalSong, updateLocalSong } from "@/utils/local-first/store";
 
 function cleanString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -7,6 +8,25 @@ function cleanString(value: unknown) {
 
 export async function POST(request: Request) {
   try {
+    if (localModeAvailable() && ["localhost:3000", "127.0.0.1:3000"].includes(request.headers.get("host") || "")) {
+      const body = await request.json();
+      const title = cleanString(body.title).slice(0, 120);
+      const lyrics = typeof body.lyrics === "string" ? body.lyrics : "";
+      const channelId = cleanString(body.channelId);
+      if (!title || !lyrics.trim() || !channelId)
+        return NextResponse.json({ error: "Channel, title and complete lyrics are required." }, { status: 400 });
+      const projectId = crypto.randomUUID();
+      const project = await createLocalSong({
+        projectId, channelId, title, language: cleanString(body.language).slice(0, 80) || "Hindi",
+        idea: cleanString(body.idea).slice(0, 4000),
+      });
+      if (!project) return NextResponse.json({ error: "Unknown local channel." }, { status: 404 });
+      const updated = await updateLocalSong(projectId, {
+        lyrics, status: "lyrics-imported", script: cleanString(body.script) || "Native",
+        mood: cleanString(body.mood), genre: cleanString(body.genre),
+      });
+      return NextResponse.json({ projectId, project: updated, saved: true, imported: true, localMode: true });
+    }
     const supabase = await createClient();
 
     const {
