@@ -1100,11 +1100,32 @@ async function approveShort(projectId, slot, source) {
 
 // V5.25 uses the same render functions and existing approved-video contract.
 let creativeBusy=false;
+async function recoverLegacyCreativeFullVideo(projectId,manifest,project){
+ // Only recover a render explicitly attributed to this project by the local manifest.
+ // Never sweep shared Music/song folders: different projects can have the same title.
+ const legacy=legacyGeneratedItem(project);
+ if(!legacy?.filePath || legacy.projectId && legacy.projectId!==projectId)return false;
+ const fullPath=path.resolve(legacy.filePath);
+ const versions=project.creative?.versions||[];
+ if(versions.some(v=>v.slot===0 && path.resolve(v.filePath)===fullPath))return false;
+ const info=await stat(fullPath).catch(()=>null);
+ if(!info?.isFile()||!info.size)return false;
+ const versionId=randomUUID();
+ const dir=path.join(ROOT,"CreativeVersions",safeName(projectId));
+ await mkdir(dir,{recursive:true});
+ const filePath=path.join(dir,versionId+".mp4");
+ await copyFile(fullPath,filePath);
+ addCandidate(project,{...legacy,filePath,source:"generated",recoveredFromLegacy:true,recoveredAt:new Date().toISOString()},0,"legacy-unverified",versionId);
+ await saveManifest(manifest);
+ console.log(`[creative] Recovered project ${projectId} legacy full video as a separate unapproved version.`);
+ return true;
+}
 function creativePublic(projectId,v){return {...v,filePath:undefined,fileUrl:`http://${HOST}:${PORT}/creative/file?projectId=${encodeURIComponent(projectId)}&id=${v.id}`};}
 async function creativeRequest(req,res,url){
  const projectId=String(url.searchParams.get("projectId")||"");
  if(req.method==="GET"){
   const m=await loadManifest(),p=m.projects?.[projectId]||{};
+  if(url.pathname==="/creative/status" && projectId)await recoverLegacyCreativeFullVideo(projectId,m,p);
   if(url.pathname==="/creative/product"){productScope(p,Object.fromEntries(url.searchParams));return json(res,200,{record:p.musicProduct||null,workspace:p.musicWorkspace||null,snapshot:p.musicSnapshot||null});}
   if(url.pathname==="/creative/social")return json(res,200,{pack:p.localSocialPack||null,source:"local",cloudSync:false});
   if(url.pathname==="/creative/status")return json(res,200,{versions:(p.creative?.versions||[]).map(v=>creativePublic(projectId,v)),approved:p.creative?.approved||{},keys:p.creative?.keys||{},complete:["full",...Array.from({length:6},(_,i)=>`short-${i+1}`)].every(k=>Boolean(p.creative?.approved?.[k]))});
