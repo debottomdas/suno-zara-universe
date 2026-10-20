@@ -1,5 +1,6 @@
-import {validateReleasePackage,type ReleasePackage} from '@/utils/social/local-release-package';
 'use client';
+import {validateReleasePackage,type ReleasePackage} from '@/utils/social/local-release-package';
+
 import {useEffect,useState} from 'react';
 import {platforms,collection,target,entry,type Platform,type CopyValue} from '@/utils/social/copy';
 import s from './MusicNext.module.css';
